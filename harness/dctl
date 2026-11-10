@@ -1,0 +1,88 @@
+#!/usr/bin/env python3
+"""dctl: drive the Omarchy shell harness AND tell Dolly what was clicked/typed.
+
+TEST HARNESS ONLY. The harness has no Hyprland, so Dolly's Lua click/key bridge
+never runs there. This wraps shell-harness's `harness/ctl` (which drives the
+virtual pointer/keyboard) and appends the same events, in the Lua bridge's line
+format, to $XDG_RUNTIME_DIR/dolly/harness-input.jsonl, which the logger tails
+when DOLLY_EVENTS_FROM_HARNESS=1 (click_source "harness" in events.json).
+
+    dctl click X Y [left|right|middle]     dctl type TEXT     dctl key COMBO...
+    anything else is passed to ctl unchanged (move, screenshot, scroll, ...)
+"""
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+CTL = os.environ.get("HARNESS_CTL", "/home/claude/work/shell-harness/harness/ctl")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from dolly.keymap import MODS, NAMES  # noqa: E402
+
+CODE = {v: k for k, v in NAMES.items()}
+MOD_CODE = {"ctrl": 29, "alt": 56, "shift": 42, "super": 125}
+SHIFTED = {'!': '1', '@': '2', '#': '3', '$': '4', '%': '5', '^': '6', '&': '7', '*': '8', '(': '9', ')': '0',
+           '_': '-', '+': '=', '{': '[', '}': ']', ':': ';', '"': "'", '~': '`', '|': '\\', '<': ',', '>': '.',
+           '?': '/'}
+ALIAS = {"enter": "Return", "return": "Return", "esc": "Escape", "escape": "Escape", "tab": "Tab",
+         "backspace": "BackSpace", "space": "space", "delete": "Delete", "up": "Up", "down": "Down",
+         "left": "Left", "right": "Right", "home": "Home", "end": "End"}
+
+
+def sink() -> Path:
+    rt = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "dolly"
+    rt.mkdir(parents=True, exist_ok=True)
+    return rt / "harness-input.jsonl"
+
+
+def emit(obj):
+    with open(sink(), "a") as f:
+        f.write(json.dumps(obj) + "\n")
+
+
+def key_event(code, down):
+    emit({"type": "key", "code": code + 8, "down": down})
+
+
+def tap(name, mods=()):
+    code = CODE.get(name)
+    if code is None:
+        return
+    for m in mods:
+        key_event(MOD_CODE[m], True)
+    key_event(code, True)
+    key_event(code, False)
+    for m in mods:
+        key_event(MOD_CODE[m], False)
+
+
+def main(argv):
+    cmd = argv[0] if argv else "help"
+    if cmd == "click":
+        x, y = float(argv[1]), float(argv[2])
+        emit({"type": "click", "x": x, "y": y, "button": argv[3] if len(argv) > 3 else "left"})
+    elif cmd == "type":
+        for ch in " ".join(argv[1:]):
+            if ch == " ":
+                tap("space")
+            elif ch == "\n":
+                tap("Return")
+            elif ch.isupper():
+                tap(ch.lower(), ["shift"])
+            elif ch in SHIFTED:
+                tap(SHIFTED[ch], ["shift"])
+            else:
+                tap(ch)
+    elif cmd == "key":
+        for combo in argv[1:]:
+            parts = combo.split("+")
+            mods = [p.lower() for p in parts[:-1] if p.lower() in MOD_CODE]
+            k = parts[-1]
+            name = ALIAS.get(k.lower(), k if len(k) > 1 else k.lower())
+            tap(name, mods)
+    return subprocess.call([CTL, *argv])
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

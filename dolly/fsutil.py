@@ -1,0 +1,148 @@
+"""Crash-safe file writes and damage-tolerant JSON reads.
+
+A recording's files (capture.json, events.json, project.json, the state file) are
+rewritten while Dolly runs; a crash, power loss or full disk in the middle of a plain
+`write_text` leaves a truncated file, and the next `json.loads` dies with a traceback.
+
+    atomic_write_text / atomic_write_json
+        write a temp file in the same folder, fsync it, then os.replace() it over the
+        target (readers see the old file or the new one, never half of one).
+        backup=True first keeps the current version as <name>.bak, but only when that
+        version is itself readable (a damaged file never overwrites a good backup).
+
+    read_json
+        parse a JSON file; when it is damaged, fall back to <name>.bak (and restore it),
+        else raise DamagedFile with a message a user can act on.
+"""
+from __future__ import annotations
+
+import json
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+_UMASK = os.umask(0)
+os.umask(_UMASK)
+
+
+class DamagedFile(ValueError):
+    """A JSON file Dolly needs is unreadable and has no usable backup."""
+
+    def __init__(self, path: Path, reason: str = ""):
+        self.path = Path(path)
+        what = {"project.json": "edits (project.json)", "events.json": "event log (events.json)",
+                "capture.json": "capture details (capture.json)"}.get(self.path.name, self.path.name)
+        msg = f"this recording's {what} is damaged and has no usable backup: {self.path}"
+        if reason:
+            msg += f" ({reason})"
+        super().__init__(msg)
+
+
+def backup_path(path: Path) -> Path:
+    path = Path(path)
+    return path.with_name(path.name + ".bak")
+
+
+def _fsync_dir(d: Path) -> None:
+    try:
+        fd = os.open(d, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def _readable_json(path: Path) -> bool:
+    try:
+        json.loads(path.read_text())
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def atomic_write_text(path: str | Path, text: str, backup: bool = False, durable: bool = True) -> None:
+    path = Path(path)
+    d = path.parent
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=d)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            if durable:
+                os.fsync(f.fileno())
+        os.chmod(tmp, 0o666 & ~_UMASK)          # mkstemp makes 0600; match a normal file
+        if backup and path.exists() and (path.suffix != ".json" or _readable_json(path)):
+            try:
+                _copy(path, backup_path(path))   # copy, not move: the target stays in place until replaced
+            except OSError:
+                pass                             # a backup is a bonus; never block the write
+        os.replace(tmp, path)
+        if durable:
+            _fsync_dir(d)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _copy(src: Path, dst: Path) -> None:
+    data = src.read_bytes()
+    fd, tmp = tempfile.mkstemp(prefix=f".{dst.name}.", suffix=".tmp", dir=dst.parent)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        os.chmod(tmp, 0o666 & ~_UMASK)
+        os.replace(tmp, dst)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def atomic_write_json(path: str | Path, obj, indent: int | None = None, backup: bool = False,
+                      durable: bool = True, **dumps_kw) -> None:
+    atomic_write_text(path, json.dumps(obj, indent=indent, **dumps_kw), backup=backup, durable=durable)
+
+
+def read_json(path: str | Path, recover: bool = True):
+    """Parsed JSON of `path`. Damaged (truncated, not JSON, not UTF-8): use <name>.bak if it
+    parses (and put it back in place, with a note on stderr and in dolly.log), else raise
+    DamagedFile. A missing file raises FileNotFoundError as before."""
+    path = Path(path)
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise
+    except (ValueError, UnicodeDecodeError) as e:
+        reason = f"{type(e).__name__}: {e}"[:160]
+    if recover:
+        bak = backup_path(path)
+        try:
+            data = json.loads(bak.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = None
+        if data is not None:
+            try:
+                damaged = path.with_name(path.name + ".damaged")
+                _copy(path, damaged)             # keep the broken one for inspection
+                _copy(bak, path)
+            except OSError:
+                pass
+            note = f"dolly: {path} was damaged; restored the previous version from {bak.name}"
+            print(note, file=sys.stderr)
+            try:
+                from . import log
+                log.get().warning("%s (%s)", note, reason)
+            except Exception:  # never fail a read over logging
+                pass
+            return data
+    raise DamagedFile(path, reason)

@@ -1,0 +1,916 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" href="data:,">
+<title>Dolly Editor</title>
+<style>
+@font-face{font-family:JBM;src:url(/static/fonts/jetbrains-mono-latin-400-normal.woff2);font-weight:400}
+@font-face{font-family:JBM;src:url(/static/fonts/jetbrains-mono-latin-500-normal.woff2);font-weight:500}
+@font-face{font-family:JBM;src:url(/static/fonts/jetbrains-mono-latin-700-normal.woff2);font-weight:700}
+:root{--bg:#1a1b26;--bg-d:#13141c;--bg-dd:#0e0e14;--bg-l:#24283b;--sel:#292e42;--muted:#414868;
+  --fg:#a9b1d6;--fg-d:#565f89;--fg-b:#c0caf5;--accent:#7aa2f7;--red:#f7768e;--green:#9ece6a;--yellow:#e0af68;--magenta:#bb9af7;--orange:#ff9e64;--cyan:#0db9d7;
+  --line:rgba(169,177,214,.12)}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;background:var(--bg-dd);color:var(--fg);font:13px var(--font),JBM,ui-monospace,monospace;overflow:hidden}
+:root{--font:"JetBrainsMono Nerd Font"}
+body{display:flex;flex-direction:column}
+#nav{height:40px;flex:none;display:flex;align-items:center;gap:6px;padding:0 12px;background:var(--bg-d);border-bottom:1px solid var(--line)}
+#nav .brand{color:var(--fg-b);font-weight:700;margin-right:12px;display:flex;align-items:center;gap:8px}
+#nav .tab{padding:6px 12px;cursor:pointer;color:var(--fg);border-bottom:2px solid transparent}
+#nav .tab.on{color:var(--fg-b);border-bottom-color:var(--accent)}
+#nav .tab.dis{opacity:.4;cursor:default}
+.view{flex:1;min-height:0;display:none}.view.on{display:block}
+.app.view.on{display:grid}
+.app.view:not(.on){display:none}
+/* library */
+#libraryView{overflow:auto;padding:16px 20px}
+.lbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:14px}
+.lbar input[type=search]{font:inherit;color:inherit;background:var(--bg-d);border:1px solid rgba(169,177,214,.28);height:30px;padding:0 10px;width:260px}
+.chipf{padding:4px 10px;border:1px solid rgba(169,177,214,.25);cursor:pointer;font-size:12px}
+.chipf.on{border-color:var(--accent);color:var(--fg-b);background:rgba(122,162,247,.12)}
+.usage{font-size:12px;color:var(--fg-d)}
+.lgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:14px}
+.lgrid.list{grid-template-columns:1fr;gap:6px}
+.card{border:1px solid var(--line);background:var(--bg);position:relative;cursor:pointer}
+.card:hover{border-color:rgba(169,177,214,.35)}.card.sel{outline:2px solid var(--accent);outline-offset:-2px}
+.card .th{aspect-ratio:16/9;background:var(--bg-l) center/cover no-repeat;position:relative}
+.card .du{position:absolute;right:6px;bottom:6px;background:rgba(0,0,0,.65);color:#fff;font-size:11px;padding:1px 6px}
+.card .cb{position:absolute;left:8px;top:8px;width:18px;height:18px;accent-color:var(--accent)}
+.card .bd{padding:9px 10px}
+.card .tt{color:var(--fg-b);font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.card .mt{font-size:11.5px;color:var(--fg-d);margin-top:3px}
+.card .bdg{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px}
+.bdg span{font-size:10px;padding:1px 6px;border:1px solid var(--accent);color:var(--accent);border-radius:8px}
+.bdg span.warn{border-color:var(--red);color:var(--red)}
+.card .acts{display:none;gap:4px;flex-wrap:wrap;margin-top:8px}.card:hover .acts{display:flex}
+.card .acts button{height:24px;font-size:11px;padding:0 7px}
+.lgrid.list .card{display:grid;grid-template-columns:160px 1fr}.lgrid.list .card .acts{display:flex}
+/* settings */
+#settingsView{overflow:auto}
+.sset{display:grid;grid-template-columns:200px minmax(0,640px) minmax(0,1fr);gap:0 28px;padding:18px 24px}
+.snav{position:sticky;top:0;align-self:start;display:flex;flex-direction:column;gap:2px}
+.snav div{padding:7px 10px;cursor:pointer;color:var(--fg)}.snav div.on{color:var(--fg-b);background:rgba(122,162,247,.12);border-left:2px solid var(--accent)}
+.sgrp{margin-bottom:26px}.sgrp h2{font-size:15px;color:var(--fg-b);margin-bottom:4px}.sgrp .sd{font-size:12px;color:var(--fg-d);margin-bottom:10px}
+.srow{display:grid;grid-template-columns:1fr auto;align-items:center;gap:10px;padding:9px 0;border-bottom:1px dashed var(--line)}
+.srow .lb{color:var(--fg)}.srow .hp{font-size:11px;color:var(--fg-d);margin-top:2px}
+.srow select,.srow input[type=text]{min-width:220px;height:28px}
+.srow input[type=range]{width:220px;accent-color:var(--accent)}
+.srow .rv{display:inline-block;width:52px;text-align:right;color:var(--fg-b)}
+.spreview{position:sticky;top:18px;align-self:start}
+.spreview canvas{width:100%;border:1px solid var(--line);background:#000}
+.srow>*{min-width:0}
+.srow select,.srow input[type=text]{max-width:100%}
+/* Settings in a tiled (half / quarter screen) window: the preview goes on top of the
+   form instead of a third column that has no room left, and controls shrink */
+@media (max-width:1320px){
+  .sset{grid-template-columns:170px minmax(0,1fr)}
+  .spreview{grid-column:2;grid-row:1;position:static;max-width:560px;margin-bottom:20px}
+  #sform{grid-column:2;grid-row:2}
+  .snav{grid-row:1/3}
+}
+@media (max-width:820px){
+  .sset{grid-template-columns:minmax(0,1fr);padding:12px 14px}
+  .snav{grid-row:auto;position:static;flex-direction:row;flex-wrap:wrap;margin-bottom:12px}
+  .snav div.on{border-left:none;border-bottom:2px solid var(--accent)}
+  .spreview,#sform{grid-column:1;grid-row:auto}
+  .srow{grid-template-columns:minmax(0,1fr)}
+  .srow select,.srow input[type=text]{min-width:0;width:100%}
+  .srow input[type=range]{width:calc(100% - 60px)}
+}
+.note{font-size:11.5px;color:var(--fg-d);border-left:2px solid var(--yellow,#e0af68);padding:4px 8px;margin:6px 0;background:rgba(224,175,104,.07)}
+.sw .add{display:flex;align-items:center;justify-content:center;font-size:20px;color:var(--fg-d);border:1px dashed rgba(169,177,214,.35);cursor:pointer}
+.sw .add:hover{color:var(--fg-b);border-color:var(--accent)}
+.imgpick{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:center;justify-content:center;z-index:50}
+.imgpick.on{display:flex}
+.imgpick .box{width:min(860px,94vw);max-height:86vh;overflow:auto;background:var(--bg);border:2px solid var(--accent);padding:14px 16px}
+.imgpick h3{font-size:13px;color:var(--fg-b);margin:12px 0 6px}
+.imgpick .ig{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px}
+.imgpick .ig div{aspect-ratio:16/9;background:var(--bg-l) center/cover no-repeat;border:1px solid var(--line);cursor:pointer;position:relative}
+.imgpick .ig div:hover{outline:2px solid var(--accent)}
+.imgpick .ig div span{position:absolute;left:0;right:0;bottom:0;font-size:10px;background:rgba(0,0,0,.6);color:#fff;padding:1px 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.imgpick .prow{display:flex;gap:8px;margin-top:8px}.imgpick .prow input{flex:1}
+.imgpick .err{color:var(--red);font-size:12px;min-height:16px;margin-top:6px}
+.kbdrow{display:flex;justify-content:space-between;padding:5px 0;font-size:12px;border-bottom:1px dashed var(--line)}
+.saved{color:var(--green);font-size:11px;margin-left:8px;opacity:0;transition:opacity .2s}.saved.on{opacity:1}
+button,select,input[type=text]{font:inherit;color:inherit;background:none;border:1px solid rgba(169,177,214,.28);height:28px;padding:0 10px}
+button{cursor:pointer;display:inline-flex;align-items:center;gap:7px}
+button:hover{background:rgba(169,177,214,.08)}
+button.pri{background:var(--accent);border-color:var(--accent);color:var(--bg-dd);font-weight:700}
+button.pri:hover{filter:brightness(1.08)}
+button.danger{color:var(--red)}
+button:disabled{opacity:.45;cursor:default}
+select{background:var(--bg-d)}
+input[type=text]{width:100%;background:var(--bg-d)}
+.app{display:grid;grid-template-rows:44px 1fr 262px;grid-template-columns:1fr 340px;flex:1;min-height:0}
+.top{grid-column:1/3;display:flex;align-items:center;gap:10px;padding:0 14px;border-bottom:1px solid var(--line);background:var(--bg)}
+.top .name{color:var(--fg-b);font-weight:700}.top .meta{color:var(--fg-d);font-size:11.5px}.sp{flex:1}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--red)}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:3px 8px;border:1px solid rgba(169,177,214,.25);font-size:11px;color:var(--fg)}
+.segctl{display:inline-flex;border:1px solid rgba(169,177,214,.28)}
+.segctl div{padding:5px 9px;font-size:11.5px;cursor:pointer}.segctl div.on{background:rgba(122,162,247,.18);color:var(--fg-b)}
+.stage{position:relative;display:flex;align-items:center;justify-content:center;padding:18px;min-height:0}
+canvas#view{max-width:100%;max-height:100%;box-shadow:0 0 0 1px var(--line);background:#000}
+canvas#view.drawing{cursor:crosshair}
+.side{grid-row:2/4;grid-column:2;background:var(--bg);border-left:1px solid var(--line);padding:14px 16px;overflow-y:auto}
+.h{font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--fg-d);margin:0 0 8px;font-weight:700;display:flex;justify-content:space-between;align-items:center}
+.grp{margin-bottom:16px;padding-bottom:14px;border-bottom:1px solid var(--line)}
+.row{display:flex;align-items:center;gap:10px;margin:7px 0;font-size:12px}
+.row label{width:62px;color:var(--fg)}
+.row input[type=range]{flex:1;accent-color:var(--accent)}
+.row .v{width:46px;text-align:right;color:var(--fg-b)}
+.sw{display:flex;gap:7px;flex-wrap:wrap}
+.sw div{width:42px;height:28px;border:1px solid rgba(169,177,214,.2);cursor:pointer;background-size:cover;background-position:center}
+.sw div.on{outline:2px solid var(--accent);outline-offset:2px}
+.tg{display:flex;align-items:center;justify-content:space-between;margin:6px 0;font-size:12px;cursor:pointer}
+.tg i{width:30px;height:16px;border-radius:9px;background:var(--muted);position:relative;flex:none}
+.tg i::after{content:"";position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:50%;background:var(--fg)}
+.tg.on i{background:var(--accent)}.tg.on i::after{left:16px;background:var(--bg)}
+.tg.dis{opacity:.45;cursor:default}
+.seg3{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}.seg2{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.opt{border:1px solid rgba(169,177,214,.25);padding:7px 4px;text-align:center;font-size:12px;cursor:pointer}
+.opt.on{border-color:var(--accent);background:rgba(122,162,247,.12);color:var(--fg-b)}
+.small{font-size:11px;color:var(--fg-d);line-height:1.5}
+.list div{display:flex;justify-content:space-between;align-items:center;gap:6px;font-size:11.5px;padding:4px 0;border-bottom:1px dashed var(--line)}
+.list .x{color:var(--red);cursor:pointer}
+.prog{height:6px;background:var(--muted);margin:8px 0 6px}.prog i{display:block;height:100%;width:0;background:var(--green);transition:width .2s}
+.tl{grid-column:1;border-top:1px solid var(--line);background:var(--bg);padding:8px 14px;position:relative;user-select:none}
+.ctrl{display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:12px}
+.tc{color:var(--fg-b);min-width:70px}
+#tlwrap{position:relative;height:200px}
+#ruler{position:absolute;left:0;right:0;top:0;height:18px;font-size:10px;color:var(--fg-d);border-bottom:1px solid var(--line)}
+#ruler span{position:absolute;top:2px;transform:translateX(-50%)}
+.lane{position:absolute;left:0;right:0}
+.lane .lbl{position:absolute;left:0;top:-12px;font-size:9.5px;color:var(--fg-d);letter-spacing:.12em}
+#zlane{top:34px;height:36px}#slane{top:88px;height:24px}#plane{top:130px;height:24px}#clane{top:170px;height:28px}
+.it{position:absolute;top:0;bottom:0;border:1px solid var(--accent);background:rgba(122,162,247,.18);color:var(--fg-b);font-size:11px;padding:3px 8px;cursor:grab;overflow:hidden;white-space:nowrap}
+.it .r{color:var(--accent);font-size:10px;margin-left:6px}
+.it.manual{border-style:dashed;border-color:var(--magenta);background:rgba(187,154,247,.16)}
+.it.speed{border-color:var(--orange);background:rgba(255,158,100,.16);font-size:10.5px;padding:2px 6px}
+.it.privacy{border-color:var(--red);background:rgba(247,118,142,.14);font-size:10.5px;padding:2px 6px}
+.it.privacy.secret{background:repeating-linear-gradient(45deg,rgba(247,118,142,.22) 0 6px,rgba(247,118,142,.1) 6px 12px)}
+.it.off{opacity:.4}
+.it.sel{box-shadow:0 0 0 2px rgba(192,202,245,.5);filter:brightness(1.25)}
+.it .hd{position:absolute;top:0;bottom:0;width:8px;cursor:ew-resize}.it .hd.l{left:-1px}.it .hd.r{right:-1px}
+#clip{position:absolute;top:0;height:28px;left:0;right:0;background:repeating-linear-gradient(90deg,#24283b 0 58px,#292e42 58px 60px);border:1px solid rgba(169,177,214,.18)}
+.trim{position:absolute;top:0;height:28px;width:9px;background:var(--yellow);cursor:ew-resize;z-index:2}
+.shade{position:absolute;top:0;height:28px;background:rgba(14,14,20,.65);z-index:1;pointer-events:none}
+.clk{position:absolute;top:4px;width:7px;height:7px;border-radius:50%;background:var(--red);margin-left:-3.5px;pointer-events:none}
+.key{position:absolute;bottom:3px;height:3px;background:var(--yellow);opacity:.75;pointer-events:none}
+.cue{position:absolute;bottom:9px;height:3px;background:var(--cyan);opacity:.75;pointer-events:none}
+#ph{position:absolute;top:16px;bottom:0;width:2px;background:var(--red);margin-left:-1px;pointer-events:none;z-index:3}
+#ph::before{content:"";position:absolute;top:-6px;left:-5px;border:6px solid transparent;border-top:8px solid var(--red)}
+#hover{position:absolute;top:18px;bottom:0;width:1px;background:rgba(192,202,245,.25);pointer-events:none;display:none}
+.kbd{border:1px solid rgba(169,177,214,.3);padding:0 5px;font-size:10.5px}
+#toast{position:fixed;left:50%;bottom:280px;transform:translateX(-50%);background:var(--bg-l);border:1px solid var(--muted);padding:8px 14px;font-size:12px;display:none;z-index:30}
+.empty{color:var(--fg-d);font-size:12px;line-height:1.6}
+/* share sheet */
+#share{position:fixed;inset:0;background:rgba(8,8,12,.62);display:none;z-index:20;align-items:center;justify-content:center}
+#share.open{display:flex}
+.sheet{width:min(1500px,94vw);max-height:92vh;background:var(--bg);border:2px solid var(--accent);display:grid;grid-template-columns:1fr 420px;grid-template-rows:auto 1fr;box-shadow:0 30px 80px rgba(0,0,0,.6)}
+.shd{grid-column:1/3;display:flex;align-items:center;gap:12px;padding:12px 18px;border-bottom:1px solid var(--line)}
+.shd b{color:var(--fg-b);font-size:14px}
+.sl{padding:16px 18px;border-right:1px solid var(--line);overflow:auto}
+.sr{padding:16px 18px;overflow:auto;display:flex;flex-direction:column;gap:12px}
+.pgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:9px}
+.pc{border:1px solid rgba(169,177,214,.22);padding:10px;cursor:pointer;position:relative}
+.pc.on{border-color:var(--accent);background:rgba(122,162,247,.1)}
+.pc .nm{color:var(--fg-b);font-weight:700;font-size:12.5px}
+.pc .spec{font-size:10.5px;color:var(--fg-d);margin:5px 0 7px;line-height:1.45}
+.pc .est{display:flex;justify-content:space-between;font-size:11px}.pc .est b{color:var(--fg-b)}
+.pc .bar{height:4px;background:var(--muted);margin-top:5px}.pc .bar i{display:block;height:100%;background:var(--green)}
+.pc .badge{position:absolute;top:7px;right:7px;font-size:9.5px;padding:1px 5px;border:1px solid var(--muted);color:var(--fg-d)}
+.big{display:flex;align-items:center;justify-content:center;gap:10px;height:42px;font-weight:700;font-size:13px;width:100%}
+.url{background:var(--bg-dd);border:1px solid var(--muted);padding:7px 9px;font-size:11px;color:var(--cyan);word-break:break-all}
+.warn{color:var(--yellow)}.ok{color:var(--green)}
+</style></head>
+<body>
+<div id="nav">
+  <span class="brand"><span class="dot"></span>Dolly</span>
+  <span class="tab" data-v="library">Library</span>
+  <span class="tab" data-v="edit" id="tabEdit">Editor</span>
+  <span class="tab" data-v="settings">Settings</span>
+  <span class="sp"></span><span class="meta" id="navTheme" style="color:var(--fg-d);font-size:11.5px"></span>
+</div>
+<div id="libraryView" class="view">
+  <div class="lbar">
+    <input type="search" id="lq" placeholder="Search by name or date…">
+    <select id="lsort"><option value="new">Newest first</option><option value="old">Oldest first</option><option value="long">Longest</option><option value="big">Largest</option><option value="name">Name</option></select>
+    <span class="chipf" data-f="exported">Exported</span><span class="chipf" data-f="shared">Shared</span><span class="chipf" data-f="captions">Has captions</span><span class="chipf" data-f="vertical">Vertical exports</span><span class="chipf" data-f="recovered">Recovered</span>
+    <span class="sp"></span>
+    <div class="segctl" id="lmode"><div class="on" data-v="grid">Grid</div><div data-v="list">List</div></div>
+  </div>
+  <div class="lbar">
+    <span class="usage" id="lusage"></span><span class="sp"></span>
+    <button id="lselAll">Select all</button><button class="danger" id="ltrash" disabled>Move to trash</button>
+    <button id="lclean" title="Moves the raw capture files of recordings that already have an export to the trash">Clean up raw files…</button>
+  </div>
+  <div class="lgrid" id="lgrid"></div>
+  <div class="empty" id="lempty" style="display:none;margin-top:30px">No recordings match.</div>
+</div>
+<div class="imgpick" id="imgpick"><div class="box">
+  <div style="display:flex;align-items:center;gap:8px"><b style="color:var(--fg-b)">Background image</b><span class="sp" style="flex:1"></span><button id="ipClose">Close</button></div>
+  <div class="small">Pick a picture, choose a file, or paste a path. It is scaled to fill the frame (use Blur to soften it).</div>
+  <div class="prow"><button id="ipFile">Choose a file…</button><input type="file" id="ipInput" accept="image/png,image/jpeg,image/webp" style="display:none">
+    <input type="text" id="ipPath" placeholder="~/Pictures/wallpaper.png"><button id="ipUse">Use path</button></div>
+  <div class="err" id="ipErr"></div>
+  <div id="ipLists"></div>
+</div></div>
+<div id="settingsView" class="view"><div class="sset">
+  <div class="snav" id="snav"></div>
+  <div id="sform"></div>
+  <div class="spreview"><div class="h">Preview</div><canvas id="spv" width="960" height="540"></canvas>
+    <div class="small" id="spvNote" style="margin-top:6px">Live preview of Look and Camera for new recordings, drawn over your latest recording. Existing recordings keep their own look (the theme is pinned per recording).</div></div>
+</div></div>
+<div class="app view">
+  <div class="top">
+    <span class="dot"></span><span class="name" id="pname">…</span><span class="meta" id="pmeta"></span><span class="meta" id="phase" style="color:var(--accent)"></span>
+    <span class="sp"></span>
+    <div class="segctl" id="aspect"><div class="on" data-v="16:9">16:9</div><div data-v="9:16">9:16</div><div data-v="1:1">1:1</div></div>
+    <span class="chip" id="autochip">auto-zoom</span>
+    <button id="undo" title="Undo (Ctrl+Z)">↶</button><button id="redo" title="Redo (Ctrl+Shift+Z)">↷</button>
+    <button id="reauto" title="Regenerate zoom segments from clicks/typing">Reset zooms</button>
+    <button id="exportTop">Export</button>
+    <button class="pri" id="shareTop" title="Share (Ctrl+E)">Share</button>
+  </div>
+
+  <div class="stage"><canvas id="view"></canvas></div>
+
+  <div class="side">
+    <div class="grp" id="segpanel"><div class="h" id="segtitle">Selection</div>
+      <div id="segbody" class="empty">Click an item on the timeline to edit it. <span class="kbd">Z</span> adds a zoom at the playhead, <span class="kbd">Del</span> deletes.</div></div>
+    <div class="grp" id="azGrp"><div class="h">Auto-zoom</div>
+      <div class="tg" id="azOn"><span>Zoom in automatically</span><i></i></div>
+      <div id="azBody">
+      <div class="row"><label>Level</label><input type="range" min="1.25" max="3" step="0.05" id="azLevel"><span class="v" id="azLevelv"></span></div>
+      <div class="small" style="margin:2px 0 4px">Zoom in on</div>
+      <div class="tg" id="azClicks"><span>Clicks</span><i></i></div>
+      <div class="tg" id="azTyping"><span>Typing</span><i></i></div>
+      <div class="tg" id="azWin"><span>Windows and scrolling output</span><i></i></div>
+      <div class="small" style="margin:6px 0 4px">Between nearby actions</div>
+      <div class="seg2" id="azBetween" style="margin-bottom:6px"><div class="opt" data-v="glide" title="Stay zoomed and pan to the next one">Stay and glide</div><div class="opt" data-v="zoom-out" title="Zoom out to the whole screen, then in again">Zoom out</div></div>
+      <div class="row" id="azStayRow"><label>Pauses up to</label><input type="range" min="2" max="12" step="0.5" id="azStay"><span class="v" id="azStayv"></span></div>
+      <div class="small" style="margin:6px 0 4px">Camera motion</div>
+      <div class="seg3" id="azMotion" style="margin-bottom:6px"><div class="opt" data-v="calm">Calm</div><div class="opt" data-v="normal">Normal</div><div class="opt" data-v="quick">Quick</div></div>
+      </div>
+      <div class="small" id="azInfo">Changing these re-plans the automatic zooms of this recording. Zooms you added or edited stay. Defaults for new recordings: Settings › Auto-zoom.</div>
+    </div>
+    <div class="grp"><div class="h">Background</div>
+      <div class="sw" id="bgs"></div>
+      <div class="small" id="themeName" style="margin-top:7px"></div>
+      <div class="row"><button id="useSettingsLook" style="height:24px;font-size:11px" title="Background, frame, cursor and keystroke overlay from Settings > Look">Use my Settings look</button></div>
+      <div class="row" id="blurRow" style="display:none"><label>Blur</label><input type="range" min="0" max="40" step="1" id="bgblur"><span class="v" id="bgblurv"></span></div>
+    </div>
+    <div class="grp"><div class="h">Frame</div>
+      <div class="row"><label>Padding</label><input type="range" min="0" max="0.16" step="0.005" id="padding"><span class="v" id="paddingv"></span></div>
+      <div class="row"><label>Corners</label><input type="range" min="0" max="36" step="1" id="radius"><span class="v" id="radiusv"></span></div>
+      <div class="row"><label>Shadow</label><input type="range" min="0" max="1" step="0.05" id="shadow"><span class="v" id="shadowv"></span></div>
+    </div>
+    <div class="grp"><div class="h">Cursor &amp; effects</div>
+      <div class="note" id="bakedNote" style="display:none">This recording has the real cursor (wf-recorder). Re-drawn cursor effects need gpu-screen-recorder. Size still sets the click ripple; Smooth still steadies how the camera follows the pointer.</div>
+      <div class="row"><label>Size</label><input type="range" min="0.8" max="3" step="0.1" id="csize"><span class="v" id="csizev"></span></div>
+      <div class="row"><label>Smooth</label><input type="range" min="0" max="1" step="0.05" id="csmooth"><span class="v" id="csmoothv"></span></div>
+      <div class="tg" data-k="cursor.enabled"><span>Re-drawn cursor</span><i></i></div>
+      <div class="tg" data-k="cursor.ripple"><span>Click ripple</span><i></i></div>
+      <div class="tg" data-k="cursor.motion_blur"><span>Motion blur</span><i></i></div>
+      <div class="tg" data-k="keys.enabled"><span>Shortcut overlay</span><i></i></div>
+      <div class="tg" data-k="spotlight.enabled"><span>Spotlight while zoomed</span><i></i></div>
+    </div>
+    <div class="grp"><div class="h">Timing</div>
+      <div class="row"><label>Events</label><input type="range" min="-0.5" max="0.5" step="0.01" id="sync"><span class="v" id="syncv"></span></div>
+      <div class="small">Shift cursor/clicks against the video if they look early or late.</div>
+    </div>
+    <div class="grp"><div class="h">Speed <button id="speedDetect" style="height:22px;font-size:11px">Auto-detect idle</button></div>
+      <div class="tg" data-k="speed.enabled"><span>Apply speed-ups</span><i></i></div>
+      <div class="small" id="speedInfo"></div>
+    </div>
+    <div class="grp"><div class="h">Privacy <span><button id="addBlur" style="height:22px;font-size:11px">+ Box</button> <button id="scrub" style="height:22px;font-size:11px">Scrub secrets</button></span></div>
+      <div class="list" id="privList"></div>
+      <div class="small">Boxes blur the recording itself, so they stay put through zooms and crops.</div>
+    </div>
+    <div class="grp" id="audioGrp"><div class="h">Audio</div>
+      <div id="trackRows"></div>
+      <div class="tg" data-k="audio.denoise" id="tgDenoise"><span>Mic noise suppression</span><i></i></div>
+      <div class="tg" data-k="audio.duck" id="tgDuck"><span>Lower system audio while speaking</span><i></i></div>
+      <div class="tg" data-k="audio.normalize"><span>Loudness normalise the mix</span><i></i></div>
+      <div class="small" id="muteInfo"></div>
+      <div class="tg" data-k="captions.enabled" id="tgCap"><span>Burn in captions</span><i></i></div>
+      <div class="row"><button id="transcribe" style="height:24px;font-size:11px">Transcribe locally</button><span class="small" id="capInfo"></span></div>
+    </div>
+    <div class="grp" id="camGrp"><div class="h">Camera</div>
+      <div class="tg" data-k="webcam.enabled" id="tgCam"><span>Camera bubble</span><i></i></div>
+      <div class="seg3" id="camShape" style="margin:6px 0"><div class="opt" data-v="circle">Circle</div><div class="opt" data-v="rounded">Rounded</div><div class="opt" data-v="rect">Rectangle</div></div>
+      <div class="row"><label>Size</label><input type="range" min="0.1" max="0.45" step="0.01" id="camsize"><span class="v" id="camsizev"></span></div>
+      <div class="seg3" id="camSizes" style="grid-template-columns:repeat(3,1fr);margin-bottom:6px"><div class="opt" data-v="0.16">S</div><div class="opt" data-v="0.22">M</div><div class="opt" data-v="0.30">L</div></div>
+      <div class="seg2" id="camCorner" style="grid-template-columns:repeat(4,1fr);margin-bottom:6px"><div class="opt" data-v="top-left">↖</div><div class="opt" data-v="top-right">↗</div><div class="opt" data-v="bottom-left">↙</div><div class="opt" data-v="bottom-right">↘</div></div>
+      <div class="small" style="margin-bottom:6px">Drag the bubble on the preview to place it anywhere.</div>
+      <div class="row"><label>Border</label><input type="range" min="0" max="12" step="1" id="camborder"><span class="v" id="camborderv"></span></div>
+      <div class="tg" data-k="webcam.mirror"><span>Mirror</span><i></i></div>
+      <div class="tg" data-k="webcam.shadow"><span>Shadow</span><i></i></div>
+      <div class="tg" data-k="webcam.auto_move"><span>Move away from the cursor</span><i></i></div>
+      <div class="row"><button id="camFull" style="height:24px;font-size:11px">+ Camera only at playhead</button></div>
+      <div class="list" id="camFullList"></div>
+      <div class="small" id="camInfo"></div>
+    </div>
+    <div class="grp"><div class="h">Title card</div>
+      <div class="tg" data-k="title.enabled"><span>Intro / outro</span><i></i></div>
+      <input type="text" id="tText" placeholder="Intro title" style="margin:4px 0">
+      <input type="text" id="tSub" placeholder="Subtitle (optional)" style="margin:4px 0">
+      <input type="text" id="tOut" placeholder="Outro text (optional)" style="margin:4px 0">
+    </div>
+    <div class="grp"><div class="h">Style presets</div>
+      <div class="row"><select id="stylesel" style="flex:1"><option value="">Load a preset…</option></select><button id="stylesave" style="height:28px">Save</button></div>
+    </div>
+    <div class="grp" style="border:0"><div class="h">Plain export</div>
+      <div class="seg2" id="fmt" style="margin-bottom:6px"><div class="opt on" data-v="mp4">MP4 · H.264</div><div class="opt" data-v="gif">GIF</div></div>
+      <div class="seg3" id="res" style="margin-bottom:6px"><div class="opt" data-v="1280">720p</div><div class="opt on" data-v="1920">1080p</div><div class="opt" data-v="2560">1440p</div></div>
+      <div class="seg2" id="efps" style="margin-bottom:6px"><div class="opt on" data-v="60">60 fps</div><div class="opt" data-v="30">30 fps</div></div>
+      <div class="seg3" id="qual" style="margin-bottom:8px"><div class="opt" data-v="fast">Fast</div><div class="opt on" data-v="high">High</div><div class="opt" data-v="best">Best</div></div>
+      <button id="exportBtn" style="width:100%;justify-content:center">Export current aspect</button>
+      <div class="prog"><i id="progbar"></i></div>
+      <div class="small" id="progtxt">Ready.</div>
+    </div>
+  </div>
+
+  <div class="tl">
+    <div class="ctrl">
+      <button id="play" title="Play/Pause (Space)">▶</button>
+      <span class="tc" id="tc">0:00.00</span><span class="small" id="dur"></span>
+      <span class="sp"></span>
+      <button id="addz">+ Zoom <span class="kbd">Z</span></button>
+      <button id="adds">+ Speed</button>
+      <button id="split" title="Split selected at playhead (S)">Split <span class="kbd">S</span></button>
+      <button id="trimIn">[ In</button><button id="trimOut">Out ]</button>
+    </div>
+    <div id="tlwrap">
+      <div id="ruler"></div>
+      <div class="lane" id="zlane"><span class="lbl">ZOOM</span></div>
+      <div class="lane" id="slane"><span class="lbl">SPEED</span></div>
+      <div class="lane" id="plane"><span class="lbl">PRIVACY</span></div>
+      <div class="lane" id="clane"><span class="lbl">CLIP</span><div id="clip"></div></div>
+      <div id="hover"></div>
+      <div id="ph"></div>
+    </div>
+  </div>
+</div>
+
+<div id="share"><div class="sheet">
+  <div class="shd"><b>Share</b><span class="small" id="shMeta"></span><span class="sp"></span><span class="small">Esc closes</span><button id="shClose">✕</button></div>
+  <div class="sl">
+    <div class="h">Where is it going?</div>
+    <div class="pgrid" id="pgrid"></div>
+    <div class="small" style="margin-top:10px">Sizes are estimates before export; capped presets are encoded two-pass to land just under the limit and verified afterwards. Limits checked Nov 2026.</div>
+  </div>
+  <div class="sr">
+    <button class="pri big" id="shExport">Export</button>
+    <div class="prog" style="margin:0"><i id="shbar"></i></div><div class="small" id="shtxt">Pick a destination.</div>
+    <div id="shDone" style="display:none">
+      <div class="seg3"><button id="shCopy" style="justify-content:center">Copy file</button><button id="shCopyGif" style="justify-content:center">Copy as GIF</button><button id="shCopyPath" style="justify-content:center">Copy path</button></div>
+      <div class="small" style="margin-top:6px">Copied as a file: Ctrl+V into a GitHub comment, Slack, Discord or any upload field.</div>
+    </div>
+    <div style="border:1px solid var(--line);padding:10px">
+      <div class="h">Get a link · your own storage</div>
+      <div class="row" style="margin:0 0 8px"><select id="shTarget" style="flex:1"></select><button id="shUpload">Upload</button></div>
+      <div class="url" id="shUrl" style="display:none"></div>
+      <div class="small" id="shTgtInfo"></div>
+    </div>
+    <div><div class="h">Share history</div><div class="list" id="shHist"></div></div>
+  </div>
+</div></div>
+<div id="toast"></div>
+<video id="vid" muted playsinline preload="auto" style="display:none"></video>
+<video id="camv" muted playsinline preload="auto" style="display:none"></video>
+
+<script>
+"use strict";
+const TOKEN = new URLSearchParams(location.search).get('t');
+const api = (p, body) => fetch(p + (p.includes('?') ? '&' : '?') + 't=' + TOKEN, body ? {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)} : {}).then(r => r.json());
+const $ = s => document.querySelector(s);
+const fmtT = t => { t = Math.max(0, t); const m = Math.floor(t / 60), s = t - m * 60; return m + ':' + (s < 10 ? '0' : '') + s.toFixed(2) };
+// one size rule everywhere (same as dolly/units.py human_size): 412 KB, 4.7 MB, 41 MB, 1.3 GB
+const fmtSize = n => { const b=Math.max(0,+n||0); if(!b) return '0 KB';
+  const kb=Math.round(b/1e3); if(kb<1000) return Math.max(1,kb)+' KB';
+  const mb1=Math.round(b/1e5)/10; if(mb1<10) return mb1.toFixed(1)+' MB';
+  const mb=Math.round(b/1e6); if(mb<1000) return mb+' MB'; return (b/1e9).toFixed(1)+' GB' };
+const fmtMB = fmtSize;
+
+let P=null, S=null, PATH=null, sel=null, hist=[], fut=[], lastSnap='', aspect='16:9';
+const vid=$('#vid'), cv=$('#view'), ctx=cv.getContext('2d');
+let bgCanvas=null, bgPlain=null, wallImgs=[], drawingBox=null, pickingFocus=false;
+
+function toast(msg){ const t=$('#toast'); t.textContent=msg; t.style.display='block'; clearTimeout(toast.h); toast.h=setTimeout(()=>t.style.display='none',2600) }
+function snapshot(){ return JSON.stringify({segments:S.segments, style:S.style, trim:S.trim, speed:S.speed, privacy:S.privacy}) }
+function commit(){ hist.push(lastSnap); if(hist.length>100) hist.shift(); fut=[]; lastSnap=snapshot(); scheduleSave(); scheduleRepath() }
+function undo(){ if(!hist.length) return; fut.push(snapshot()); restore(hist.pop()) }
+function redo(){ if(!fut.length) return; hist.push(snapshot()); restore(fut.pop()) }
+function restore(s){ Object.assign(S, JSON.parse(s)); lastSnap=s; syncControls(); drawTimeline(); scheduleSave(); scheduleRepath() }
+let saveT=null; function scheduleSave(){ clearTimeout(saveT); saveT=setTimeout(async()=>{ const r=await api('/api/save', {segments:S.segments, style:S.style, trim:S.trim, speed:S.speed, privacy:S.privacy}); if(r&&r.error) toast('Not saved: '+r.error) }, 400) }
+let pathT=null; function scheduleRepath(){ clearTimeout(pathT); pathT=setTimeout(repath, 250) }
+async function repath(){ PATH = await api('/api/path', {fps:30, segments:S.segments, style:S.style, aspect}); buildBg(); render() }
+
+// ------------------------------------------------------------ preview
+function themeGradient(preset){ return P.theme.gradients[preset]||P.theme.gradients['theme-glow'] }
+function rr(c,x,y,w,h,r){ c.beginPath(); c.moveTo(x+r,y); c.arcTo(x+w,y,x+w,y+h,r); c.arcTo(x+w,y+h,x,y+h,r); c.arcTo(x,y+h,x,y,r); c.arcTo(x,y,x+w,y,r); c.closePath() }
+// background pictures by path (theme backgrounds, ~/Pictures, uploads), loaded through the
+// server's checked /media/image endpoint; redraws when one arrives
+const imgCache={};
+const imgUrl=p=>`/media/image?path=${encodeURIComponent(p)}&t=${TOKEN}`;
+function bgImg(path){ if(!path) return null; let im=imgCache[path];
+  if(!im){ im=new Image(); imgCache[path]=im; im.onload=()=>{ if(P&&PATH){ buildBg(); render() } if(VIEW==='settings') drawSettingsPreview() }; im.src=imgUrl(path) }
+  return im.complete&&im.naturalWidth?im:null }
+function buildBg(){
+  if(!PATH) return; const G=PATH.geom; cv.width=G.OW; cv.height=G.OH;
+  bgCanvas=document.createElement('canvas'); bgCanvas.width=G.OW; bgCanvas.height=G.OH;
+  const b=bgCanvas.getContext('2d'), bg=S.style.background||{};
+  const wim=bg.type==='wallpaper'?(bgImg(bg.path)||wallImgs[bg.index]):null;
+  if(wim){ const im=wim, s=Math.max(G.OW/im.naturalWidth,G.OH/im.naturalHeight);
+    b.filter=bg.blur?`blur(${bg.blur*G.OW/1920}px)`:'none'; b.drawImage(im,(G.OW-im.naturalWidth*s)/2,(G.OH-im.naturalHeight*s)/2,im.naturalWidth*s,im.naturalHeight*s); b.filter='none' }
+  else { const g=bg.stops?{stops:bg.stops,angle:bg.angle||135}:themeGradient(bg.preset); const a=g.angle*Math.PI/180, dx=Math.sin(a), dy=-Math.cos(a), half=Math.abs(G.OW/2*dx)+Math.abs(G.OH/2*dy);
+    const lg=b.createLinearGradient(G.OW/2-dx*half,G.OH/2-dy*half,G.OW/2+dx*half,G.OH/2+dy*half); g.stops.forEach((c,i)=>lg.addColorStop(i/(g.stops.length-1),c)); b.fillStyle=lg; b.fillRect(0,0,G.OW,G.OH) }
+  bgPlain=document.createElement('canvas'); bgPlain.width=G.OW; bgPlain.height=G.OH; bgPlain.getContext('2d').drawImage(bgCanvas,0,0);
+  const sh=S.style.shadow??0.55; if(sh>0){ b.save(); b.shadowColor=`rgba(8,8,14,${0.75*sh})`; b.shadowBlur=0.035*G.OW; b.shadowOffsetY=0.012*G.OH; b.fillStyle='#000';
+    if(PATH.aspect){ const [x0,y0,x1,y1]=G.card; rr(b,x0,y0,x1-x0,y1-y0,G.card_r) } else { const k=G.OW/G.CW; rr(b,G.px*k,G.py*k,G.W*k,G.H*k,G.radius_v*k) } b.fill(); b.restore() }
+}
+function sample(arr,i){ const i0=Math.max(0,Math.min(arr.length-1,Math.floor(i))), i1=Math.min(arr.length-1,i0+1), u=i-Math.floor(i); return arr[i0]+(arr[i1]-arr[i0])*u }
+function camAt(t){ // -> {k, vx0, vy0, z, clip:[x,y,w,h,r]}
+  const G=PATH.geom, fi=t*PATH.fps;
+  if(PATH.aspect){ const cw=sample(PATH.cw,fi), ch=sample(PATH.ch,fi), cx=sample(PATH.cx,fi), cy=sample(PATH.cy,fi), [x0,y0,x1,y1]=G.card, k=(x1-x0)/cw;
+    return {k, vx0:cx-cw/2-x0/k, vy0:cy-ch/2-y0/k, z:1, clip:[x0,y0,x1-x0,y1-y0,G.card_r], cur:[sample(PATH.cur_x,fi),sample(PATH.cur_y,fi)]} }
+  const z=sample(PATH.z,fi), cx=sample(PATH.cx,fi), cy=sample(PATH.cy,fi), k=G.OW*z/G.CW, vx0=cx-G.CW/(2*z), vy0=cy-G.CH/(2*z);
+  return {k, vx0, vy0, z, clip:[-vx0*k,-vy0*k,G.W*k,G.H*k,G.radius_v*k], cur:[sample(PATH.cur_x,fi),sample(PATH.cur_y,fi)]} }
+function speedAt(t){ if(!S.style.speed.enabled) return 1; for(const s of S.speed) if(s.start<=t&&t<s.end) return s.speed; return 1 }
+function render(){
+  if(!PATH||!bgCanvas) return; const G=PATH.geom, t=vid.currentTime, c=camAt(t), k=c.k;
+  ctx.setTransform(1,0,0,1,0,0);
+  if(PATH.aspect) ctx.drawImage(bgCanvas,0,0);
+  else { ctx.save(); const g=PATH.geom; ctx.translate((-g.px-c.vx0)*k,(-g.py-c.vy0)*k); ctx.scale(c.z,c.z); ctx.drawImage(bgCanvas,0,0); ctx.restore() }
+  const [X,Y,Wd,Hd,r]=c.clip;
+  ctx.save(); rr(ctx,X,Y,Wd,Hd,r); ctx.clip(); ctx.imageSmoothingQuality='high';
+  const vX=-c.vx0*k, vY=-c.vy0*k, vW=G.W*k, vH=G.H*k;
+  if(PATH.aspect && (vX>X+0.5||vY>Y+0.5||vX+vW<X+Wd-0.5||vY+vH<Y+Hd-0.5)){
+    // letterboxed crop (the subject is wider than a vertical strip): dimmed background around a rounded screen, as in the export
+    ctx.drawImage(bgPlain||bgCanvas,0,0); ctx.fillStyle='rgba(0,0,0,.45)'; ctx.fillRect(X,Y,Wd,Hd);
+    ctx.save(); rr(ctx,vX,vY,vW,vH,(S.style.radius||14)*0.6*k*2); ctx.clip();
+    if(vid.readyState>=2) ctx.drawImage(vid,vX,vY,vW,vH); ctx.restore() }
+  else if(vid.readyState>=2) ctx.drawImage(vid,vX,vY,vW,vH); else { ctx.fillStyle='#1a1b26'; ctx.fillRect(X,Y,Wd,Hd) }
+  // privacy boxes (blurred live)
+  for(const b of S.privacy){ if(b.enabled===false||t<b.start||t>b.end) continue; const [bx,by,bw,bh]=b.rect;
+    ctx.save(); ctx.beginPath(); ctx.rect(vX+bx*k,vY+by*k,bw*k,bh*k); ctx.clip(); ctx.filter=`blur(${Math.max(6,bh*k/3)}px)`; if(vid.readyState>=2) ctx.drawImage(vid,vX,vY,vW,vH); ctx.restore();
+    if(b.id===sel){ ctx.strokeStyle='#f7768e'; ctx.setLineDash([6,4]); ctx.lineWidth=2; ctx.strokeRect(vX+bx*k,vY+by*k,bw*k,bh*k); ctx.setLineDash([]) } }
+  // ripples + cursor
+  const unit=G.cursor_base*S.style.cursor.size*k;
+  if(S.style.cursor.ripple) for(const cl of P.clicks){ const dt=t-cl.t; if(dt>=0&&dt<0.55){ const u=dt/0.55, e=1-Math.pow(1-u,3);
+    ctx.beginPath(); ctx.arc((cl.x-c.vx0)*k,(cl.y-c.vy0)*k,unit*(0.25+1.05*e),0,7); ctx.fillStyle=`rgba(255,255,255,${0.12*Math.pow(1-u,1.6)})`; ctx.fill();
+    ctx.lineWidth=Math.max(1,unit*0.09); ctx.strokeStyle=`rgba(255,255,255,${0.55*Math.pow(1-u,1.6)})`; ctx.stroke() } }
+  if(S.style.cursor.enabled&&!(P.capture||{}).cursor_baked){ const fi=Math.round(t*PATH.fps), ca=PATH.cur_a?(PATH.cur_a[Math.min(Math.max(fi,0),PATH.cur_a.length-1)]??1):1;
+    let shp='arrow'; if(PATH.cur_shape){ const st=Math.max(1,Math.round(PATH.fps/10)); shp=PATH.cur_shape[Math.floor(fi/st)*st]||'arrow' }
+    if(ca>0.01){ ctx.globalAlpha=ca; drawCursor((c.cur[0]-c.vx0)*k,(c.cur[1]-c.vy0)*k,unit,shp); ctx.globalAlpha=1 } }
+  ctx.restore();
+  drawCam(t);
+  if(S.style.keys.enabled) drawKeys(t);
+  if(S.style.captions.enabled) drawCaption(t);
+  const sp=speedAt(t); if(sp>1) drawBadge(sp);
+  if(drawingBox&&drawingBox.x1!==undefined){ ctx.strokeStyle='#f7768e'; ctx.lineWidth=2; ctx.setLineDash([6,4]); ctx.strokeRect(drawingBox.x0,drawingBox.y0,drawingBox.x1-drawingBox.x0,drawingBox.y1-drawingBox.y0); ctx.setLineDash([]) }
+  if(t<S.trim[0]-1e-3||t>S.trim[1]+1e-3){ ctx.fillStyle='rgba(14,14,20,.55)'; ctx.fillRect(0,0,G.OW,G.OH) }
+}
+const ARROW=[[2,1.5],[2,21],[7,16.5],[10.4,24.6],[13.6,23.2],[10.2,15.4],[17,15.2]], INS=[[3.3,4.6],[3.3,18.1],[7.4,14.4],[10.9,22.7],[12.3,22.1],[8.7,14.1],[14.2,14.1]];
+function poly(p,s){ ctx.beginPath(); p.forEach(([a,b],i)=>i?ctx.lineTo(a*s,b*s):ctx.moveTo(a*s,b*s)); ctx.closePath() }
+function drawCursor(x,y,h,shape){ const s=h/27;
+  if(shape==='ibeam'||shape==='grab'){ ctx.save(); ctx.translate(x,y); ctx.lineCap='square'; ctx.strokeStyle='#fff'; ctx.lineWidth=4.4*s;
+    const seg=shape==='ibeam'?[[0,-10,0,10],[-4,-10,4,-10],[-4,10,4,10]]:[[-9,0,9,0],[0,-9,0,9]];
+    for(const pass of [0,1]){ ctx.beginPath(); for(const [a,b,c2,d] of seg){ ctx.moveTo(a*s,b*s); ctx.lineTo(c2*s,d*s) } ctx.stroke(); ctx.strokeStyle='#121216'; ctx.lineWidth=2.2*s }
+    ctx.restore(); return }
+  ctx.save(); ctx.translate(x-2*s,y-1.5*s); ctx.shadowColor='rgba(0,0,0,.35)'; ctx.shadowBlur=2.2*s; ctx.shadowOffsetX=.9*s; ctx.shadowOffsetY=1.6*s;
+  poly(ARROW,s); ctx.fillStyle='#fff'; ctx.fill(); ctx.shadowColor='transparent'; ctx.lineJoin='round'; ctx.lineWidth=1.5*s; ctx.strokeStyle='#fff'; ctx.stroke(); poly(INS,s); ctx.fillStyle='#121216'; ctx.fill(); ctx.restore() }
+const KL={ctrl:'Ctrl',alt:'Alt',shift:'Shift',super:'Super',Return:'Enter',Escape:'Esc',Tab:'Tab'}; let keyEvents=[];
+function buildKeyEvents(){ keyEvents=[]; for(const k of P.keys){ const mods=['super','ctrl','alt','shift'].filter(m=>k.mods.includes(m)); if(!mods.filter(m=>m!=='shift').length&&!['Return','Escape','Tab'].includes(k.key)) continue;
+  const caps=mods.map(m=>KL[m]).concat([KL[k.key]||(k.key.length===1?k.key.toUpperCase():k.key)]); const l=keyEvents[keyEvents.length-1]; if(l&&l.caps.join()==caps.join()&&k.t-l.tl<0.9){l.n++;l.tl=k.t;continue} keyEvents.push({t:k.t,tl:k.t,caps,n:1}) } }
+function pill(text,x,y,fs,align,bg){ ctx.font=`700 ${fs}px JBM`; const w=ctx.measureText(text).width+fs*1.2, h=fs*1.75; const X=align==='center'?x-w/2:x-w; ctx.fillStyle=bg||'rgba(14,14,20,.82)'; rr(ctx,X,y,w,h,h/2.6); ctx.fill(); ctx.fillStyle='#f3f4fb'; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(text,X+w/2,y+h/2+1) }
+function drawKeys(t){ const G=PATH.geom, sc=Math.min(G.OW,G.OH)/1080; for(const e of keyEvents){ if(t<e.t-0.05||t>e.tl+1.1) continue; pill(e.caps.join(' + ')+(e.n>1?'  ×'+e.n:''),G.OW/2,(S.style.keys.position==='top'?0.07*G.OH:G.OH-0.17*G.OH),26*sc,'center'); break } }
+function drawCaption(t){ const G=PATH.geom, sc=Math.min(G.OW,G.OH)/1080; for(const c of P.caption_cues||[]){ if(t>=c.start&&t<=c.end){ ctx.font=`400 ${28*sc}px JBM`; pill(c.text,G.OW/2,G.OH-0.1*G.OH,28*sc,'center'); break } } }
+function drawBadge(sp){ const G=PATH.geom, sc=Math.min(G.OW,G.OH)/1080, m=0.035*Math.min(G.OW,G.OH); const top=PATH.aspect?G.card[1]+m:m, right=PATH.aspect?G.card[2]-m:G.OW-m; pill('⏩ '+sp+'×',right,top,24*sc,'right') }
+
+// ------------------------------------------------------------ timeline
+const wrap=$('#tlwrap');
+const X=t=>t/P.video.duration*wrap.clientWidth, T=x=>Math.max(0,Math.min(P.video.duration,x/wrap.clientWidth*P.video.duration));
+const LANES={zoom:{el:'#zlane',arr:()=>S.segments,cls:s=>'it'+(s.source==='manual'?' manual':''),label:s=>`${s.zoom.toFixed(1)}×<span class="r">${s.source==='manual'?'manual':(s.reason||'auto')}</span>`},
+  speed:{el:'#slane',arr:()=>S.speed,cls:s=>'it speed'+(S.style.speed.enabled?'':' off'),label:s=>`⏩ ${s.speed}× <span class="r" style="color:var(--orange)">${s.reason||''}</span>`},
+  privacy:{el:'#plane',arr:()=>S.privacy,cls:s=>'it privacy'+(s.source==='secret'?' secret':'')+(s.enabled===false?' off':''),label:s=>(s.source==='secret'?'⚠ ':'▦ ')+(s.label||s.mode)}};
+function laneOf(id){ for(const [n,L] of Object.entries(LANES)){ const it=L.arr().find(s=>s.id===id); if(it) return [n,it] } return [null,null] }
+function drawRuler(){ const r=$('#ruler'); r.innerHTML=''; const d=P.video.duration, step=d>120?15:d>60?10:d>20?5:d>8?2:1; for(let t=0;t<=d+1e-6;t+=step){ const s=document.createElement('span'); s.style.left=X(t)+'px'; s.textContent=fmtT(t).replace(/\.\d+$/,''); r.appendChild(s) } }
+function drawTimeline(){
+  for(const [name,L] of Object.entries(LANES)){ const lane=$(L.el); lane.querySelectorAll('.it').forEach(e=>e.remove()); L.arr().sort((a,b)=>a.start-b.start);
+    // overlapping items (privacy boxes may overlap) stack into sub-rows
+    const rows=[], rowOf={}; for(const s of L.arr()){ let r=rows.findIndex(end=>end<=s.start+1e-6); if(r<0){ r=rows.length; rows.push(0) } rows[r]=s.end; rowOf[s.id]=r }
+    const nr=Math.max(1,rows.length);
+    for(const s of L.arr()){ const d=document.createElement('div'); d.className=L.cls(s)+(s.id===sel?' sel':''); d.style.left=X(s.start)+'px'; d.style.width=Math.max(6,X(s.end)-X(s.start))+'px'; d.dataset.id=s.id; d.dataset.lane=name;
+      if(nr>1){ d.style.top=(rowOf[s.id]*100/nr)+'%'; d.style.bottom='auto'; d.style.height=(100/nr)+'%'; d.style.fontSize='9.5px'; d.style.padding='0 5px'; d.style.lineHeight=(24/nr-2)+'px' }
+      d.innerHTML=L.label(s)+'<div class="hd l"></div><div class="hd r"></div>'; lane.appendChild(d) } }
+  const cl=$('#clane'); cl.querySelectorAll('.clk,.key,.cue,.trim,.shade').forEach(e=>e.remove());
+  for(const c of P.clicks){ const e=document.createElement('div'); e.className='clk'; e.style.left=X(c.t)+'px'; cl.appendChild(e) }
+  let burst=null; const bursts=[]; for(const k of P.keys){ if(burst&&k.t-burst[1]<0.8) burst[1]=k.t; else { burst=[k.t,k.t]; bursts.push(burst) } }
+  for(const b of bursts){ const e=document.createElement('div'); e.className='key'; e.style.left=X(b[0])+'px'; e.style.width=Math.max(3,X(b[1])-X(b[0]))+'px'; cl.appendChild(e) }
+  for(const c of P.caption_cues||[]){ const e=document.createElement('div'); e.className='cue'; e.style.left=X(c.start)+'px'; e.style.width=Math.max(3,X(c.end)-X(c.start))+'px'; cl.appendChild(e) }
+  const sh1=document.createElement('div'); sh1.className='shade'; sh1.style.left='0'; sh1.style.width=X(S.trim[0])+'px'; cl.appendChild(sh1);
+  const sh2=document.createElement('div'); sh2.className='shade'; sh2.style.left=X(S.trim[1])+'px'; sh2.style.width=(wrap.clientWidth-X(S.trim[1]))+'px'; cl.appendChild(sh2);
+  for(const [i,side] of [[0,'in'],[1,'out']]){ const e=document.createElement('div'); e.className='trim'; e.dataset.side=side; e.style.left=(X(S.trim[i])-(i?0:9))+'px'; cl.appendChild(e) }
+  $('#autochip').textContent=`${S.segments.length} zooms · ${S.speed.length} speed-ups · ${S.privacy.length} blurs`;
+  const saved=S.speed.reduce((a,s)=>a+(s.end-s.start)*(1-1/s.speed),0); $('#speedInfo').textContent=S.speed.length?`${S.speed.length} stretches, saves ${saved.toFixed(1)} s of ${P.video.duration.toFixed(1)} s`:'No speed-ups yet.';
+  $('#privList').innerHTML=S.privacy.map(b=>`<div><span>${b.source==='secret'?'⚠':'▦'} ${fmtT(b.start)}–${fmtT(b.end)} · ${b.label||b.mode}</span><span><span class="x" data-tog="${b.id}">${b.enabled===false?'enable':'disable'}</span> · <span class="x" data-del="${b.id}">delete</span></span></div>`).join('')||'<div class="small">None.</div>';
+  drawSelPanel(); updatePH() }
+function updatePH(){ $('#ph').style.left=X(vid.currentTime)+'px'; $('#tc').textContent=fmtT(vid.currentTime) }
+function newId(p){ let i=1; const all=[...S.segments,...S.speed,...S.privacy]; while(all.find(s=>s.id===p+i)) i++; return p+i }
+function drawSelPanel(){
+  const [lane,s]=laneOf(sel), body=$('#segbody');
+  if(!s){ $('#segtitle').textContent='Selection'; body.className='empty'; body.innerHTML='Click an item on the timeline to edit it. <span class="kbd">Z</span> adds a zoom at the playhead, <span class="kbd">Del</span> deletes.'; return }
+  body.className=''; $('#segtitle').textContent=`${lane} ${s.id} · ${fmtT(s.start)} – ${fmtT(s.end)}`;
+  if(lane==='zoom'){ body.innerHTML=`<div class="row"><label>Scale</label><input type="range" min="1.1" max="3.5" step="0.05" value="${s.zoom}" id="szoom"><span class="v">${s.zoom.toFixed(2)}×</span></div>
+    <div class="tg ${s.follow?'on':''}" id="sfollow"><span>Follow cursor</span><i></i></div><div class="small" style="margin:4px 0 8px">${s.focus?'Fixed focus point set.':'Focus: centre of the clicks/typing inside the segment.'}</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap"><button id="sfocus">Set focus: click preview</button>${s.focus?'<button id="sunfocus">Auto focus</button>':''}<button class="danger" id="sdel">Delete</button></div>`;
+    $('#szoom').oninput=e=>{ s.zoom=+e.target.value; e.target.nextElementSibling.textContent=s.zoom.toFixed(2)+'×'; s.source='manual'; scheduleRepath() }; $('#szoom').onchange=()=>{commit();drawTimeline()};
+    $('#sfollow').onclick=()=>{ s.follow=!s.follow; s.source='manual'; commit(); drawTimeline() }; $('#sfocus').onclick=()=>{ pickingFocus=true; toast('Click on the preview to set the focus point') };
+    const uf=$('#sunfocus'); if(uf) uf.onclick=()=>{ s.focus=null; commit(); drawTimeline() } }
+  else if(lane==='speed'){ body.innerHTML=`<div class="seg3" id="spdopts">${[1.5,2,4,8].map(v=>`<div class="opt ${s.speed==v?'on':''}" data-v="${v}">${v}×</div>`).join('')}</div><div style="margin-top:8px"><button class="danger" id="sdel">Delete</button></div>`;
+    $('#spdopts').style.gridTemplateColumns='repeat(4,1fr)'; $('#spdopts').querySelectorAll('.opt').forEach(o=>o.onclick=()=>{ s.speed=+o.dataset.v; s.source='manual'; commit(); drawTimeline() }) }
+  else { body.innerHTML=`<div class="seg2" id="pmode"><div class="opt ${s.mode!=='pixelate'?'on':''}" data-v="blur">Blur</div><div class="opt ${s.mode==='pixelate'?'on':''}" data-v="pixelate">Pixelate</div></div>
+    <div class="small" style="margin:6px 0">${s.source==='secret'?'Flagged by OCR: '+(s.label||''):'Drawn by you.'} Drag on the preview to redraw.</div><div style="display:flex;gap:6px"><button id="predraw">Redraw box</button><button class="danger" id="sdel">Delete</button></div>`;
+    $('#pmode').querySelectorAll('.opt').forEach(o=>o.onclick=()=>{ s.mode=o.dataset.v; commit(); drawTimeline() }); $('#predraw').onclick=()=>startDraw(s) }
+  $('#sdel').onclick=delSel }
+function delSel(){ for(const L of Object.values(LANES)){ const a=L.arr(), i=a.findIndex(s=>s.id===sel); if(i>=0){ a.splice(i,1); sel=null; commit(); drawTimeline(); render(); return } } }
+function addZoom(){ const t=vid.currentTime, d=P.video.duration; let st=Math.max(0,t-0.3), en=Math.min(d,t+2.5);
+  for(const s of S.segments){ if(s.start<=st&&st<s.end) st=s.end; if(st<s.start&&en>s.start) en=s.start } if(en-st<0.4){ toast('No room for a zoom here'); return }
+  const s={id:newId('m'),start:st,end:en,zoom:1.8,focus:null,follow:true,source:'manual',reason:''}; S.segments.push(s); sel=s.id; commit(); drawTimeline() }
+function addSpeed(){ const t=vid.currentTime; const s={id:newId('s'),start:t,end:Math.min(P.video.duration,t+2),speed:2,source:'manual',reason:''}; S.speed.push(s); sel=s.id; commit(); drawTimeline() }
+function splitSel(){ const [lane,s]=laneOf(sel), t=vid.currentTime; if(!s||t<=s.start+0.3||t>=s.end-0.3){ toast('Select an item and put the playhead inside it'); return }
+  const b={...s,id:newId(lane==='zoom'?'m':lane==='speed'?'s':'b'),start:t,source:s.source==='secret'?'secret':'manual'}; s.end=t; LANES[lane].arr().push(b); commit(); drawTimeline() }
+
+let drag=null;
+wrap.addEventListener('pointerdown',e=>{ const r=wrap.getBoundingClientRect(), x=e.clientX-r.left; const it=e.target.closest('.it'), tr=e.target.closest('.trim');
+  if(tr) drag={kind:'trim',side:tr.dataset.side,snap:snapshot()};
+  else if(it){ sel=it.dataset.id; const [lane,s]=laneOf(sel); const mode=e.target.classList.contains('l')?'l':e.target.classList.contains('r')?'r':'move'; drag={kind:'it',lane,mode,s,x0:x,st:s.start,en:s.end,snap:snapshot(),moved:false}; drawTimeline() }
+  else { if(sel){ sel=null; drawTimeline() } drag={kind:'scrub'}; seek(T(x)) }
+  wrap.setPointerCapture(e.pointerId) });
+wrap.addEventListener('pointermove',e=>{ const r=wrap.getBoundingClientRect(), x=e.clientX-r.left, h=$('#hover'); h.style.display='block'; h.style.left=x+'px'; if(!drag) return;
+  if(drag.kind==='scrub'){ seek(T(x)); return }
+  if(drag.kind==='trim'){ const t=T(x); if(drag.side==='in') S.trim[0]=Math.min(t,S.trim[1]-0.5); else S.trim[1]=Math.max(t,S.trim[0]+0.5); drawTimeline(); seek(drag.side==='in'?S.trim[0]:S.trim[1]); return }
+  const s=drag.s, dt=T(x)-T(drag.x0); drag.moved=true; const others=LANES[drag.lane].arr().filter(o=>o!==s);
+  const noOverlap=drag.lane!=='privacy', lo=noOverlap?Math.max(0,...others.filter(o=>o.end<=drag.st+1e-6).map(o=>o.end)):0, hi=noOverlap?Math.min(P.video.duration,...others.filter(o=>o.start>=drag.en-1e-6).map(o=>o.start)):P.video.duration;
+  if(drag.mode==='move'){ const len=drag.en-drag.st; s.start=Math.min(Math.max(drag.st+dt,lo),hi-len); s.end=s.start+len }
+  else if(drag.mode==='l') s.start=Math.min(Math.max(drag.st+dt,lo),s.end-0.3); else s.end=Math.max(Math.min(drag.en+dt,hi),s.start+0.3);
+  if(drag.lane!=='privacy'&&s.source!=='secret') s.source='manual';
+  for(const d of document.querySelectorAll('.it')) if(d.dataset.id===s.id){ d.style.left=X(s.start)+'px'; d.style.width=Math.max(6,X(s.end)-X(s.start))+'px' } });
+wrap.addEventListener('pointerleave',()=>$('#hover').style.display='none');
+wrap.addEventListener('pointerup',()=>{ if(drag&&(drag.kind==='trim'||(drag.kind==='it'&&drag.moved))){ hist.push(drag.snap); fut=[]; lastSnap=snapshot(); scheduleSave(); scheduleRepath(); drawTimeline() } drag=null });
+
+// privacy box drawing on the preview
+function canvasXY(e){ const r=cv.getBoundingClientRect(); return [(e.clientX-r.left)/r.width*cv.width,(e.clientY-r.top)/r.height*cv.height] }
+function toVideo(ox,oy){ const c=camAt(vid.currentTime); return [ox/c.k+c.vx0, oy/c.k+c.vy0] }
+function startDraw(existing){ drawingBox={existing}; cv.classList.add('drawing'); toast('Drag a box over what to hide') }
+cv.addEventListener('pointerdown',e=>{ if(!drawingBox) return; const [x,y]=canvasXY(e); drawingBox.x0=x; drawingBox.y0=y; drawingBox.x1=x; drawingBox.y1=y; cv.setPointerCapture(e.pointerId) });
+cv.addEventListener('pointermove',e=>{ if(!drawingBox||drawingBox.x0===undefined) return; [drawingBox.x1,drawingBox.y1]=canvasXY(e); render() });
+cv.addEventListener('pointerup',e=>{ if(!drawingBox||drawingBox.x0===undefined) return; const d=drawingBox; drawingBox=null; cv.classList.remove('drawing');
+  const [ax,ay]=toVideo(Math.min(d.x0,d.x1),Math.min(d.y0,d.y1)), [bx,by]=toVideo(Math.max(d.x0,d.x1),Math.max(d.y0,d.y1)); if(bx-ax<6||by-ay<6){ render(); return }
+  const rect=[Math.round(ax),Math.round(ay),Math.round(bx-ax),Math.round(by-ay)];
+  if(d.existing){ d.existing.rect=rect } else { const t=vid.currentTime; const b={id:newId('b'),start:Math.max(0,t-0.5),end:Math.min(P.video.duration,t+4),rect,mode:'blur',source:'manual',label:'box',enabled:true}; S.privacy.push(b); sel=b.id }
+  commit(); drawTimeline(); render() });
+cv.addEventListener('click',e=>{ if(!pickingFocus) return; pickingFocus=false; const [lane,s]=laneOf(sel); if(lane!=='zoom'||!PATH||PATH.aspect) return; const [ox,oy]=canvasXY(e);
+  s.focus=toVideo(ox,oy); s.follow=false; s.source='manual'; commit(); drawTimeline(); toast('Focus point set') });
+
+// ------------------------------------------------------------ playback (speed segments play faster in preview)
+function seek(t){ vid.currentTime=Math.max(0,Math.min(P.video.duration-0.01,t)); updatePH(); render() }
+function loop(){ if(!vid.paused){ if(vid.currentTime>=S.trim[1]){ vid.pause(); $('#play').textContent='▶' } const sp=speedAt(vid.currentTime); if(vid.playbackRate!==sp) vid.playbackRate=sp; updatePH(); render() } requestAnimationFrame(loop) }
+vid.addEventListener('seeked',render); vid.addEventListener('loadeddata',render);
+$('#play').onclick=()=>{ if(vid.paused){ if(vid.currentTime>=S.trim[1]-0.05||vid.currentTime<S.trim[0]) vid.currentTime=S.trim[0]; vid.play(); $('#play').textContent='❚❚' } else { vid.pause(); $('#play').textContent='▶' } };
+
+// ------------------------------------------------------------ controls
+function bindRange(id,get,set,fmt){ const el=$('#'+id), v=$('#'+id+'v'); el.oninput=()=>{ set(+el.value); v.textContent=fmt(+el.value); buildBg(); render(); scheduleRepath() }; el.onchange=()=>commit(); el._sync=()=>{ el.value=get(); v.textContent=fmt(get()) }; el._sync() }
+function getK(k){ const [a,b]=k.split('.'); return (S.style[a]||{})[b] } function setK(k,v){ const [a,b]=k.split('.'); S.style[a]=S.style[a]||{}; S.style[a][b]=v }
+const BAKED_OFF=['cursor.enabled','cursor.motion_blur'];
+function syncControls(){ document.querySelectorAll('input[type=range]').forEach(e=>e._sync&&e._sync()); document.querySelectorAll('.tg[data-k]').forEach(e=>e.classList.toggle('on',!!getK(e.dataset.k)));
+  if(P&&(P.capture||{}).cursor_baked) BAKED_OFF.forEach(k=>{ const e=document.querySelector(`.tg[data-k="${k}"]`); e&&e.classList.remove('on') });   // shown off: they have no effect
+  document.querySelectorAll('#camShape .opt').forEach(o=>o.classList.toggle('on',o.dataset.v===(S.style.webcam.shape||'circle')));
+  $('#tText').value=S.style.title.text||''; $('#tSub').value=S.style.title.subtitle||''; $('#tOut').value=S.style.title.outro_text||''; drawBgs() }
+function drawBgs(){ const box=$('#bgs'); box.innerHTML=''; const bg=S.style.background||{};
+  for(const [key,g] of Object.entries(P.theme.gradients)){ const d=document.createElement('div'); d.title=g.label; d.style.background=`linear-gradient(${g.angle}deg,${g.stops.join(',')})`; if((bg.type||'gradient')==='gradient'&&(bg.preset||'theme-glow')===key) d.className='on'; d.onclick=()=>{ S.style.background={type:'gradient',preset:key}; commit(); drawBgs(); buildBg(); render() }; box.appendChild(d) }
+  const setImg=p=>{ S.style.background={type:'wallpaper',path:p,blur:(S.style.background||{}).blur||0}; commit(); drawBgs(); buildBg(); render() };
+  P.theme.wallpapers.forEach((w,i)=>{ const d=document.createElement('div'); d.title=w.split('/').pop(); d.style.backgroundImage=`url(/media/wallpaper/${i}?t=${TOKEN})`; if(bg.type==='wallpaper'&&(bg.path===w||(bg.path==null&&bg.index===i))) d.className='on'; d.onclick=()=>setImg(w); box.appendChild(d) });
+  if(bg.type==='wallpaper'&&bg.path&&!P.theme.wallpapers.includes(bg.path)){      // your own picture
+    const d=document.createElement('div'); d.className='on'; d.title=bg.path; d.style.backgroundImage=`url(${imgUrl(bg.path)})`; box.appendChild(d) }
+  const add=document.createElement('div'); add.className='add'; add.textContent='+'; add.title='Add image… (your own picture)';
+  add.onclick=()=>openImagePicker(p=>setImg(p)); box.appendChild(add);
+  $('#blurRow').style.display=bg.type==='wallpaper'?'flex':'none' }
+
+// ------------------------------------------------------------ image picker (editor Background + Settings › Look)
+let ipDone=null;
+async function openImagePicker(done){ ipDone=done; $('#ipErr').textContent=''; $('#ipPath').value=''; $('#imgpick').classList.add('on');
+  const L=await api('/api/images'); const sec=(title,items)=>items.length?`<h3>${title}</h3><div class="ig">`+items.map(it=>`<div data-p="${esc(it.path)}" title="${esc(it.path)}" style="background-image:url('${imgUrl(it.path)}')"><span>${esc(it.name)}</span></div>`).join('')+'</div>':'';
+  $('#ipLists').innerHTML=sec('Theme backgrounds',L.theme||[])+sec('Uploaded before',L.uploaded||[])+sec('Pictures ('+esc(L.pictures_dir||'~/Pictures')+')',L.pictures||[])
+    +((L.pictures||[]).length?'':`<div class="small" style="margin-top:10px">No pictures in ${esc(L.pictures_dir||'~/Pictures')}. Choose a file or paste a path.</div>`);
+  $('#ipLists').querySelectorAll('.ig div').forEach(d=>d.onclick=()=>pickImage(d.dataset.p)) }
+function closeImagePicker(){ $('#imgpick').classList.remove('on'); ipDone=null }
+async function pickImage(path){ const r=await api('/api/images/check',{path}); if(r.error){ $('#ipErr').textContent=r.error; return } const f=ipDone; closeImagePicker(); f&&f(r.path) }
+$('#ipClose').onclick=closeImagePicker; $('#imgpick').onclick=e=>{ if(e.target.id==='imgpick') closeImagePicker() };
+$('#ipUse').onclick=()=>pickImage($('#ipPath').value.trim()); $('#ipPath').onkeydown=e=>{ if(e.key==='Enter') pickImage($('#ipPath').value.trim()) };
+$('#ipFile').onclick=()=>$('#ipInput').click();
+$('#ipInput').onchange=async()=>{ const f=$('#ipInput').files[0]; $('#ipInput').value=''; if(!f) return; $('#ipErr').textContent='Uploading…';
+  const r=await fetch(`/api/images/upload?name=${encodeURIComponent(f.name)}&t=${TOKEN}`,{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:f}).then(x=>x.json()).catch(e=>({error:String(e)}));
+  if(r.error){ $('#ipErr').textContent=r.error; return } const cb=ipDone; closeImagePicker(); cb&&cb(r.path) };
+function optGroup(id,on){ const g=$('#'+id); g.querySelectorAll('.opt').forEach(o=>o.onclick=()=>{ g.querySelectorAll('.opt').forEach(x=>x.classList.remove('on')); o.classList.add('on'); on&&on(o.dataset.v) }) }
+const pick=id=>$('#'+id+' .opt.on').dataset.v;
+async function pollJob(bar,txt,onDone){ const s=await api('/api/export/status'); const pct=s.total?Math.round(100*s.done/s.total):0; bar.style.width=pct+'%';
+  txt.textContent=s.running?`${s.label||'Rendering'} ${s.total?`${s.done}/${s.total}`:''} ${s.fps?`· ${s.fps.toFixed(1)} fps`:''}`:(s.error?'Failed: '+s.error:'Done'+(s.out?' · '+s.out:''));
+  if(s.running) setTimeout(()=>pollJob(bar,txt,onDone),500); else onDone&&onDone(s) }
+async function doExport(){ $('#exportBtn').disabled=true; const fmt=pick('fmt');
+  const r=await api('/api/export',{format:fmt,width:+pick('res'),fps:fmt==='gif'?30:+pick('efps'),quality:pick('qual'),aspect,project:{segments:S.segments,style:S.style,trim:S.trim,speed:S.speed,privacy:S.privacy}});
+  if(r.error){ toast(r.error); $('#exportBtn').disabled=false; return } pollJob($('#progbar'),$('#progtxt'),s=>{ $('#exportBtn').disabled=false; if(s.out) toast('Exported '+s.out+' · notification has Copy / Get link') }) }
+
+// ------------------------------------------------------------ share sheet
+let presets=[], chosen='github', lastFile=null;
+async function openShare(){ $('#share').classList.add('open'); await api('/api/save',{segments:S.segments,style:S.style,trim:S.trim,speed:S.speed,privacy:S.privacy});
+  const [pr,tg]=await Promise.all([api('/api/share/presets'),api('/api/share/targets')]); presets=pr.presets; drawPresets();
+  $('#shMeta').textContent=`${P.name} · output ${fmtT(presets[0].duration)}`;
+  const sel=$('#shTarget'); sel.innerHTML=tg.targets.map(t=>`<option value="${t.name}" ${t.name===tg.default?'selected':''}>${t.name} · ${t.type}${t.public?' · public':''}</option>`).join('');
+  $('#shUpload').disabled=!tg.targets.length||!lastFile;
+  $('#shTgtInfo').innerHTML=tg.error?`<span class="warn">${tg.error}</span>`:tg.targets.length?(tg.targets.find(t=>t.public)?'<span class="warn">Public targets: anyone with the link can watch.</span>':'Links come from your own bucket / rclone remote.'):`Local-only: nothing uploads until you add a target to <span style="color:var(--fg)">${tg.path}</span> (run <span class="kbd">dolly share init</span>).`;
+  drawHistory() }
+function drawPresets(){ $('#pgrid').innerHTML=presets.map(p=>{ const e=p.estimate, cap=p.cap_mb, pct=cap?Math.min(100,e.bytes/(cap*1e6)*100):Math.min(100,e.bytes/50e6*100);
+  return `<div class="pc ${p.id===chosen?'on':''}" data-id="${p.id}">${cap?`<span class="badge">${cap>=1000?cap/1000+' GB':cap+' MB'} cap</span>`:p.aspect!=='16:9'?`<span class="badge">${p.aspect}</span>`:''}<div class="nm">${p.label}</div>
+   <div class="spec">${p.format.toUpperCase()} · ${p.width}×${p.height} · ${p.fps} fps<br>${p.note||''}</div><div class="est"><span>≈ <b>${fmtMB(e.bytes)}</b></span><span class="${e.over_duration?'warn':'ok'}">${e.over_duration?'too long':e.fits?'fits':'squeezed'}</span></div><div class="bar"><i style="width:${pct}%;background:${e.fits?'var(--green)':'var(--yellow)'}"></i></div></div>` }).join('');
+  $('#pgrid').querySelectorAll('.pc').forEach(c=>c.onclick=()=>{ chosen=c.dataset.id; drawPresets() }); const p=presets.find(x=>x.id===chosen); $('#shExport').textContent=`Export for ${p.label} · ≈ ${fmtMB(p.estimate.bytes)}` }
+let autoCopy=false;
+async function shareExport(){ $('#shExport').disabled=true; $('#shDone').style.display='none';
+  const r=await api('/api/share/export',{preset:chosen,project:{segments:S.segments,style:S.style,trim:S.trim,speed:S.speed,privacy:S.privacy}}); if(r.error){ toast(r.error); $('#shExport').disabled=false; return }
+  pollJob($('#shbar'),$('#shtxt'),async s=>{ $('#shExport').disabled=false; if(s.result){ lastFile=s.result.out; $('#shtxt').textContent=`Done · ${s.result.out} · ${fmtMB(s.result.size)} (${s.result.report.method})`; $('#shDone').style.display='block'; $('#shUpload').disabled=!$('#shTarget').options.length;
+    if(autoCopy){ autoCopy=false; const c=await api('/api/share/copy',{file:lastFile}); toast(c.error||'GIF copied as a file: paste with Ctrl+V') } drawHistory() } }) }
+async function drawHistory(){ const h=(await api('/api/share/history')).history.slice(-8).reverse();
+  $('#shHist').innerHTML=h.map(e=>{ const when=new Date(e.time*1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}); const exp=e.expires_at?` · expires ${new Date(e.expires_at*1000).toLocaleDateString()}`:'';
+    return `<div><span>${e.action}${e.preset?' · '+e.preset:''} → ${e.target||'local'} <span class="small">${when}${e.public?' · public':''}${exp}${e.deleted?' · deleted':''}</span>${e.url?`<br><span style="color:var(--cyan)">${e.url.slice(0,70)}${e.url.length>70?'…':''}</span>`:''}</span>${e.action==='upload'&&!e.deleted&&e.deletable!==false?`<span class="x" data-rm="${e.id}">delete remote</span>`:''}</div>` }).join('')||'<div class="small">Nothing shared yet.</div>';
+  $('#shHist').querySelectorAll('[data-rm]').forEach(x=>x.onclick=async()=>{ const r=await api('/api/share/delete',{id:x.dataset.rm}); toast(r.error||'Remote copy deleted'); drawHistory() }) }
+
+document.addEventListener('keydown',e=>{
+  if(e.key==='Escape'){ $('#share').classList.remove('open'); sel=null; pickingFocus=false; drawingBox=null; cv.classList.remove('drawing'); drawTimeline(); return }
+  if(e.target.tagName==='INPUT'||e.target.tagName==='SELECT'||$('#share').classList.contains('open')) return;
+  if(e.key===' '){ e.preventDefault(); $('#play').click() }
+  else if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='z'){ e.preventDefault(); e.shiftKey?redo():undo() }
+  else if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='e'){ e.preventDefault(); openShare() }
+  else if(e.key==='z'||e.key==='Z') addZoom(); else if(e.key==='s'&&!e.ctrlKey) splitSel();
+  else if(e.key==='Delete'||e.key==='Backspace') delSel();
+  else if(e.key==='ArrowLeft') seek(vid.currentTime-(e.shiftKey?1:1/30)); else if(e.key==='ArrowRight') seek(vid.currentTime+(e.shiftKey?1:1/30));
+  else if(e.key==='['){ S.trim[0]=Math.min(vid.currentTime,S.trim[1]-0.5); commit(); drawTimeline() } else if(e.key===']'){ S.trim[1]=Math.max(vid.currentTime,S.trim[0]+0.5); commit(); drawTimeline() } });
+
+function hexA(h,a){ h=(h||'#888888').replace('#',''); if(h.length===3) h=h.split('').map(x=>x+x).join(''); const n=parseInt(h,16); return `rgba(${n>>16&255},${n>>8&255},${n&255},${a})` }
+let THEME=null;
+function applyTheme(th){ const c=th.colors||{}, R=document.documentElement.style; THEME=th;
+  for(const [k,v] of [['--accent',c.accent],['--bg',c.background],['--bg-d',c.dark_background||c.background],['--bg-dd',c.darker_background||c.background],['--bg-l',c.lighter_background||c.background],['--sel',c.selection||c.lighter_background],['--fg',c.foreground],['--fg-b',c.bright_foreground||c.foreground],['--fg-d',c.dark_foreground||c.muted],['--red',c.red],['--green',c.green],['--yellow',c.yellow],['--cyan',c.cyan],['--magenta',c.magenta],['--muted',c.muted]]) if(v) R.setProperty(k,v);
+  R.setProperty('--line',hexA(c.foreground,.12)); if(th.font) R.setProperty('--font',`"${th.font}"`);
+  document.documentElement.style.colorScheme=th.mode==='light'?'light':'dark';
+  $('#navTheme').textContent=`Theme: ${th.name}${th.mode==='light'?' (light)':''} · ${th.font||''}`;
+  const tn=$('#themeName'); if(tn&&P) tn.textContent='Theme: '+th.name+(P.theme&&P.theme.pinned&&P.theme.pinned.name&&P.theme.pinned.name!==th.name?` · this recording keeps ${P.theme.pinned.name}`:'');
+  if(P&&P.theme){ P.theme.name=th.name } }
+// theme switches (Omarchy Super+Ctrl+Shift+Space) and recorder/export phases reach an open editor
+async function pollState(){ try{ const st=await api('/api/state'); if(st.theme&&(!THEME||st.theme.name!==THEME.name||st.theme.font!==THEME.font)){ applyTheme(st.theme); if(P) render(); if(VIEW==='settings') drawSettingsPreview() }
+  const j=(st.jobs||[])[0]; const el=$('#phase'); if(el) el.textContent= st.phase==='recording'?'● recording': st.phase==='finalizing'?'saving…': j? `${j.kind} ${Math.round(j.progress*100)}%`:'' }catch(e){} }
+async function init(){
+  if(P) return;
+  P=await api('/api/project'); if(P.error){ P=null; show('library'); return } S={segments:P.segments,style:P.style,trim:P.trim,speed:P.speed||[],privacy:P.privacy||[]}; lastSnap=snapshot();
+  $('#pname').textContent=P.name; $('#pmeta').textContent=`${fmtT(P.video.duration)} · ${P.video.w}×${P.video.h} · ${P.capture.fps&&Math.abs(P.capture.fps-P.video.fps)>1?`${P.capture.fps} fps (file ${Math.round(P.video.fps)})`:`${Math.round(P.video.fps)} fps`} · ${P.capture.backend||''}${P.capture.click_source?' · clicks: '+P.capture.click_source:''}`;
+  $('#dur').textContent='/ '+fmtT(P.video.duration); $('#themeName').textContent='Theme: '+P.theme.name;
+  applyTheme(THEME||P.theme);
+  wallImgs=await Promise.all(P.theme.wallpapers.map((w,i)=>new Promise(res=>{ const im=new Image(); im.onload=()=>res(im); im.onerror=()=>res(null); im.src=`/media/wallpaper/${i}?t=${TOKEN}` })));
+  buildKeyEvents();
+  bindRange('padding',()=>S.style.padding,v=>S.style.padding=v,v=>Math.round(v*100)+'%'); bindRange('radius',()=>S.style.radius,v=>S.style.radius=v,v=>v+'px');
+  bindRange('shadow',()=>S.style.shadow,v=>S.style.shadow=v,v=>Math.round(v*100)+'%'); bindRange('csize',()=>S.style.cursor.size,v=>S.style.cursor.size=v,v=>v.toFixed(1)+'×');
+  bindRange('csmooth',()=>S.style.cursor.smoothing,v=>S.style.cursor.smoothing=v,v=>Math.round(v*100)+'%'); bindRange('sync',()=>S.style.sync_offset||0,v=>S.style.sync_offset=v,v=>(v>=0?'+':'')+v.toFixed(2)+'s'); bindRange('bgblur',()=>(S.style.background.blur||0),v=>S.style.background.blur=v,v=>v+'px');
+  document.querySelectorAll('.tg[data-k]').forEach(e=>e.onclick=()=>{ if(e.classList.contains('dis')) return; setK(e.dataset.k,!getK(e.dataset.k)); e.classList.toggle('on'); commit(); drawTimeline(); render() });
+  // wf-recorder recorded the real cursor: there is no cursor to re-draw or motion-blur
+  // (Size still sizes the click ripple, Smooth still steadies the camera's pointer following)
+  const baked=!!(P.capture||{}).cursor_baked; $('#bakedNote').style.display=baked?'block':'none';
+  for(const k of BAKED_OFF){ const e=document.querySelector(`.tg[data-k="${k}"]`); if(e){ e.classList.toggle('dis',baked); e.title=baked?'Not available: this recording has the real cursor (wf-recorder)':'' } }
+  syncControls();
+  if(!P.has_audio){ $('#tgDenoise').classList.add('dis'); $('#tgDuck').classList.add('dis'); $('#transcribe').disabled=true; $('#capInfo').textContent='no audio track' }
+  else if(!P.capture.mic) $('#tgDenoise').title='Applies to microphone recordings only';
+  initAudioCam();
+  if(P.has_captions) $('#capInfo').textContent=`${(P.caption_cues||[]).length} cues`;
+  optGroup('camShape',v=>{ S.style.webcam.shape=v; commit(); render() });
+  for(const [id,k] of [['tText','text'],['tSub','subtitle'],['tOut','outro_text']]) $('#'+id).onchange=e=>{ S.style.title[k]=e.target.value; if(k==='text'&&e.target.value) S.style.title.enabled=true; commit(); syncControls() };
+  const ss=$('#stylesel'); const fillStyles=list=>{ ss.innerHTML='<option value="">Load a preset…</option>'+list.map(s=>`<option>${s.name}</option>`).join(''); ss._list=list }; fillStyles(P.styles||[]);
+  ss.onchange=()=>{ const st=(ss._list||[]).find(s=>s.name===ss.value); if(!st) return; Object.assign(S.style,JSON.parse(JSON.stringify(st.style))); commit(); syncControls(); buildBg(); render(); toast('Style "'+st.name+'" applied') };
+  $('#stylesave').onclick=async()=>{ const name=prompt('Save style as'); if(!name) return; const r=await api('/api/styles',{name,style:S.style}); fillStyles(r.styles); toast('Saved') };
+  ['fmt','res','efps','qual'].forEach(id=>optGroup(id));
+  $('#aspect').querySelectorAll('div').forEach(d=>d.onclick=()=>{ $('#aspect').querySelectorAll('div').forEach(x=>x.classList.remove('on')); d.classList.add('on'); aspect=d.dataset.v; repath() });
+  $('#exportBtn').onclick=doExport; $('#exportTop').onclick=doExport; $('#shareTop').onclick=openShare; $('#shClose').onclick=()=>$('#share').classList.remove('open');
+  $('#shExport').onclick=shareExport; $('#shCopy').onclick=async()=>{ const r=await api('/api/share/copy',{file:lastFile}); toast(r.error||'Copied as a file: paste with Ctrl+V'); drawHistory() };
+  $('#shCopyGif').onclick=()=>{ chosen='github-gif'; drawPresets(); autoCopy=true; shareExport() };
+  $('#shCopyPath').onclick=async()=>{ const r=await api('/api/share/copy',{file:lastFile,path:true}); toast(r.error||'Path copied') };
+  $('#shUpload').onclick=async()=>{ $('#shUpload').disabled=true; const r=await api('/api/share/upload',{file:lastFile,target:$('#shTarget').value}); $('#shUpload').disabled=false;
+    if(r.error){ toast(r.error); return } const u=$('#shUrl'); u.style.display='block'; u.textContent=r.url||r.note; toast(r.url?(r.copied?'Link copied':'Uploaded'):'Uploaded'); drawHistory() };
+  $('#useSettingsLook').onclick=async()=>{ const r=await api('/api/settings/look'); if(r.error){ toast(r.error); return } const snap=snapshot(); hist.push(snap);
+    for(const k of ['background','padding','radius','shadow','theme']) if(r.style[k]!==undefined) S.style[k]=r.style[k];
+    for(const k of ['cursor','keys']) S.style[k]=Object.assign({},S.style[k],r.style[k]); if(r.gradients) P.theme.gradients=r.gradients; lastSnap=snapshot(); scheduleSave(); syncControls(); buildBg(); scheduleRepath(); toast('Applied Settings › Look to this recording') };
+  $('#undo').onclick=undo; $('#redo').onclick=redo; $('#addz').onclick=addZoom; $('#adds').onclick=addSpeed; $('#split').onclick=splitSel; $('#addBlur').onclick=()=>startDraw(null);
+  $('#trimIn').onclick=()=>{ S.trim[0]=Math.min(vid.currentTime,S.trim[1]-0.5); commit(); drawTimeline() }; $('#trimOut').onclick=()=>{ S.trim[1]=Math.max(vid.currentTime,S.trim[0]+0.5); commit(); drawTimeline() };
+  $('#reauto').onclick=async()=>{ const snap=snapshot(); const r=await api('/api/auto',{}); hist.push(snap); S.segments=r.segments; sel=null; lastSnap=snapshot(); drawTimeline(); scheduleRepath(); toast(`${r.segments.length} auto zooms`) };
+  initAutoZoom();
+  $('#speedDetect').onclick=async()=>{ const snap=snapshot(); const r=await api('/api/speed/detect',{}); hist.push(snap); S.speed=r.speed; S.style.speed.enabled=true; lastSnap=snapshot(); syncControls(); drawTimeline(); toast(`${r.speed.length} speed-ups found`) };
+  $('#scrub').onclick=async()=>{ $('#scrub').disabled=true; await api('/api/scrub',{}); const bar={style:{}}; pollJob(bar,{set textContent(v){ $('#scrub').textContent=v.startsWith('Done')?'Scrub secrets':'Scanning…' }},s=>{ $('#scrub').disabled=false;
+    if(s.result){ const snap=snapshot(); hist.push(snap); S.privacy=s.result.privacy; lastSnap=snapshot(); drawTimeline(); render(); toast(`${s.result.found} possible secrets blurred, review them`) } else if(s.error) toast(s.error) }) };
+  $('#transcribe').onclick=async()=>{ $('#transcribe').disabled=true; await api('/api/captions',{}); pollJob({style:{}},{set textContent(v){ $('#capInfo').textContent=v }},async s=>{ $('#transcribe').disabled=false;
+    if(s.result){ P.caption_cues=s.result.cues; S.style.captions.enabled=true; commit(); syncControls(); drawTimeline(); $('#capInfo').textContent=`${s.result.cues.length} cues` } else toast(s.error||'failed') }) };
+  $('#privList').addEventListener('click',e=>{ const t=e.target; if(t.dataset.del){ sel=t.dataset.del; delSel() } else if(t.dataset.tog){ const b=S.privacy.find(x=>x.id===t.dataset.tog); b.enabled=b.enabled===false; commit(); drawTimeline(); render() } });
+  syncControls(); vid.src='/media/raw.mp4?t='+TOKEN; if(P.has_webcam&&P.camera_mode!=='live') camv.src='/media/webcam.mp4?t='+TOKEN; drawRuler(); drawTimeline(); await repath(); seek(Math.min(P.video.duration*0.1,2)); loop();
+  new ResizeObserver(()=>{ drawRuler(); drawTimeline() }).observe(wrap) }
+// ------------------------------------------------------------ audio tracks + camera (editor)
+const camv=$('#camv');
+function camFullU(t){ let best=0; const tr=0.4; for(const [a,b] of (S.style.webcam.full||[])){ if(a-tr<t&&t<b+tr) best=Math.max(best,Math.min(1,Math.max(0,Math.min((t-a+tr)/tr,(b+tr-t)/tr)))) } return best }
+function camGeom(t){ const G=PATH.geom, OW=G.OW, OH=G.OH, wc=S.style.webcam; const d=Math.min(OW,OH)*(wc.size||0.22), shape=wc.shape||'circle';
+  let bw=shape==='rect'?d*4/3:d, bh=d; const m=0.035*Math.min(OW,OH), c=wc.corner||'bottom-left';
+  let x=wc.pos?wc.pos[0]*OW-bw/2:(c.includes('left')?m:OW-bw-m), y=wc.pos?wc.pos[1]*OH-bh/2:(c.includes('bottom')?OH-bh-m:m);
+  x=Math.max(0,Math.min(OW-bw,x)); y=Math.max(0,Math.min(OH-bh,y)); let r=shape==='circle'?bh/2:shape==='rounded'?bh*0.18:bh*0.04;
+  const u=camFullU(t); if(u>0){ const e=u*u*(3-2*u); x*=1-e; y*=1-e; bw+=(OW-bw)*e; bh+=(OH-bh)*e; r*=1-e } return {x,y,w:bw,h:bh,r,u} }
+function drawCam(t){ if(!P||!P.has_webcam||P.camera_mode==='live'||!S.style.webcam.enabled) return; const g=camGeom(t), wc=S.style.webcam;
+  const ct=t-(P.webcam_offset||0); if(ct<0) return; if(Math.abs(camv.currentTime-ct)>0.25&&camv.readyState>=1) camv.currentTime=ct;
+  ctx.save(); if(wc.shadow!==false&&g.u<1){ ctx.shadowColor='rgba(0,0,0,.45)'; ctx.shadowBlur=0.03*Math.min(g.w,g.h); ctx.shadowOffsetY=0.012*PATH.geom.OH }
+  rr(ctx,g.x,g.y,g.w,g.h,g.r); ctx.fillStyle='#000'; ctx.fill(); ctx.shadowColor='transparent'; ctx.clip();
+  if(camv.readyState>=2){ const vw=camv.videoWidth, vh=camv.videoHeight, ta=g.w/g.h; let sw=vw, sh=vh; if(vw/vh>ta) sw=vh*ta; else sh=vw/ta;
+    if(wc.mirror!==false){ ctx.translate(g.x*2+g.w,0); ctx.scale(-1,1) } ctx.drawImage(camv,(vw-sw)/2,(vh-sh)/2,sw,sh,g.x,g.y,g.w,g.h) }
+  ctx.restore(); const b=(wc.border??3)*Math.min(PATH.geom.OW,PATH.geom.OH)/1080; if(b>0&&g.u<1){ ctx.save(); ctx.globalAlpha=1-g.u; ctx.lineWidth=b; ctx.strokeStyle=(THEME&&THEME.colors&&THEME.colors.accent)||'#7aa2f7'; rr(ctx,g.x-b/2,g.y-b/2,g.w+b,g.h+b,g.r?g.r+b/2:0); ctx.stroke(); ctx.restore() } }
+let camDrag=null;
+cv.addEventListener('pointerdown',e=>{ if(drawingBox||pickingFocus||!P||!P.has_webcam||!S.style.webcam.enabled) return; const [x,y]=canvasXY(e), g=camGeom(vid.currentTime);
+  if(x>=g.x&&x<=g.x+g.w&&y>=g.y&&y<=g.y+g.h&&g.u<1){ camDrag={dx:x-(g.x+g.w/2),dy:y-(g.y+g.h/2),snap:snapshot()}; cv.setPointerCapture(e.pointerId); e.stopImmediatePropagation() } },true);
+cv.addEventListener('pointermove',e=>{ if(!camDrag) return; const [x,y]=canvasXY(e), G=PATH.geom; S.style.webcam.pos=[(x-camDrag.dx)/G.OW,(y-camDrag.dy)/G.OH]; render() });
+cv.addEventListener('pointerup',()=>{ if(!camDrag) return; hist.push(camDrag.snap); fut=[]; lastSnap=snapshot(); scheduleSave(); camDrag=null; syncCam() });
+function syncCam(){ const wc=S.style.webcam; document.querySelectorAll('#camShape .opt').forEach(o=>o.classList.toggle('on',o.dataset.v===(wc.shape||'circle')));
+  document.querySelectorAll('#camSizes .opt').forEach(o=>o.classList.toggle('on',Math.abs(+o.dataset.v-(wc.size||0.22))<0.005));
+  document.querySelectorAll('#camCorner .opt').forEach(o=>o.classList.toggle('on',!wc.pos&&o.dataset.v===(wc.corner||'bottom-left')));
+  $('#camFullList').innerHTML=(wc.full||[]).map((r,i)=>`<div><span>▣ camera only ${fmtT(r[0])}–${fmtT(r[1])}</span><span class="x" data-cf="${i}">delete</span></div>`).join('');
+  $('#camsize')._sync&&$('#camsize')._sync(); $('#camborder')._sync&&$('#camborder')._sync() }
+function initAudioCam(){
+  const tr=$('#trackRows'); S.style.audio=S.style.audio||{};
+  tr.innerHTML=(P.audio_tracks||[]).map(t=>`<div class="row"><label>${t.track==='mic'?'Mic':'System'}</label><input type="range" min="0" max="2" step="0.05" id="vol_${t.track}"><span class="v" id="vol_${t.track}v"></span><span class="x" id="mute_${t.track}" style="cursor:pointer;width:40px;text-align:right"></span></div>`).join('')||'<div class="small">Audio recorded with the video (older recording) or none.</div>';
+  for(const t of (P.audio_tracks||[])){ const k=t.track; S.style.audio[k]=S.style.audio[k]||{volume:1,mute:false};
+    bindRange('vol_'+k,()=>S.style.audio[k].volume??1,v=>S.style.audio[k].volume=v,v=>Math.round(v*100)+'%');
+    const m=$('#mute_'+k); const upd=()=>{ m.textContent=S.style.audio[k].mute?'muted':'mute'; m.style.color=S.style.audio[k].mute?'var(--red)':'var(--fg-d)' }; upd();
+    m.onclick=()=>{ S.style.audio[k].mute=!S.style.audio[k].mute; upd(); commit() } }
+  $('#muteInfo').textContent=(P.mic_mutes||[]).length?`Mic muted while recording: ${(P.mic_mutes||[]).map(([a,b])=>fmtT(a)+'–'+fmtT(b)).join(', ')} (silence, not cut)`:'';
+  if(P.has_webcam&&P.camera_mode!=='live'){ S.style.webcam.enabled=S.style.webcam.enabled!==false }
+  if(!P.has_webcam||P.camera_mode==='live'){ $('#tgCam').classList.add('dis'); $('#camInfo').textContent=P.camera_mode==='live'?'Recorded with the live bubble: it is part of the screen video.':'No camera in this recording (Camera: Bubble in edit when recording).' }
+  bindRange('camsize',()=>S.style.webcam.size||0.22,v=>S.style.webcam.size=v,v=>Math.round(v*100)+'%');
+  bindRange('camborder',()=>S.style.webcam.border??3,v=>S.style.webcam.border=v,v=>v+'px');
+  optGroup('camSizes',v=>{ S.style.webcam.size=+v; commit(); syncCam(); render() });
+  optGroup('camCorner',v=>{ S.style.webcam.corner=v; S.style.webcam.pos=null; commit(); syncCam(); render() });
+  $('#camFull').onclick=()=>{ const t=vid.currentTime; S.style.webcam.full=(S.style.webcam.full||[]).concat([[+t.toFixed(2),+Math.min(P.video.duration,t+3).toFixed(2)]]); S.style.webcam.enabled=true; commit(); syncCam(); render(); toast('Camera fills the frame here (0.4 s transitions)') };
+  $('#camFullList').addEventListener('click',e=>{ const i=e.target.dataset.cf; if(i===undefined) return; S.style.webcam.full.splice(+i,1); commit(); syncCam(); render() });
+  syncCam() }
+
+// ------------------------------------------------------------ app shell: Library · Editor · Settings
+let VIEW='library', APP=null;
+function show(v){ if(v==='edit'&&!APP.project){ v='library' } VIEW=v; for(const [id,name] of [['#libraryView','library'],['#settingsView','settings'],['.app','edit']]) $(id).classList.toggle('on',name===v);
+  document.querySelectorAll('#nav .tab').forEach(t=>t.classList.toggle('on',t.dataset.v===v)); if(location.hash!=='#'+v) history.replaceState(null,'','#'+v);
+  if(v==='library') loadLibrary(); if(v==='settings') loadSettings(); if(v==='edit'&&!P) init().then(()=>{ if(APP.view==='share') openShare() }); }
+document.querySelectorAll('#nav .tab').forEach(t=>t.onclick=()=>{ if(!t.classList.contains('dis')) show(t.dataset.v) });
+
+// ---- Library
+let LIB=null, lfilters=new Set(), lsel=new Set(), lmode='grid';
+const fmtGB=fmtSize;      // was Math.round(MB): a 0.4 MB recording showed "0 MB"
+async function loadLibrary(refresh){ LIB=await api('/api/library'+(refresh===false?'?refresh=0':'')); drawLibrary() }
+function esc(x){ return String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])) }
+function drawLibrary(){ if(!LIB) return; const q=$('#lq').value.trim().toLowerCase(), so=$('#lsort').value;
+  let items=LIB.items.filter(e=>(!q||e.title.toLowerCase().includes(q)||e.id.includes(q)||new Date(e.created*1000).toLocaleDateString().includes(q))&&[...lfilters].every(f=>e[f]));
+  const cmp={new:(a,b)=>b.created-a.created,old:(a,b)=>a.created-b.created,long:(a,b)=>b.duration-a.duration,big:(a,b)=>b.bytes-a.bytes,name:(a,b)=>a.title.localeCompare(b.title)}[so]; items.sort(cmp);
+  $('#lusage').textContent=`${LIB.items.length} recordings · ${fmtGB(LIB.total_bytes)} in ${LIB.root}${LIB.free_bytes!=null?' · '+fmtGB(LIB.free_bytes)+' free':''} · raw files of exported recordings: ${fmtGB(LIB.cleanable_bytes)}`;
+  $('#lclean').disabled=!LIB.cleanable_bytes; $('#ltrash').disabled=!lsel.size; $('#ltrash').textContent=lsel.size?`Move ${lsel.size} to trash`:'Move to trash';
+  const g=$('#lgrid'); g.className='lgrid'+(lmode==='list'?' list':''); $('#lempty').style.display=items.length?'none':'block';
+  g.innerHTML=items.map(e=>{ const b=[e.exported&&'exported',e.shared&&'shared',e.vertical&&'9:16',e.captions&&'CC'].filter(Boolean).map(x=>`<span>${x}</span>`).join('')+(e.recovered?'<span class="warn">recovered</span>':'')+(e.partial?`<span class="warn" title="${esc(e.stop_reason)}">partial</span>`:'')+(!e.raw?'<span class="warn" title="raw files cleaned up; exports kept">raw cleaned</span>':'');
+    return `<div class="card${lsel.has(e.dir)?' sel':''}" data-dir="${esc(e.dir)}"><div class="th" style="background-image:url('/media/thumb?dir=${encodeURIComponent(e.dir)}&t=${TOKEN}')"><input type="checkbox" class="cb" ${lsel.has(e.dir)?'checked':''}><span class="du">${fmtT(e.duration).replace(/\.\d+$/,'')}</span></div>
+      <div class="bd"><div class="tt" title="${esc(e.title)}">${esc(e.title)}</div><div class="mt">${new Date(e.created*1000).toLocaleString([], {dateStyle:'medium',timeStyle:'short'})} · ${fmtGB(e.bytes)} · ${esc(e.mode)}</div><div class="bdg">${b}</div>
+      <div class="acts"><button data-a="open">Open</button><button data-a="copy">Copy video</button><button data-a="reveal">Show in Files</button><button data-a="rename">Rename</button><button data-a="trash" class="danger">Trash</button></div></div></div>` }).join('') }
+$('#lq').oninput=drawLibrary; $('#lsort').onchange=drawLibrary;
+document.querySelectorAll('.chipf').forEach(c=>c.onclick=()=>{ c.classList.toggle('on'); c.classList.contains('on')?lfilters.add(c.dataset.f):lfilters.delete(c.dataset.f); drawLibrary() });
+$('#lmode').querySelectorAll('div').forEach(d=>d.onclick=()=>{ $('#lmode').querySelectorAll('div').forEach(x=>x.classList.remove('on')); d.classList.add('on'); lmode=d.dataset.v; drawLibrary() });
+$('#lselAll').onclick=()=>{ const all=[...document.querySelectorAll('.card')].map(c=>c.dataset.dir); if(lsel.size===all.length) lsel.clear(); else all.forEach(d=>lsel.add(d)); drawLibrary() };
+async function trashDirs(dirs){ const r=await api('/api/library/trash',{dirs}); if(r.error){ toast(r.error); return } lsel.clear(); await loadLibrary(false); undoToast(`Moved ${r.trashed} to the trash`) }
+function undoToast(msg){ const t=$('#toast'); t.innerHTML=''; t.append(msg+'  '); const b=document.createElement('button'); b.textContent='Undo'; b.style.height='22px'; b.onclick=async()=>{ await api('/api/library/undo',{}); t.style.display='none'; loadLibrary(false) }; t.append(b); t.style.display='block'; clearTimeout(toast.h); toast.h=setTimeout(()=>t.style.display='none',8000) }
+$('#ltrash').onclick=()=>{ if(lsel.size&&confirm(`Move ${lsel.size} recording(s) to the trash? You can undo, or restore them from Files > Trash.`)) trashDirs([...lsel]) };
+$('#lclean').onclick=async()=>{ const d=await api('/api/library/cleanup',{dry_run:true}); if(!d.recordings){ toast('Nothing to clean up'); return }
+  if(!confirm(`Move the raw capture files of ${d.recordings} exported recording(s) to the trash, freeing ${fmtGB(d.bytes)}?\n\nTheir exports stay; they can no longer be edited.`)) return; const r=await api('/api/library/cleanup',{}); toast(`Freed ${fmtGB(r.bytes)}`); loadLibrary() };
+$('#lgrid').addEventListener('click',async e=>{ const card=e.target.closest('.card'); if(!card) return; const dir=card.dataset.dir;
+  if(e.target.classList.contains('cb')){ e.target.checked?lsel.add(dir):lsel.delete(dir); drawLibrary(); return }
+  const a=e.target.dataset.a;
+  if(a==='copy'){ const r=await api('/api/library/copy',{dir}); toast(r.error||`Copied ${r.file}: paste with Ctrl+V`); return }
+  if(a==='reveal'){ await api('/api/library/reveal',{dir}); return }
+  if(a==='trash'){ trashDirs([dir]); return }
+  if(a==='rename'){ const e0=LIB.items.find(x=>x.dir===dir); const t=prompt('Name this recording',e0.named?e0.title:''); if(t===null) return; const r=await api('/api/library/rename',{dir,title:t}); toast(r.error||'Renamed'); loadLibrary(false); return }
+  if(a==='open'||!a){ const r=await api('/api/library/open',{dir}); if(r.error){ toast(r.error); return } location.hash='#edit'; location.reload() } });
+
+// ---- Settings
+const SL={ // labels + help
+ 'capture.mode':['Default capture','What Super+Alt+R and quick record use'], 'capture.countdown':['Countdown','Seconds before recording starts (the same key cancels)'],
+ 'capture.fps':['Frame rate',''], 'capture.keys':['Log shortcuts','For the keystroke overlay; only chords are shown'], 'capture.replay_seconds':['Instant replay length','Seconds kept in memory'],
+ 'audio.mode':['Audio','Separate tracks: microphone, system audio, or both'], 'audio.mic_device':['Microphone','"default" follows the default input'], 'audio.system_device':['System audio','"default" follows the default output'],
+ 'audio.denoise':['Mic noise suppression',''], 'audio.duck':['Lower system audio while speaking',''], 'audio.normalize':['Loudness normalise',''],
+ 'camera.mode':['Camera','Off · Bubble in edit (recorded separately, editable later) · Live bubble (on screen, recorded as seen)'], 'camera.device':['Camera device','Empty = the first camera'],
+ 'camera.shape':['Bubble shape',''], 'camera.size':['Bubble size',''], 'camera.corner':['Bubble corner',''], 'camera.mirror':['Mirror',''], 'camera.border':['Border (theme accent)','px at 1080p'], 'camera.shadow':['Shadow',''], 'camera.avoid_cursor':['Move away from the cursor',''],
+ 'look.follow_theme':['Follow the Omarchy theme','Background and accents come from the current theme; each recording keeps the theme it was made in'],
+ 'look.background':['Background','"image" uses your own picture below'], 'look.background_color':['Solid colour',''],
+ 'look.background_image':['Background image','Your own picture (PNG, JPEG or WebP); picking one sets Background to "image"'], 'look.background_blur':['Image blur','Softens the picture (px at 1080p)'], 'look.padding':['Padding',''], 'look.radius':['Corner radius',''], 'look.shadow':['Shadow',''],
+ 'look.cursor_size':['Cursor size','× the theme cursor size'], 'look.cursor_smoothing':['Cursor smoothing',''], 'look.click_effect':['Click effect',''], 'look.keys_overlay':['Keystroke overlay',''], 'look.keys_position':['Keystroke position',''],
+ 'zoom.enabled':['Zoom in automatically','Off: no automatic zooms. Zooms you add in the editor and Zoom-here markers (Super+Alt+M) still work'],
+ 'zoom.level':['Zoom level','How far in a zoom goes (× the screen). Big things like dialogs get less so they fit'], 'zoom.max_zoom':['Maximum zoom','Upper limit, e.g. for small text'],
+ 'zoom.on_clicks':['Zoom in on clicks',''], 'zoom.follow_typing':['Zoom in on typing','Frames the line being typed'], 'zoom.on_windows':['Zoom on windows and output','Windows opening or resizing, scrolling build logs'],
+ 'zoom.between':['Between nearby actions','Stay zoomed and pan to the next one, or zoom out to the whole screen and in again'],
+ 'zoom.stay_seconds':['Stay zoomed through pauses up to','Seconds between two actions; a longer pause, a far jump or a workspace switch zooms out'],
+ 'zoom.motion':['Camera motion','How fast the camera zooms and pans'], 'zoom.idle_speedup':['Speed up idle time','Long pauses play faster (editable)'],
+ 'privacy.secret_blur':['Blur secrets','OCR each recording once and blur tokens/keys (needs tesseract)'], 'privacy.dnd':['Do Not Disturb while recording','Restored afterwards'], 'privacy.solid_windows':['Solid windows','auto = only when Omarchy Glassy is on'],
+ 'export.format':['Format',''], 'export.quality':['Quality',''], 'export.size_cap_mb':['Size cap (MB)','0 = no cap'], 'export.aspect':['Default aspect',''], 'export.also_vertical':['Also export a 9:16 copy',''],
+ 'sharing.default_target':['Default link target','From ~/.config/dolly/share.json'],
+ 'storage.folder':['Recordings folder','Empty = Omarchy screen-recording folder/Dolly (or ~/Videos/Dolly)'], 'storage.keep_raw':['Keep raw files after export','Off: raw capture to the trash after a successful export'], 'storage.cleanup_days':['Clean up raw files after (days)','Exported recordings only; 0 = never'] };
+const GT={capture:['Capture','How recordings start'],audio:['Audio','Recorded as separate tracks, mixed at export'],camera:['Camera','A bubble of you on the recording; off by default'],look:['Look','How new recordings are framed'],zoom:['Auto-zoom','The camera that follows the action'],privacy:['Privacy',''],export:['Export',''],sharing:['Sharing','Nothing uploads unless you add a target'],storage:['Storage','']};
+const OPTL={'zoom.between':{glide:'Stay zoomed and glide','zoom-out':'Zoom out to the whole screen'},'zoom.motion':{calm:'Calm',normal:'Normal',quick:'Quick'}};
+let SET=null, saveTimer=null, pending={};
+async function loadSettings(){ SET=await api('/api/settings'); drawSettings(); drawSettingsPreview() }
+function setVal(k,v){ const [g,n]=k.split('.'); SET.values[g][n]=v; pending[k]=v; clearTimeout(saveTimer); drawSettingsPreview();
+  saveTimer=setTimeout(async()=>{ const r=await api('/api/settings',{updates:pending}); pending={}; if(r.error){ toast(r.error); return } SET.values=r.values; const sv=document.getElementById('sv_'+k.replace('.','_')); if(sv){ sv.classList.add('on'); setTimeout(()=>sv.classList.remove('on'),1200) } },350) }
+function ctl(s,v){ const id='s_'+s.key.replace('.','_');
+  if(s.key==='audio.mic_device'||s.key==='audio.system_device'){ const list=s.key==='audio.mic_device'?(SET.mic_devices||[]):[]; return `<input type="text" id="${id}" value="${esc(v)}" list="${id}_l"><datalist id="${id}_l"><option value="default">${list.map(d=>`<option value="${esc(d.name)}">`).join('')}</datalist>` }
+  if(s.key==='sharing.default_target') return `<select id="${id}"><option value="">(share.json default)</option>${(SET.share_targets||[]).map(t=>`<option ${t.name===v?'selected':''}>${esc(t.name)}</option>`).join('')}</select>`;
+  if(s.type==='bool') return `<div class="tg ${v?'on':''}" id="${id}" style="margin:0"><span></span><i></i></div>`;
+  if(s.type==='enum'){ const L=OPTL[s.key]||{}; return `<select id="${id}">${s.options.map(o=>`<option value="${esc(o)}" ${String(o)===String(v)?'selected':''}>${esc(L[o]||o)}</option>`).join('')}</select>` }
+  if(s.type==='color') return `<input type="color" id="${id}" value="${esc(v)}">`;
+  if(s.type==='image') return `<div style="display:flex;gap:6px;align-items:center;justify-content:flex-end;flex-wrap:wrap">${v?`<span style="width:64px;height:36px;border:1px solid var(--line);background:center/cover no-repeat url('${imgUrl(v)}')" title="${esc(v)}"></span>`:''}<span class="small" style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(v)}">${v?esc(v.split('/').pop()):'none'}</span><button id="${id}">Choose…</button>${v?`<button id="${id}_clr">Clear</button>`:''}</div>`;
+  if(s.type==='int'||s.type==='float'){ const st=s.type==='int'?1:(s.max-s.min)/100; return `<input type="range" id="${id}" min="${s.min}" max="${s.max}" step="${st}" value="${v}"><span class="rv" id="${id}_v">${fmtSet(s,v)}</span>` }
+function fmtSet(s,v){ if(s.type==='int') return v; if(s.key==='look.background_blur') return Math.round(+v)+' px'; if(s.key==='zoom.level'||s.key==='zoom.max_zoom') return (+v).toFixed(2)+'×'; if(s.key==='zoom.stay_seconds') return (+v).toFixed(1)+' s'; return (+v).toFixed(2) }
+  return `<input type="text" id="${id}" value="${esc(v)}">` }
+function drawSettings(){ const sf=$('#sform'), groups=SET.groups; $('#snav').innerHTML=groups.map(g=>`<div data-g="${g}">${GT[g][0]}</div>`).join('');
+  sf.innerHTML=groups.map(g=>{ const rows=SET.schema.filter(s=>s.key.startsWith(g+'.')).map(s=>{ const [gg,n]=s.key.split('.'); const v=SET.values[gg][n]; const lab=SL[s.key]||[s.key,''];
+      return `<div class="srow"><div><div class="lb">${lab[0]}<span class="saved" id="sv_${s.key.replace('.','_')}">saved</span></div>${lab[1]?`<div class="hp">${lab[1]}</div>`:''}</div><div>${ctl(s,v)}</div></div>` }).join('');
+    let extra='';
+    if(g==='capture') extra=`<div class="sd" style="margin-top:12px">Hotkeys (read-only)</div>${SET.hotkeys.map(h=>`<div class="kbdrow"><span class="kbd">${esc(h.keys)}</span><span>${esc(h.action)}</span></div>`).join('')}<div class="hp" style="margin-top:6px">Change them in ~/.config/hypr/bindings.lua between the "dolly" markers (Omarchy menu › Setup › Keybindings opens it), or rerun dolly-setup. Omarchy's Super+K lists them.</div>`;
+    if(g==='sharing') extra=`<div class="sd" style="margin-top:12px">Targets in ${esc(SET.share_path)}</div>${(SET.share_targets||[]).map(t=>`<div class="kbdrow"><span>${esc(t.name)} · ${esc(t.type)}${t.public?' · <span class="warn">public</span>':''}</span><span class="small">${esc(t.bucket||t.remote||t.endpoint||'')} · ${esc(t.credentials)}</span></div>`).join('')||`<div class="hp">Local-only: no targets. Run <span class="kbd">dolly share init</span> for a template.</div>`}${SET.share_error?`<div class="warn">${esc(SET.share_error)}</div>`:''}`;
+    if(g==='storage') extra=`<div class="hp" style="margin-top:8px">Recordings are in ${esc(SET.videos_root)}. See the Library for disk usage and clean-up.</div>`;
+    const lead=g==='look'&&SET.capture_bakes_cursor?`<div class="note">On this system recordings have the real cursor (wf-recorder: gpu-screen-recorder cannot capture here, as in most VMs). The re-drawn cursor and its motion blur need gpu-screen-recorder; cursor size still sets the click ripple and smoothing still steadies how the camera follows the pointer.</div>`:'';
+    return `<div class="sgrp" id="g_${g}"><h2>${GT[g][0]}</h2><div class="sd">${GT[g][1]}</div>${lead}${rows}${extra}</div>` }).join('');
+  for(const s of SET.schema){ const el=document.getElementById('s_'+s.key.replace('.','_')); if(!el) continue;
+    if(s.type==='image'){ el.onclick=()=>openImagePicker(p=>{ setVal(s.key,p); if(SET.values.look.background!=='image') setVal('look.background','image'); drawSettings() });
+      const clr=document.getElementById(el.id+'_clr'); if(clr) clr.onclick=()=>{ setVal(s.key,''); if(SET.values.look.background==='image') setVal('look.background','theme-glow'); drawSettings() }; continue }
+    if(s.type==='bool') el.onclick=()=>{ el.classList.toggle('on'); setVal(s.key,el.classList.contains('on')) };
+    else if(s.type==='int'||s.type==='float'){ el.oninput=()=>{ const v=s.type==='int'?parseInt(el.value):parseFloat(el.value); document.getElementById(el.id+'_v').textContent=fmtSet(s,v); setVal(s.key,v) } }
+    else el.onchange=()=>setVal(s.key,el.value) }
+  $('#snav').querySelectorAll('div').forEach(d=>d.onclick=()=>{ document.getElementById('g_'+d.dataset.g).scrollIntoView({behavior:'smooth'}); $('#snav').querySelectorAll('div').forEach(x=>x.classList.toggle('on',x===d)) }) }
+let spvImg=null;
+function drawSettingsPreview(){ if(!SET) return; const c=$('#spv'), x=c.getContext('2d'), W=c.width, H=c.height, v=SET.values, th=(THEME&&THEME.colors)||{}, L=v.look;
+  const grads=(APP&&APP.theme&&APP.theme.gradients)||{}; x.setTransform(1,0,0,1,0,0);
+  const bim=L.background==='image'&&L.background_image?bgImg(L.background_image):null;
+  if(bim){ const s=Math.max(W/bim.naturalWidth,H/bim.naturalHeight); x.filter=L.background_blur?`blur(${L.background_blur*W/1920}px)`:'none'; x.drawImage(bim,(W-bim.naturalWidth*s)/2,(H-bim.naturalHeight*s)/2,bim.naturalWidth*s,bim.naturalHeight*s); x.filter='none' }
+  else if(L.background==='solid'){ x.fillStyle=L.background_color; x.fillRect(0,0,W,H) } else { const g=grads[L.background]||grads['theme-glow']||{stops:[th.accent||'#7aa2f7',th.magenta||'#bb9af7'],angle:135}; const a=g.angle*Math.PI/180, dx=Math.sin(a), dy=-Math.cos(a), half=Math.abs(W/2*dx)+Math.abs(H/2*dy); const lg=x.createLinearGradient(W/2-dx*half,H/2-dy*half,W/2+dx*half,H/2+dy*half); g.stops.forEach((s,i)=>lg.addColorStop(i/(g.stops.length-1),s)); x.fillStyle=lg; x.fillRect(0,0,W,H) }
+  const p=L.padding*W, sw=W-2*p, sh=sw*9/16, sy=(H-sh)/2, r=L.radius*W/1920*1.4;
+  x.save(); x.shadowColor=`rgba(0,0,0,${0.75*L.shadow})`; x.shadowBlur=0.035*W; x.shadowOffsetY=0.012*H; rr(x,p,sy,sw,sh,r); x.fillStyle=th.background||'#1a1b26'; x.fill(); x.restore();
+  x.save(); rr(x,p,sy,sw,sh,r); x.clip(); if(spvImg&&spvImg.complete&&spvImg.naturalWidth) x.drawImage(spvImg,p,sy,sw,sh); x.restore();
+  const cs=24*1.04*L.cursor_size*W/1920*1.3, cx=p+sw*0.58, cy=sy+sh*0.52; x.save(); x.translate(cx,cy); const s=cs/27; x.beginPath(); [[2,1.5],[2,21],[7,16.5],[10.4,24.6],[13.6,23.2],[10.2,15.4],[17,15.2]].forEach(([a,b],i)=>i?x.lineTo(a*s,b*s):x.moveTo(a*s,b*s)); x.closePath(); x.fillStyle='#121216'; x.strokeStyle='#fff'; x.lineWidth=1.6*s; x.fill(); x.stroke(); x.restore();
+  if(L.click_effect==='ripple'){ x.beginPath(); x.arc(cx,cy,cs*0.9,0,7); x.strokeStyle='rgba(255,255,255,.55)'; x.lineWidth=2; x.stroke() }
+  if(L.keys_overlay){ x.font=`700 ${18*W/960}px ${getComputedStyle(document.body).fontFamily}`; const txt='Ctrl + S', tw=x.measureText(txt).width+24, ky=L.keys_position==='top'?0.07*H:H-0.17*H; x.fillStyle='rgba(14,14,20,.82)'; rr(x,W/2-tw/2,ky,tw,32,12); x.fill(); x.fillStyle='#f3f4fb'; x.textAlign='center'; x.textBaseline='middle'; x.fillText(txt,W/2,ky+16) }
+  const C=v.camera; if(C.mode!=='off'){ const d=Math.min(W,H)*({S:0.16,M:0.22,L:0.30}[C.size]||0.22), bw=C.shape==='rect'?d*4/3:d, m=0.035*Math.min(W,H); const bx=C.corner.includes('left')?m:W-bw-m, by=C.corner.includes('bottom')?H-d-m:m, rad=C.shape==='circle'?d/2:C.shape==='rounded'?d*0.18:d*0.04;
+    x.save(); if(C.shadow){ x.shadowColor='rgba(0,0,0,.45)'; x.shadowBlur=14 } rr(x,bx,by,bw,d,rad); const cg=x.createLinearGradient(bx,by,bx+bw,by+d); cg.addColorStop(0,'#5a6a8a'); cg.addColorStop(1,'#2b3245'); x.fillStyle=cg; x.fill(); x.restore();
+    x.fillStyle='rgba(255,255,255,.7)'; x.font=`${12*W/960}px sans-serif`; x.textAlign='center'; x.fillText('camera',bx+bw/2,by+d/2); if(C.border>0){ x.lineWidth=C.border*W/1920*1.4; x.strokeStyle=th.accent||'#7aa2f7'; rr(x,bx,by,bw,d,rad); x.stroke() } } }
+
+// ---- Auto-zoom for this recording: re-plans the auto segments, keeps manual ones
+let ZC=null, azT=null, azPending={};
+function drawAutoZoom(){ if(!ZC) return; const on=ZC.enabled!==false;
+  $('#azOn').classList.toggle('on',on); $('#azBody').style.opacity=on?'':'.45'; $('#azBody').style.pointerEvents=on?'':'none';
+  $('#azLevel').value=ZC.zoom_default; $('#azLevelv').textContent=(+ZC.zoom_default).toFixed(2)+'×';
+  $('#azClicks').classList.toggle('on',ZC.zoom_clicks!==false); $('#azTyping').classList.toggle('on',ZC.follow_typing!==false); $('#azWin').classList.toggle('on',ZC.zoom_windows!==false);
+  const g=ZC.glide!==false; $('#azBetween').querySelectorAll('.opt').forEach(o=>o.classList.toggle('on',(o.dataset.v==='glide')===g));
+  $('#azStay').value=ZC.stay_gap; $('#azStayv').textContent=(+ZC.stay_gap).toFixed(1)+' s'; $('#azStayRow').style.display=g?'':'none';
+  $('#azMotion').querySelectorAll('.opt').forEach(o=>o.classList.toggle('on',o.dataset.v===(ZC.motion||'normal'))) }
+function azSet(k,v){ ZC[k]=v; azPending[k]=v; drawAutoZoom(); clearTimeout(azT);
+  azT=setTimeout(async()=>{ const snap=snapshot(), upd=azPending; azPending={}; const r=await api('/api/auto',{zoom_config:upd,keep_manual:true});
+    if(r.error){ toast(r.error); return } hist.push(snap); fut=[]; S.segments=r.segments; ZC=r.zoom_config; sel=null; lastSnap=snapshot(); drawAutoZoom(); drawTimeline(); scheduleRepath();
+    const n=r.segments.filter(s=>s.source!=='manual').length; $('#azInfo').textContent=`${n} automatic zoom${n===1?'':'s'}`+(ZC.enabled===false?' (Zoom-here markers still zoom)':'')+'. Zooms you added or edited stay.' },400) }
+function initAutoZoom(){ ZC={...(P.zoom_config||{})}; drawAutoZoom();
+  $('#azOn').onclick=()=>azSet('enabled',!(ZC.enabled!==false));
+  $('#azClicks').onclick=()=>azSet('zoom_clicks',!(ZC.zoom_clicks!==false));
+  $('#azTyping').onclick=()=>azSet('follow_typing',!(ZC.follow_typing!==false));
+  $('#azWin').onclick=()=>azSet('zoom_windows',!(ZC.zoom_windows!==false));
+  $('#azLevel').oninput=e=>{ $('#azLevelv').textContent=(+e.target.value).toFixed(2)+'×' }; $('#azLevel').onchange=e=>azSet('zoom_default',+e.target.value);
+  $('#azStay').oninput=e=>{ $('#azStayv').textContent=(+e.target.value).toFixed(1)+' s' }; $('#azStay').onchange=e=>azSet('stay_gap',+e.target.value);
+  $('#azBetween').querySelectorAll('.opt').forEach(o=>o.onclick=()=>azSet('glide',o.dataset.v==='glide'));
+  $('#azMotion').querySelectorAll('.opt').forEach(o=>o.onclick=()=>azSet('motion',o.dataset.v)) }
+
+async function boot(){
+  APP=await api('/api/app'); applyTheme(APP.theme); $('#tabEdit').classList.toggle('dis',!APP.project); if(APP.project) $('#tabEdit').textContent='Editor · '+APP.project;
+  setInterval(pollState,4000);
+  try{ const lib=await api('/api/library?refresh=0'); const it=(lib.items||[])[0]; if(it){ spvImg=new Image(); spvImg.onload=()=>VIEW==='settings'&&drawSettingsPreview(); spvImg.src=`/media/thumb?dir=${encodeURIComponent(it.dir)}&t=${TOKEN}` } }catch(e){}
+  const h=location.hash.replace('#',''); show(['library','edit','settings'].includes(h)?h:(APP.view==='share'?'edit':APP.view));
+  navLoop(APP.nav_seq||0) }
+// One editor window: `dolly library --open`, `dolly settings` and `dolly edit` (bar panel, menu,
+// after a recording) ask the running editor to navigate instead of opening another window.
+// The page long-polls for those requests; a different recording reloads the page.
+async function navLoop(seq){ const wait=ms=>new Promise(r=>setTimeout(r,ms));
+  for(;;){ let st=null;
+    try{ st=await fetch(`/api/nav?seq=${seq}&t=${TOKEN}`).then(r=>r.json()) }catch(e){ await wait(3000); continue }
+    if(!st||st.error){ await wait(3000); continue }
+    if(st.seq>seq){ seq=st.seq;
+      if((st.project||null)!==(APP.project||null)){ location.hash='#'+st.view; location.reload(); return }
+      show(st.view); window.focus() } } }
+window.addEventListener('hashchange',()=>{ const h=location.hash.replace('#',''); if(['library','edit','settings'].includes(h)&&h!==VIEW) show(h) });
+boot();
+</script>
+</body></html>

@@ -1,0 +1,211 @@
+<!doctype html>
+<!-- Synthetic Omarchy desktop for the Dolly test harness.
+     Deterministic: window.renderAt(t, x, y) sets the whole page state from the
+     timeline in window.BEATS (injected by make_demo.py) and returns a
+     signature string; identical signatures mean identical pixels. No CSS
+     animations or transitions are used, so time is fully controlled. -->
+<html><head><meta charset="utf-8">
+<style>
+@font-face{font-family:JBM;src:url(fonts/jetbrains-mono-latin-400-normal.woff2);font-weight:400}
+@font-face{font-family:JBM;src:url(fonts/jetbrains-mono-latin-700-normal.woff2);font-weight:700}
+:root{--bg:#1a1b26;--fg:#a9b1d6;--fgb:#c0caf5;--fgd:#565f89;--acc:#7aa2f7;--red:#f7768e;--green:#9ece6a;--yellow:#e0af68;--mag:#bb9af7}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:1280px;height:800px;overflow:hidden;background:#000}
+body{font-family:JBM,monospace;color:var(--fg);position:relative}
+.wall{position:absolute;inset:0;background:url(wall.jpg) center/cover}
+.bar{position:absolute;left:0;right:0;top:0;height:26px;background:var(--bg);display:flex;align-items:center;padding:0 10px;font-size:11.5px}
+.bar .ws{display:flex;gap:9px}.bar .ws span{opacity:.45}.bar .ws .on{opacity:1;color:var(--fgb)}
+.bar .clock{position:absolute;left:50%;transform:translateX(-50%)}
+.bar .right{margin-left:auto;display:flex;gap:14px;align-items:center}
+.rec{width:8px;height:8px;border-radius:50%;background:var(--red)}
+.win{position:absolute;background:var(--bg);border:2px solid #595959}
+.win.act{border-color:#33ccee}
+#term{left:10px;top:36px;width:500px;height:754px}
+#app{left:515px;top:36px;width:755px;height:754px;background:#f5f6fa}
+.term{padding:12px 14px;font-size:12.5px;line-height:1.62;white-space:pre}
+.p{color:var(--acc)}.g{color:var(--green)}.y{color:var(--yellow)}.m{color:var(--mag)}.d{color:var(--fgd)}.w{color:var(--fgb)}
+.caret{display:inline-block;width:7.5px;height:15px;background:var(--fg);vertical-align:-3px}
+/* ---- web app ---- */
+.chrome{height:34px;background:#fff;border-bottom:1px solid #e4e6ee;display:flex;align-items:center;gap:8px;padding:0 12px;font-size:11px;color:#6b7089}
+.chrome .url{flex:1;height:22px;border-radius:6px;background:#f1f2f7;display:flex;align-items:center;padding:0 10px}
+.appbody{display:flex;height:calc(100% - 34px);font-family:Inter,sans-serif;color:#1d2033}
+.side{width:170px;background:#fbfbfd;border-right:1px solid #eceef4;padding:16px 12px;font-size:12.5px}
+.logo{display:flex;align-items:center;gap:8px;font-weight:700;font-size:14px;margin-bottom:20px}
+.logo i{width:20px;height:20px;border-radius:6px;background:linear-gradient(135deg,#7aa2f7,#bb9af7)}
+.nav div{padding:6px 8px;border-radius:6px;margin-bottom:2px;color:#4a4f68}
+.nav .on{background:#eef1fb;color:#1d2033;font-weight:600}
+.main{flex:1;padding:22px 26px;position:relative}
+.hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px}
+.hdr h1{font-size:21px;font-weight:700;letter-spacing:-.01em}
+.btn{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 12px;border-radius:7px;font-size:12.5px;font-weight:600}
+.btn.pri{background:#4f6bed;color:#fff}.btn.pri.hov{background:#3f5ad8}
+.btn.sec{background:#fff;border:1px solid #dfe2ec;color:#2b2f45}.btn.sec.hov{background:#f4f5fa}
+.sub{font-size:12px;color:#7b8099;margin-bottom:18px}
+.tabs{display:flex;gap:16px;font-size:12.5px;color:#7b8099;border-bottom:1px solid #eceef4;margin-bottom:12px}
+.tabs div{padding:0 0 8px}.tabs .on{color:#1d2033;font-weight:600;border-bottom:2px solid #4f6bed}
+.row{display:flex;align-items:center;gap:10px;height:40px;padding:0 10px;border-radius:8px;font-size:13px;margin-bottom:4px;background:#fff;border:1px solid #edeef4}
+.row.hov{border-color:#cfd5f5}
+.row.new{box-shadow:0 0 0 3px rgba(79,107,237,.18);border-color:#9fb0f5}
+.cb{width:16px;height:16px;border-radius:5px;border:1.5px solid #b9bed3;flex:none;display:flex;align-items:center;justify-content:center;color:#fff;font-size:11px}
+.cb.on{background:#4f6bed;border-color:#4f6bed}
+.row .t{flex:1}.row.done .t{color:#9aa0b8;text-decoration:line-through}
+.tag{font-size:10.5px;padding:2px 7px;border-radius:10px;background:#eef1fb;color:#4f6bed;font-weight:600}
+.tag.o{background:#fdf1e7;color:#c26a1e}.tag.g{background:#ecf7e8;color:#3d8a2f}
+.av{width:20px;height:20px;border-radius:50%;font-size:9.5px;font-weight:700;color:#fff;display:flex;align-items:center;justify-content:center}
+.due{font-size:11.5px;color:#8a8fa8;width:52px;text-align:right}
+/* modal */
+.scrim{position:absolute;inset:0;background:rgba(20,22,35,.28)}
+.modal{position:absolute;left:120px;top:92px;width:400px;background:#fff;border-radius:12px;box-shadow:0 20px 50px rgba(20,22,35,.25);padding:20px}
+.modal h2{font-size:15px;font-weight:700;margin-bottom:14px}
+.lab{font-size:11.5px;font-weight:600;color:#5b6078;margin-bottom:6px}
+.inp{height:34px;border:1px solid #dfe2ec;border-radius:7px;display:flex;align-items:center;padding:0 10px;font-size:13px;margin-bottom:14px;background:#fff}
+.inp.focus{border-color:#4f6bed;box-shadow:0 0 0 3px rgba(79,107,237,.18)}
+.inp .ph{color:#a6abc2}
+.ic{display:inline-block;width:1.5px;height:16px;background:#1d2033;margin-left:1px}
+.sel{justify-content:space-between}
+.dd{position:absolute;left:20px;width:360px;background:#fff;border:1px solid #e1e4ee;border-radius:9px;box-shadow:0 12px 28px rgba(20,22,35,.16);padding:5px}
+.dd div{display:flex;align-items:center;gap:9px;height:32px;padding:0 9px;border-radius:6px;font-size:13px}
+.dd div.hov{background:#eef1fb}
+.foot{display:flex;justify-content:flex-end;gap:8px;margin-top:4px;align-items:center}
+.kb{font-size:10.5px;color:#9aa0b8;margin-right:auto}
+.toast{position:absolute;right:20px;bottom:20px;background:#1d2033;color:#fff;font-size:12.5px;border-radius:9px;padding:11px 14px;display:flex;gap:10px;align-items:center;box-shadow:0 10px 24px rgba(20,22,35,.25)}
+.toast b{color:#9ece6a}
+</style></head>
+<body>
+<div class="wall"></div>
+<div class="bar">
+  <div class="ws"><span class="on">1</span><span>2</span><span>3</span><span>4</span></div>
+  <div class="clock">Sunday 18:42</div>
+  <div class="right"><span class="rec"></span><span>wifi</span><span>vol</span><span>bat 84%</span></div>
+</div>
+
+<div class="win" id="term"><div class="term" id="termtext"></div></div>
+
+<div class="win act" id="app">
+  <div class="chrome"><span>&#8592; &#8594;</span><div class="url">tasks.local/launch</div></div>
+  <div class="appbody">
+    <div class="side">
+      <div class="logo"><i></i>Tasks</div>
+      <div class="nav"><div>Inbox</div><div class="on">Launch</div><div>Roadmap</div><div>Bugs</div><div>Archive</div></div>
+    </div>
+    <div class="main" id="main">
+      <div class="hdr"><h1>Launch week</h1><div class="btn pri" id="newbtn">+ New task</div></div>
+      <div class="sub">7 tasks · 3 done</div>
+      <div class="tabs"><div class="on">Open</div><div>Done</div><div>All</div></div>
+      <div id="list"></div>
+      <div id="modalhost"></div>
+      <div id="toasthost"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const PEOPLE = {Priya:'#e0874f', Marco:'#4f9e6b', Aiko:'#8a6fd6', Sam:'#4f6bed'};
+const BASE_ROWS = [
+  {id:'r1', t:'Write release notes', tag:['Docs',''], who:'Aiko', due:'Mon'},
+  {id:'r2', t:'Fix signup redirect', tag:['Bug','o'], who:'Marco', due:'Tue'},
+  {id:'r3', t:'Pricing page copy', tag:['Web',''], who:'Priya', due:'Wed'},
+  {id:'r4', t:'Load test the API', tag:['Infra','g'], who:'Sam', due:'Thu'},
+];
+const TERM0 = [
+  '<span class="p">~/code/tasks</span> <span class="g">main</span> <span class="d">❯</span> bin/dev',
+  '<span class="d">18:41:02 web.1 | Listening on http://127.0.0.1:3000</span>',
+  '<span class="d">18:41:03 css.1 | Done in 164ms.</span>',
+  '<span class="d">18:41:30 web.1 | POST /tasks 201 Created in 22ms</span>',
+  '',
+  '<span class="p">~/code/tasks</span> <span class="g">main</span> <span class="d">❯</span> cat .env.local',
+  '<span class="y">API_TOKEN</span>=tok_demo_8f3a9c2e7b1d4f6a0c5e9b2d7f4a1c8e',
+  '<span class="y">DEPLOY_EMAIL</span>=deploy@tasks.example',
+  '',
+];
+function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;')}
+function typed(list, t){ // list of {t, ch}; returns string typed by t
+  let s=''; for(const k of list){ if(k.t>t) break; if(k.ch==='\b') s=s.slice(0,-1); else s+=k.ch } return s }
+function lastTyped(list,t){let l=-1e9; for(const k of list){ if(k.t<=t) l=k.t } return l}
+function caretOn(list,t){ const l=lastTyped(list,t); if(t-l<0.5) return true; return Math.floor((t-l-0.5)/0.53)%2===0 }
+function hit(el,x,y){ if(!el) return false; const r=el.getBoundingClientRect(); return x>=r.left&&x<=r.right&&y>=r.top&&y<=r.bottom }
+
+window.renderAt = function(t, x, y){
+  const B = window.BEATS; const sig=[];
+  // ---------- app list
+  const rows = BASE_ROWS.map(r=>({...r}));
+  const created = t >= B.save;
+  if (created) rows.unshift({id:'rn', t:B.title, tag:['Launch',''], who:B.assignee, due:'Fri', isNew: t < B.save+2.2});
+  const doneId = t >= B.check ? 'rn' : null;
+  const list = document.getElementById('list');
+  list.innerHTML = rows.map(r=>`<div class="row ${r.isNew?'new':''} ${r.id===doneId?'done':''}" id="${r.id}"><div class="cb ${r.id===doneId?'on':''}">${r.id===doneId?'✓':''}</div><div class="t">${esc(r.t)}</div><span class="tag ${r.tag[1]}">${r.tag[0]}</span><div class="av" style="background:${PEOPLE[r.who]}">${r.who[0]}</div><div class="due">${r.due}</div></div>`).join('');
+  sig.push('rows', created, doneId, created && t < B.save+2.2);
+
+  // ---------- modal
+  const mh = document.getElementById('modalhost');
+  const modalOpen = t >= B.openModal && t < B.save;
+  mh.innerHTML='';
+  if (modalOpen){
+    const title = typed(B.titleKeys, t);
+    const tFocus = t >= B.titleFocus && t < B.ddOpen;
+    const ddOpen = t >= B.ddOpen && t < B.ddPick;
+    const who = t >= B.ddPick ? B.assignee : null;
+    mh.innerHTML = `<div class="scrim"></div><div class="modal" id="modal"><h2>New task</h2>
+      <div class="lab">Title</div>
+      <div class="inp ${tFocus?'focus':''}" id="title">${title?esc(title):'<span class="ph">What needs doing?</span>'}${tFocus&&caretOn(B.titleKeys,t)?'<span class="ic"></span>':''}</div>
+      <div class="lab">Assignee</div>
+      <div class="inp sel ${ddOpen?'focus':''}" id="assignee">${who?`<span style="display:flex;gap:8px;align-items:center"><span class="av" style="background:${PEOPLE[who]}">${who[0]}</span>${who}</span>`:'<span class="ph">Unassigned</span>'}<span style="color:#9aa0b8">▾</span></div>
+      <div class="lab">Due</div>
+      <div class="inp" id="due">Friday, Nov 13</div>
+      <div class="foot"><span class="kb">Ctrl+S to save</span><div class="btn sec" id="cancel">Cancel</div><div class="btn pri" id="save">Create task</div></div>
+    </div>`;
+    if (ddOpen){
+      const a = document.getElementById('assignee'); const m=document.getElementById('modal');
+      const top = a.offsetTop + a.offsetHeight + 4;
+      const dd = document.createElement('div'); dd.className='dd'; dd.style.top=top+'px';
+      dd.innerHTML = Object.keys(PEOPLE).map(p=>`<div data-p="${p}"><span class="av" style="background:${PEOPLE[p]}">${p[0]}</span>${p}</div>`).join('');
+      m.appendChild(dd);
+      for (const d of dd.children){ if(hit(d,x,y)){ d.classList.add('hov'); sig.push('ddh',d.dataset.p) } }
+    }
+    sig.push('modal', title, tFocus, tFocus&&caretOn(B.titleKeys,t), ddOpen, who);
+  }
+  // ---------- toast
+  const th = document.getElementById('toasthost');
+  const toastOn = t >= B.save+0.15 && t < B.save+3.2;
+  th.innerHTML = toastOn ? `<div class="toast"><b>✓</b>Task created · <span style="color:#a9b1d6">${esc(B.title)}</span></div>` : '';
+  sig.push('toast', toastOn);
+
+  // ---------- terminal
+  const tl = TERM0.slice();
+  const cmd1 = typed(B.cmd1Keys, t), cmd2 = typed(B.cmd2Keys, t);
+  const prompt = '<span class="p">~/code/tasks</span> <span class="g">main</span> <span class="d">❯</span> ';
+  const termFocus = t >= B.termFocus;
+  let cur = null;
+  if (t < B.cmd1Enter){ tl.push(prompt + '<span class="w">'+esc(cmd1)+'</span>'); cur = B.cmd1Keys }
+  else {
+    tl.push(prompt + '<span class="w">'+esc(cmd1)+'</span>');
+    const out1 = B.out1.filter(o=>o.t<=t).map(o=>o.html); tl.push(...out1);
+    if (t >= B.out1[B.out1.length-1].t){
+      if (t < B.cmd2Enter){ tl.push(prompt + '<span class="w">'+esc(cmd2)+'</span>'); cur = B.cmd2Keys }
+      else {
+        tl.push(prompt + '<span class="w">'+esc(cmd2)+'</span>');
+        tl.push(...B.out2.filter(o=>o.t<=t).map(o=>o.html));
+        if (t >= B.out2[B.out2.length-1].t){ tl.push(prompt); cur = [] }
+      }
+    }
+  }
+  const showCaret = termFocus && cur && caretOn(cur.length?cur:[{t:B.termFocus}], t);
+  if (cur){ tl[tl.length-1] += showCaret ? '<span class="caret"></span>' : '' }
+  document.getElementById('termtext').innerHTML = tl.join('\n');
+  sig.push('term', tl.length, cmd1, cmd2, showCaret);
+  // focus border follows the last click target
+  document.getElementById('term').classList.toggle('act', termFocus && t < B.backToApp);
+  document.getElementById('app').classList.toggle('act', !(termFocus && t < B.backToApp));
+  sig.push('focus', termFocus && t < B.backToApp);
+
+  // ---------- hover states (from the real cursor position)
+  for (const id of ['newbtn','save','cancel']){
+    const el = document.getElementById(id); if(!el) continue;
+    const h = hit(el,x,y); el.classList.toggle('hov', h); if(h) sig.push('h',id) }
+  for (const el of document.querySelectorAll('.row')){ if(hit(el,x,y)){ el.classList.add('hov'); sig.push('hr',el.id) } }
+  return sig.join('|');
+};
+
+window.rectOf = function(sel){ const el=document.querySelector(sel); if(!el) return null; const r=el.getBoundingClientRect(); return [r.left,r.top,r.width,r.height] };
+</script>
+</body></html>

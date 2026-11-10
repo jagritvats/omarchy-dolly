@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# dolly launcher: runs the Python package that sits next to this script, with
+# the plugin's private venv when one exists (created by `dolly-setup`).
+set -euo pipefail
+SELF="$(readlink -f "${BASH_SOURCE[0]}")"
+ROOT="$(cd "$(dirname "$SELF")/.." && pwd)"
+VENV="${DOLLY_VENV:-${XDG_DATA_HOME:-$HOME/.local/share}/dolly/venv}"
+PY=python3
+if [[ -x "$VENV/bin/python" ]]; then
+  PY="$VENV/bin/python"
+fi
+export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
+# Never write into the plugin folder: Omarchy reloads a plugin whenever its folder
+# changes, so __pycache__ written next to the code reset the bar widget again and
+# again (VM, Nov 10: "Local plugin changed, reloading: io.github.jagritvats.dolly" x12).
+export PYTHONPYCACHEPREFIX="${PYTHONPYCACHEPREFIX:-${XDG_CACHE_HOME:-$HOME/.cache}/dolly/pycache}"
+# TEST HARNESS ONLY: the headless Omarchy harness has no Hyprland input, camera or
+# Chromium; its walkthrough script writes DOLLY_* overrides (labelled test feeds) here.
+# The file lives in the private runtime dir and is never created by Dolly itself.
+HENV="${XDG_RUNTIME_DIR:-/nonexistent}/dolly/harness.env"
+if [[ -f $HENV && ! -L $HENV && -O $HENV ]]; then
+  while IFS='=' read -r k v; do
+    [[ $k =~ ^DOLLY_[A-Z_]+$ ]] && export "$k=$v"
+  done <"$HENV"
+fi
+exec "$PY" -m dolly.cli "$@"

@@ -1,0 +1,113 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.jagritvats.dolly",
+  "name": "Dolly",
+  "version": "0.5.0",
+  "author": "Jagrit Vats",
+  "license": "MIT",
+  "description": "Polished demo recordings for Omarchy: auto-zoom on what changes, re-drawn cursor, theme-matched frame, camera bubble, separate mic/system audio, keystroke overlay, timeline editor, recordings library and clean MP4/GIF export.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Dolly recorder",
+    "description": "Record button with live timer; opens the Dolly panel (record, recent recordings, settings).",
+    "category": "Capture",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "mode": "window",
+      "countdown": 3,
+      "fps": "60",
+      "keys": true,
+      "audioMode": "none",
+      "camera": "off",
+      "replaySeconds": 60,
+      "solidWindows": "auto"
+    },
+    "schema": [
+      {
+        "key": "mode",
+        "type": "enum",
+        "label": "Default capture",
+        "options": [
+          "screen",
+          "window",
+          "region"
+        ],
+        "defaultValue": "window"
+      },
+      {
+        "key": "countdown",
+        "type": "integer",
+        "label": "Countdown (s)",
+        "min": 0,
+        "max": 10,
+        "step": 1,
+        "defaultValue": 3
+      },
+      {
+        "key": "fps",
+        "type": "enum",
+        "label": "Capture frame rate",
+        "options": [
+          "30",
+          "60"
+        ],
+        "defaultValue": "60"
+      },
+      {
+        "key": "keys",
+        "type": "boolean",
+        "label": "Log shortcuts for the keystroke overlay",
+        "defaultValue": true
+      },
+      {
+        "key": "audioMode",
+        "type": "enum",
+        "label": "Audio (separate tracks)",
+        "options": [
+          "none",
+          "mic",
+          "system",
+          "both"
+        ],
+        "defaultValue": "none"
+      },
+      {
+        "key": "camera",
+        "type": "enum",
+        "label": "Camera bubble",
+        "options": [
+          "off",
+          "edit",
+          "live"
+        ],
+        "defaultValue": "off"
+      },
+      {
+        "key": "replaySeconds",
+        "type": "integer",
+        "label": "Instant replay length (s)",
+        "min": 10,
+        "max": 600,
+        "step": 10,
+        "defaultValue": 60
+      },
+      {
+        "key": "solidWindows",
+        "type": "enum",
+        "label": "Solid windows while recording (auto = only with Glassy)",
+        "options": [
+          "auto",
+          "on",
+          "off"
+        ],
+        "defaultValue": "auto"
+      }
+    ]
+  }
+}

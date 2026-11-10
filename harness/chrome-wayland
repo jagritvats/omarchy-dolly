@@ -1,0 +1,5 @@
+#!/bin/sh
+# TEST HARNESS ONLY: the shell harness has no Chromium package; Google Chrome on
+# Wayland stands in as the editor's app window (DOLLY_BROWSER=harness/chrome-wayland).
+exec /usr/bin/google-chrome --ozone-platform=wayland --no-sandbox --no-first-run --no-default-browser-check --test-type --disable-infobars --remote-debugging-port=${DOLLY_CDP_PORT:-9333} \
+  --disable-gpu --user-data-dir="${XDG_RUNTIME_DIR:-/tmp}/dolly-chrome" --window-size=1500,900 "$@" >/dev/null 2>&1

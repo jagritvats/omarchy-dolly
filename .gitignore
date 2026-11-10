@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+/out/
+/demo-out/
+*.tmp.mp4
+/scenarios-out/
