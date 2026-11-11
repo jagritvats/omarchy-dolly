@@ -19,6 +19,8 @@
 #      omarchy-pkg-add, or a private pip venv for the python ones. Asks only when
 #      run in a terminal; otherwise prints the command.
 #   4. Makes sure the record button is on the bar (omarchy bar put, where it exists).
+# It also links ~/.local/bin/dolly to this plugin's launcher, so `dolly` works in a
+# terminal, a script or a coding agent's shell (never replaces something that is not ours).
 set -euo pipefail
 # keep __pycache__ out of the plugin folder (Omarchy reloads the plugin when it changes)
 export PYTHONPYCACHEPREFIX="${PYTHONPYCACHEPREFIX:-${XDG_CACHE_HOME:-$HOME/.cache}/dolly/pycache}"
@@ -155,6 +157,24 @@ LIST
 else
   echo "keybind: $BIND not found; skipped (bind '$DOLLY toggle' yourself)"
 fi
+# ---- 2b. `dolly` as a command, for terminals, scripts and coding agents: a link in
+# ~/.local/bin (on PATH in Omarchy). Never replaces a file or a link that is not Dolly's.
+LINK="$HOME/.local/bin/dolly"
+if [[ -L $LINK ]]; then LINKTO="$(readlink "$LINK")"; else LINKTO=""; fi
+if $UNDO; then
+  if [[ $LINKTO == "$DOLLY" ]]; then
+    rm -f "$LINK"
+    echo "command: removed $LINK"
+  fi
+elif [[ $LINKTO == "$DOLLY" ]]; then
+  echo "command: dolly is on your PATH ($LINK)"
+elif [[ -e $LINK || -L $LINK ]] && [[ $LINKTO != */plugins/*dolly*/bin/dolly ]]; then
+  echo "command: $LINK exists and is not Dolly's; left alone (use $DOLLY)"
+elif mkdir -p "$(dirname "$LINK")" && ln -sfn "$DOLLY" "$LINK"; then
+  echo "command: dolly is on your PATH ($LINK)"
+else
+  echo "command: could not link $LINK (use $DOLLY)"
+fi
 $UNDO && exit 0
 
 # ---- 3. packages Dolly needs (python-numpy/opencv/pillow; wf-recorder when
@@ -169,7 +189,10 @@ else
   echo "packages: missing $MISSING"
   "$DOLLY" deps 2>/dev/null | sed 's/^/    /' || true
   if command -v omarchy-pkg-add >/dev/null; then INSTALL="omarchy-pkg-add $MISSING"; else INSTALL="sudo pacman -S --needed $MISSING"; fi
-  if [[ -t 0 && -t 1 ]]; then
+  if [[ ${DOLLY_SETUP_YES:-} == 1 ]]; then
+    echo "packages: installing ($INSTALL)"
+    $INSTALL || echo "packages: not installed; later run: $DOLLY deps --install"
+  elif [[ -t 0 && -t 1 ]]; then
     read -r -p "Install them now ($INSTALL)? [Y/n/v = private pip venv for the python ones] " a
     case ${a:-y} in
       [yY]*) $INSTALL ;;

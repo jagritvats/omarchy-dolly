@@ -1,0 +1,46 @@
+name: Bug report
+description: Something in Dolly did not work or looked wrong.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time. Two things make a bug fixable fast: what you did, and the report file.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, what you got. A clip or screenshot helps a lot.
+    validations:
+      required: true
+  - type: textarea
+    id: report
+    attributes:
+      label: Report file
+      description: |
+        Run `~/.config/omarchy/plugins/io.github.jagritvats.dolly/bin/dolly doctor --report` and drag the file it names here.
+        It contains Dolly's checks, versions, settings and logs. No video, no screenshots, no typed keys.
+    validations:
+      required: true
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where does it happen?
+      multiple: true
+      options:
+        - Recording (start, stop, pause)
+        - Auto-zoom or framing
+        - Editor
+        - Export or sharing
+        - Audio or camera
+        - Bar button or panel
+        - Setup or install
+        - Something else
+    validations:
+      required: true
+  - type: input
+    id: machine
+    attributes:
+      label: Machine
+      description: Laptop or desktop model and GPU, or "virtual machine". Monitors and scaling if it looks relevant.
+      placeholder: Framework 13 AMD, one external 4K monitor at 1.5x

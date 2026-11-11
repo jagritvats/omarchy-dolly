@@ -1,0 +1,6 @@
+# The checks CI runs on dolly/: pyflakes, syntax errors, and a few bug-prone patterns.
+target-version = "py312"
+line-length = 120
+
+[lint]
+select = ["F", "E9", "B006", "B008", "B904", "PLE"]

@@ -260,3 +260,96 @@ def _sample_frames(raw: Path, every: float):
     finally:
         proc.stdout.close()
         proc.wait()
+
+
+# ------------------------------------------------------------------ automatic (privacy by default)
+# Things that should never end up in a demo, decided from the event log with no settings:
+# windows of apps whose whole job is holding secrets, authentication prompts, and
+# notification toasts. Each becomes an ordinary box (source "auto") in the editor's privacy
+# lane, removable like any other; they are computed once, when the recording is finalized.
+from .sensitive import secret_window  # noqa: E402
+
+
+def _window_boxes(tl, pad: float = 6.0, lead: float = 0.25, settle: float = 1.0) -> list[dict]:
+    """One box per secret-bearing window while it is on screen; a window being moved or
+    resized is covered by the union of where it was (snapshots are 10 Hz)."""
+    W, H, runs, open_ = tl.w, tl.h, [], {}
+    snaps = tl.snapshots
+    for i, s in enumerate(snaps):
+        seen = set()
+        for w in s["windows"]:
+            label = secret_window(w.get("class"), w.get("title"))
+            if not label:
+                continue
+            a, r = w["address"], tuple(w["rect"])
+            seen.add(a)
+            run = open_.get(a)
+            if run is None:
+                open_[a] = {"start": s["t"], "rect": r, "last": r, "changed": s["t"], "label": label}
+            elif r != run["last"]:
+                if s["t"] - run["changed"] > settle:          # it had settled: a new box where it now is
+                    runs.append({**run, "end": s["t"]})
+                    open_[a] = {"start": s["t"], "rect": r, "last": r, "changed": s["t"], "label": label}
+                else:                                         # still moving: cover the whole path
+                    run["rect"] = (min(run["rect"][0], r[0]), min(run["rect"][1], r[1]),
+                                   max(run["rect"][2], r[2]), max(run["rect"][3], r[3]))
+                    run["last"], run["changed"], run["moved"] = r, s["t"], True
+            elif run.get("moved") and s["t"] - run["changed"] > settle:
+                runs.append({**run, "end": s["t"]})           # it came to rest: back to just the window
+                open_[a] = {"start": s["t"], "rect": r, "last": r, "changed": s["t"], "label": label}
+        for a in [a for a in open_ if a not in seen]:
+            runs.append({**open_.pop(a), "end": s["t"]})
+    for run in open_.values():
+        runs.append({**run, "end": tl.duration})
+    out = []
+    for run in runs:
+        x0, y0, x1, y1 = run["rect"]
+        x0, y0, x1, y1 = max(0.0, x0 - pad), max(0.0, y0 - pad), min(W, x1 + pad), min(H, y1 + pad)
+        if x1 - x0 < 8 or y1 - y0 < 8:
+            continue                                          # not on the recorded area
+        out.append({"start": round(max(0.0, run["start"] - lead), 3), "end": round(min(tl.duration, run["end"] + 0.1), 3),
+                    "rect": [round(x0, 1), round(y0, 1), round(x1 - x0, 1), round(y1 - y0, 1)],
+                    "label": run["label"]})
+    return out
+
+
+def toast_spans(tl) -> list[tuple[float, float, int]]:
+    """[(t0, t1, toasts on screen)] from the shell's own count, which the logger records on
+    change (including what is already there when the recording starts)."""
+    spans, evs = [], list(getattr(tl, "toasts", []))
+    for i, e in enumerate(evs):
+        t1 = evs[i + 1]["t"] if i + 1 < len(evs) else tl.duration
+        t0 = 0.0 if i == 0 else e["t"]                        # the first count is what was already there
+        if e["count"] > 0 and t1 > t0:
+            spans.append((t0, t1, int(e["count"])))
+    return spans
+
+
+def _toast_boxes(tl, areas, lead: float = 0.8, tail: float = 0.5) -> list[dict]:
+    """One box per stretch with the same number of toasts. Hyprland only knows the
+    notification area (a click-through column that stays mapped), not each card, so the box
+    is the top of that area, where the deck grows from, tall enough for that many cards
+    with action buttons. It errs on the large side."""
+    W, H = tl.w, tl.h
+    vs = float(tl.capture.get("scale", 1.0) or 1.0)           # video px per logical px
+    spans, boxes = toast_spans(tl), []
+    for i, (t0, t1, n) in enumerate(spans):
+        rose = i == 0 or spans[i - 1][1] < t0 or spans[i - 1][2] < n      # a card slid in: start early
+        fell = i + 1 == len(spans) or spans[i + 1][0] > t1 or spans[i + 1][2] < n
+        for ax0, ay0, ax1, ay1 in areas:
+            x0, y0, x1, y1 = max(0.0, ax0), max(0.0, ay0), min(W, ax1), min(H, ay1, ay0 + (60 + 150 * n) * vs)
+            if x1 - x0 < 8 or y1 - y0 < 8:
+                continue                                      # that area is not in this recording
+            boxes.append({"start": round(max(0.0, t0 - (lead if rose else 0.0)), 3),
+                          "end": round(min(tl.duration, t1 + (tail if fell else 0.0)), 3),
+                          "rect": [round(x0, 1), round(y0, 1), round(x1 - x0, 1), round(y1 - y0, 1)],
+                          "label": "notification" if n == 1 else f"{n} notifications"})
+    return boxes
+
+
+def auto_boxes(tl) -> list[dict]:
+    """Boxes (source "auto") for secret-bearing windows and notification toasts."""
+    areas = [tuple(a) for a in (tl.capture.get("notification_areas") or [])]
+    found = _window_boxes(tl) + _toast_boxes(tl, areas)
+    found.sort(key=lambda b: b["start"])
+    return [{"id": f"a{i + 1}", "mode": "blur", "source": "auto", "enabled": True, **b} for i, b in enumerate(found)]

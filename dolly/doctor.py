@@ -258,6 +258,14 @@ def check(as_json=False) -> dict:
     rep["paths"]["replay"] = ("gpu-screen-recorder replay buffer (-r, SIGUSR1/SIGRTMIN+n)" if gsr_ok
                               else "unavailable (needs a working gpu-screen-recorder; wf-recorder has no replay mode)")
     rep["paths"]["pause"] = "gsr SIGUSR2" if gsr_ok else "unavailable on the wf-recorder path"
+    try:
+        from .script import check_report
+        sc = check_report()
+        rep["paths"]["scripted"] = ("dolly run: typing and keys " + ("ok (wtype)" if sc["keys"] else "need wtype")
+                                    + " · pointer and clicks " + ("ok (Hyprland)" if sc["pointer"] else "need Hyprland")
+                                    + ' · wait "quiet" ' + ("ok (grim)" if sc["quiet"] else "fixed (no grim)"))
+    except Exception as e:
+        rep["paths"]["scripted"] = f"unknown: {e}"
     rep["paths"]["user_groups"] = groups
     from . import project as projmod
     rep["paths"]["recordings"] = str(projmod.videos_root())

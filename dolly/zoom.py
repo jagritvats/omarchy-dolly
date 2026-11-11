@@ -233,6 +233,36 @@ def _rect_union(a, b):
     return (min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3]))
 
 
+FOCUS_CLICK_WINDOW = 2.5      # s: typing this soon after a click may be what the click was for
+FOCUS_CLICK_DISTANCE = 350.0  # logical px between the click and the caret to call it "elsewhere"
+
+
+def focus_only_click(tl: Timeline, aoi, c: dict, s: float = 1.0) -> bool:
+    """The click changed nothing around the pointer (it focused a window or a field), and
+    plain typing starts somewhere else right after: the viewer should watch the typing."""
+    t = float(c["t"])
+    for dt in (0.15, 0.35, 0.6):
+        rr, kind, _ = aoi.at(t + dt)
+        if kind in ("scroll", "layout"):
+            return False                      # the click rearranged or scrolled something
+        if rr is not None and kind == "pointer" and ((rr[2] - rr[0]) > 232 or (rr[3] - rr[1]) > 192):
+            return False                      # something changed next to the pointer (menu, dialog, highlight)
+    nxt_click = min((float(o["t"]) for o in tl.clicks if float(o["t"]) > t), default=float("inf"))
+    for k in tl.keys:
+        kt = float(k["t"])
+        if kt <= t:
+            continue
+        if kt - t > FOCUS_CLICK_WINDOW or kt > nxt_click:
+            return False
+        if set(k.get("mods", [])) & {"ctrl", "alt", "super"} or k["key"] == "Escape":
+            return False                      # a shortcut, not typing into what was clicked
+        caret = last_caret(aoi, kt + 0.15)
+        if caret is None:
+            return False                      # cannot tell where the typing is: keep the click
+        return math.hypot(float(caret[0]) - c["x"], float(caret[1]) - c["y"]) > FOCUS_CLICK_DISTANCE * s
+    return False
+
+
 def _aoi_actions(tl: Timeline, cfg: ZoomConfig, aoi) -> list[Action]:
     """Actions whose *rect* is what the viewer must see (AOI-aware)."""
     acts: list[Action] = []
@@ -244,6 +274,8 @@ def _aoi_actions(tl: Timeline, cfg: ZoomConfig, aoi) -> list[Action]:
     for c in tl.clicks:
         if not ok(c["t"]) or not (0 <= c["x"] <= tl.w and 0 <= c["y"] <= tl.h):
             continue          # clicks on another monitor are not ours
+        if cfg.follow_typing and focus_only_click(tl, aoi, c, s):
+            continue          # it only focused where the typing happens: the typing is the shot
         box = (c["x"] - 150 * s, c["y"] - 50 * s, c["x"] + 150 * s, c["y"] + 50 * s)
         r = box
         # what the click caused (a dialog, a dropdown) next to the pointer; thin changes

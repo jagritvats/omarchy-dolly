@@ -1,0 +1,15 @@
+name: Idea
+description: Something Dolly should do, or do better.
+labels: [idea]
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: What were you trying to do?
+      description: The situation, not the solution. A clip of the result you wanted is welcome.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would help?

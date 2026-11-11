@@ -75,20 +75,20 @@ From the Omarchy plugin marketplace, or:
 omarchy plugin add https://github.com/jagritvats/omarchy-dolly.git --enable
 ```
 
-The record button appears on the bar. The first time you open its panel, Dolly
-checks two things:
-- **Set up**: adds the hotkeys (Super+Alt+R to record) and Omarchy menu rows. Omarchy
-  runs nothing when a plugin is added, so this is one click in the panel.
-- **Install missing packages**: opens a terminal running Omarchy's `omarchy-pkg-add`
-  (it asks for your password there).
+The record button appears on the bar. Open it and click **Set up**: one terminal adds
+the hotkeys (Super+Alt+R to record) and Omarchy menu rows and installs the packages
+Dolly needs (about 45 MB to download; it asks for your password once). That is the
+whole setup. Everything else has a default and can be changed later in Settings.
 
 The same from a terminal:
 
 ```bash
-~/.config/omarchy/plugins/io.github.jagritvats.dolly/bin/dolly setup            # hotkeys and menu rows
-~/.config/omarchy/plugins/io.github.jagritvats.dolly/bin/dolly deps --install   # packages Dolly still needs
-~/.config/omarchy/plugins/io.github.jagritvats.dolly/bin/dolly doctor           # what works on this machine
+~/.config/omarchy/plugins/io.github.jagritvats.dolly/bin/dolly setup   # everything the button does
+dolly doctor                                                           # what works on this machine
 ```
+
+Set up also puts `dolly` on your PATH (a link in `~/.local/bin`), so the commands
+below work in any terminal, script or agent shell.
 
 Needs Omarchy 4.x (the Quattro shell).
 
@@ -109,7 +109,43 @@ which ships with Omarchy, cannot use a virtual GPU). `ffmpeg` ships with Omarchy
 | Menu (Super+Space, after **Set up**) | Trigger → Capture → Record demo / Dolly recordings / Dolly settings / Open last / Instant replay · Trigger → Share → Last demo recording |
 | Editor | opens after you stop, without taking focus. Library · Editor · Settings. Timeline lanes for zoom, speed and privacy; 16:9 / 9:16 / 1:1 preview; In/Out trim; camera bubble shape, size and position (drag it); camera-only ranges; per-track volume and mute; blur boxes; Scrub secrets; captions; title card; **Share** (Ctrl+E) |
 | Settings | the editor's Settings view (also `dolly settings`): Capture, Audio, Camera, Look, Auto-zoom, Privacy, Export, Sharing, Storage. Stored in `~/.config/dolly/config.json`; the bar widget's own options stay in sync |
-| CLI | `dolly record [--mode screen|window|region] [--audio none|mic|system|both] [--camera off|edit|live] · stop · pause · mute · mark · replay · edit · library [--open] · settings · config get/set · export [--aspect 16:9|9:16|1:1|4:5] [--quality draft|fast|high|best] [--gif] · share … · recover · deps · setup · integration · doctor` |
+| CLI | `dolly record [--mode screen|window|region] [--audio none|mic|system|both] [--camera off|edit|live] · stop · pause · mute · mark · replay · edit · library [--open] · settings · config get/set · export [--aspect 16:9|9:16|1:1|4:5] [--quality draft|fast|high|best] [--gif] · share … · run demo.toml [--dry-run] [--json] · recover · deps · setup · integration · doctor` |
+
+### Scripted demos
+
+Write the demo as steps; Dolly performs it, records it and exports it. The same
+file gives the same take every time, so re-recording after a change is one command.
+
+```toml
+# demo.toml
+title  = "Listing files"
+aspect = ["16:9", "9:16"]
+
+[[setup]]              # before recording
+open = "terminal"
+as   = "term"
+
+[[step]]
+type  = "ls -la"       # typed with a human rhythm
+enter = true
+
+[[step]]
+wait = "quiet"         # until the screen stops changing
+
+[[cleanup]]
+close = "term"
+```
+
+```sh
+dolly run demo.toml --dry-run   # the timed plan; touches nothing
+dolly run demo.toml             # prints the exported files
+```
+
+Steps: `open`, `focus`, `type`, `key`, `wait`, `move`, `click`, `zoom`, `say`
+(a caption), `close`. Everything it needs ships with Omarchy. A storyboard runs commands and types with your
+permissions, so read one before you run it, like a shell script. Reference:
+[docs/storyboard.md](docs/storyboard.md) · a longer example:
+[examples/terminal-demo.toml](examples/terminal-demo.toml).
 
 ### Plain recording, no zoom
 
@@ -159,6 +195,45 @@ recording like Dolly's own key would (saved, editor opens). It stops cleanly
 an unplugged monitor. After a hard crash, `dolly recover` saves the partial
 recording.
 
+## For agents and scripts
+
+Dolly can be driven without a keyboard or a click, for example by a coding agent that
+wants to show what it just built. Nothing asks a question.
+
+```bash
+# record a named window for 12 seconds; no click, no countdown, no editor
+dolly record --window kitty --for 12 --json
+# {"ok": true, "recording": false, "dir": "/home/me/Videos/Dolly/2026-11-10_21-24-56",
+#  "raw": ".../raw.mkv", "duration": 12.4, "trim": [0.0, 12.4], "zooms": 2, "blurs": 0, ...}
+
+# or: start, run the thing you want to show, stop
+dolly record --window class:chromium --json      # returns once it is recording
+./run-my-demo.sh
+dolly stop --json                                # the same object as above
+
+# export; "dir" comes from the object above (no dir: the latest recording)
+dolly export "$DIR" --json --width 1280
+# {"ok": true, "output": ".../2026-11-10_21-24-56.mp4", "bytes": 1070286, "duration": 12.6,
+#  "width": 1280, "height": 720, "aspect": "16:9", "format": "mp4"}
+```
+
+- Target: `--window SELECTOR` (a class, part of a title, `class:NAME`, `title:TEXT`,
+  `address:0x...` or `active`; of several matches the most recently focused wins),
+  `--monitor NAME`, or `--region X,Y,WxH` in logical pixels.
+- `--for SECONDS` stops and finalizes by itself; `--wait` blocks until someone else stops
+  it; with neither, `record` returns as soon as recording has started.
+- `--json` prints exactly one JSON object on stdout and never opens the editor
+  (`--no-editor` does only the latter).
+- It works from a shell with no session variables (ssh, a systemd unit, an agent's tool
+  call), as the logged-in user: the Hyprland session is found by itself.
+- Errors are the same shape with exit code 1:
+  `{"ok": false, "error": "window-not-found", "message": "...", "windows": [...]}`.
+  Codes: `window-not-found`, `monitor-not-found`, `bad-region`, `needs-target`,
+  `already-recording`, `other-recorder`, `not-recording`, `missing-packages`,
+  `folder-not-writable`, `disk-full`, `no-compositor`, `export-failed`.
+- Automatic zooms, cursor smoothing and the automatic privacy blurs apply as in a normal
+  recording; `dolly edit DIR` opens it in the editor later.
+
 ## Virtual machines
 
 Tested on Omarchy 4.5 in VirtualBox 7.2 (VMSVGA, 3D on).
@@ -179,7 +254,7 @@ Tested on Omarchy 4.5 in VirtualBox 7.2 (VMSVGA, 3D on).
 ```bash
 ~/.config/omarchy/plugins/io.github.jagritvats.dolly/bin/dolly cancel             # if a recording is running
 ~/.config/omarchy/plugins/io.github.jagritvats.dolly/bin/dolly replay stop        # if instant replay is on
-~/.config/omarchy/plugins/io.github.jagritvats.dolly/bin/dolly-setup --undo       # menu rows, hotkeys, camera window rule
+~/.config/omarchy/plugins/io.github.jagritvats.dolly/bin/dolly-setup --undo       # menu rows, hotkeys, camera window rule, the dolly command
 omarchy plugin remove io.github.jagritvats.dolly --yes
 rm -rf ~/.local/share/dolly ~/.cache/dolly ~/.local/state/dolly    # optional: venv, caches, state
 ```
@@ -197,6 +272,8 @@ you want them gone. Packages installed for Dolly stay installed; remove them wit
 
 - `dolly doctor` checks the recorder, packages, disk, hotkeys and the bar widget,
   and says what to do about anything missing.
+- `dolly doctor --report` writes one text file to attach to a bug report: checks,
+  versions, settings and logs. No video, no screenshots, no typed keys.
 - Errors show one line (and a notification when started from the bar or a hotkey);
   the full details go to `~/.local/state/dolly/last-error.log`, a running log to
   `~/.local/state/dolly/dolly.log`. Please attach both to a bug report.

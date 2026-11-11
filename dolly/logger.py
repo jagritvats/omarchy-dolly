@@ -257,6 +257,10 @@ class Logger:
             while b"\n" in buf:
                 line, buf = buf.split(b"\n", 1)
                 ev, _, data = line.decode(errors="replace").partition(">>")
+                if ev == "activewindow":            # "class,title": known before the next clients poll
+                    from .sensitive import secret_window
+                    c, _, ttl = data.partition(",")
+                    self.secret_focus = bool(secret_window(c, ttl))
                 if ev in ("activewindowv2", "movewindowv2", "changefloatingmode", "fullscreen", "openwindow",
                           "closewindow"):
                     self.clients_dirty.set()
@@ -287,6 +291,24 @@ class Logger:
                     self.last_ws = data.partition(",")[2]
         s.close()
 
+    def poll_toasts(self, every: float = 0.4):
+        """Notification toasts on screen, from the shell (`omarchy-shell notifications count`).
+        Hyprland cannot tell: the notification layer stays mapped while idle. Written on
+        change, starting with what is there when the recording begins; privacy.auto_boxes
+        blurs them. A shell without the call ends the polling quietly."""
+        prev = None
+        while not self.stop.is_set():
+            try:
+                r = subprocess.run(["omarchy-shell", "notifications", "count"], capture_output=True, text=True,
+                                   timeout=1.5)
+                n = int(r.stdout.strip())
+            except (OSError, ValueError, subprocess.TimeoutExpired):
+                return
+            if n != prev:
+                self.write({"type": "toasts", "count": n})
+                prev = n
+            self.stop.wait(every)
+
     def emit_window(self):
         w = hypr_json("activewindow")
         if w and w.get("at"):
@@ -301,6 +323,8 @@ class Logger:
             self.clients_dirty.clear()
             cl = hypr_json("clients")
             aw = hypr_json("activewindow") or {}
+            from .sensitive import secret_window
+            self.secret_focus = bool(secret_window(aw.get("class"), aw.get("title")))
             mons = hypr_json("monitors") or []
             if cl is None:
                 continue
@@ -514,12 +538,13 @@ class Logger:
                 elif d.get("type") == "key" and self.keys:
                     self.on_key(int(d["code"]) - 8, bool(d.get("down", True)))
 
-    def start_harness_input(self):
-        path = runtime_dir() / "harness-input.jsonl"
+    def start_harness_input(self, name="harness-input.jsonl", source="harness",
+                            msg="clicks/keys from the test harness input driver (not Hyprland)"):
+        path = runtime_dir() / name
         if not path.exists():
             path.write_text("")
-        self.click_source = "harness"
-        self.write({"type": "info", "msg": "clicks/keys from the test harness input driver (not Hyprland)"})
+        self.click_source = source
+        self.write({"type": "info", "msg": msg})
         threading.Thread(target=self.tail_harness, args=(path,), daemon=True).start()
 
     def tail_harness(self, path: Path):
@@ -595,6 +620,12 @@ class Logger:
         if code in held:
             return          # duplicate press (Hyprland may deliver one event per keyboard path) or auto-repeat
         held.add(code)
+        if getattr(self, "secret_focus", False):
+            if not getattr(self, "_secret_noted", False):
+                self._secret_noted = True
+                self.write({"type": "info",
+                            "msg": "keys are not logged while a password manager or authentication prompt has focus"})
+            return
         name = keymap.label(code)
         if name is None:
             return
@@ -610,7 +641,8 @@ class Logger:
         self.muted = False
         threads = [threading.Thread(target=self.poll_cursor, daemon=True),
                    threading.Thread(target=self.watch_windows, daemon=True),
-                   threading.Thread(target=self.poll_clients, daemon=True)]
+                   threading.Thread(target=self.poll_clients, daemon=True),
+                   threading.Thread(target=self.poll_toasts, daemon=True)]
         if not self.replay:
             threads.append(threading.Thread(target=self.watchdog, daemon=True))
         for t in threads:
@@ -620,6 +652,11 @@ class Logger:
             # TEST HARNESS ONLY: clicks/keys come from the harness input driver
             # (harness/dctl writes the bridge's line format), not from Hyprland
             self.start_harness_input()
+        elif os.environ.get("DOLLY_EVENTS_FROM_SCRIPT") == "1":
+            # `dolly run`: the storyboard runner types through wtype, whose private keymap makes
+            # the keycodes Hyprland reports meaningless, so the runner reports what it typed
+            self.start_harness_input("script-input.jsonl", "script",
+                                     "clicks/keys reported by the storyboard runner (dolly run)")
         elif pref in ("auto", "lua") and self.start_lua_bridge():
             pass
         elif pref in ("auto", "evdev") and self.start_evdev():

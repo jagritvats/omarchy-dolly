@@ -1,0 +1,62 @@
+# A scripted demo: Dolly opens a terminal, types these commands and records it.
+#   dolly run examples/terminal-demo.toml --dry-run    (the timed plan; touches nothing)
+#   dolly run examples/terminal-demo.toml              (records, then exports both shapes)
+title  = "A quick look around"
+record = "screen"
+aspect = ["16:9", "9:16"]
+
+[[setup]]                      # before recording, on an empty workspace
+open = "terminal"
+as   = "term"
+
+[[setup]]
+type  = "clear"
+enter = true
+
+[[step]]
+say = "Dolly is typing this, from a storyboard file"
+
+[[step]]
+type  = "echo 'Hello from a storyboard'"
+enter = true
+
+[[step]]
+wait = "quiet"                 # until the screen stops changing
+
+[[step]]
+type  = "ls /usr/share/omarchy"
+enter = true
+
+[[step]]
+wait = "quiet"
+
+[[step]]
+say = "A second window, opened by the next step"
+
+[[step]]
+open = "terminal"
+as   = "notes"
+
+[[step]]
+type  = "date '+%A, %H:%M'"
+enter = true
+
+[[step]]
+wait = 1.5
+
+[[step]]
+click = "50%,60%"              # back to the first terminal, with the pointer
+in    = "term"
+
+[[step]]
+type  = "echo done"
+enter = true
+
+[[step]]
+wait = 1.2
+
+[[cleanup]]
+close = "notes"
+
+[[cleanup]]
+close = "term"

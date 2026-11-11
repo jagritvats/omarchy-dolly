@@ -10,6 +10,8 @@ Argument shapes were verified on Hyprland 0.56.2 against `hyprctl clients -j`
 """
 from __future__ import annotations
 
+import re
+
 import json
 import subprocess
 
@@ -95,3 +97,84 @@ def raise_top(addr: str) -> bool:
 def close(addr: str) -> bool:
     w = _w(addr)
     return dispatch(f"hl.dsp.window.close({{ window = {_lstr(w)} }})", ["closewindow", w])
+
+
+# ---- key repeat (scripted takes switch it off so a stalled machine cannot repeat a key)
+HELD_REPEAT_DELAY = 60000      # ms: longer than any stall
+
+
+def key_repeat_delay() -> int | None:
+    ok, out = _run(["getoption", "input:repeat_delay"])
+    m = re.search(r"int:\s*(-?\d+)", out) if ok else None
+    return int(m.group(1)) if m else None
+
+
+def set_key_repeat_delay(ms: int) -> bool:
+    ms = int(ms)
+    ok, out = _run(["eval", f"hl.config({{ input = {{ repeat_delay = {ms} }} }})"])
+    if not ok or "error" in out.lower():
+        ok, _ = _run(["keyword", "input:repeat_delay", str(ms)])      # Hyprland with the old config format
+    return ok
+
+
+def _repeat_file():
+    from .log import state_dir
+    return state_dir() / "key-repeat"
+
+
+def restore_key_repeat() -> bool:
+    """Put back the delay a scripted take changed (also heals a take that was killed)."""
+    f = _repeat_file()
+    try:
+        ms = int(f.read_text().strip())
+    except (OSError, ValueError):
+        return False
+    done = set_key_repeat_delay(ms)
+    if done:
+        f.unlink(missing_ok=True)
+    return done
+
+
+def hold_key_repeat() -> bool:
+    """Switch key repeat off until restore_key_repeat(). The old value is kept on disk first."""
+    restore_key_repeat()                       # a killed take may have left it held
+    old = key_repeat_delay()
+    if old is None or old >= HELD_REPEAT_DELAY:
+        return False
+    f = _repeat_file()
+    try:
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(str(old))
+    except OSError:
+        return False                           # cannot remember the old value: leave it alone
+    if set_key_repeat_delay(HELD_REPEAT_DELAY):
+        return True
+    f.unlink(missing_ok=True)
+    return False
+
+
+# ---- the sync marker must vanish at once
+def marker_no_anim() -> bool:
+    """No fade for the sync marker layer. A fading marker leaves ghost frames after the
+    flash (on a still screen they stayed for two seconds), and the start trim has to cut
+    all of them. A runtime rule, set once per Hyprland config load; nothing is written."""
+    lua = ('if not _G.__dolly_sync_rule then _G.__dolly_sync_rule = hl.layer_rule({ '
+           'name = "dolly-sync-no-anim", match = { namespace = "^dolly-sync$" }, no_anim = true }) end')
+    ok, _ = _run(["eval", lua])
+    if ok:
+        return True
+    # Hyprland with the old config format: a keyword rule, once per session
+    import os
+    from pathlib import Path
+    sig = os.environ.get("HYPRLAND_INSTANCE_SIGNATURE") or "x"
+    flag = Path(os.environ.get("XDG_RUNTIME_DIR") or "/tmp") / "dolly" / f"marker-no-anim-{sig[:16]}"
+    if flag.exists():
+        return True
+    ok, _ = _run(["keyword", "layerrule", "noanim, dolly-sync"])
+    if ok:
+        try:
+            flag.parent.mkdir(parents=True, exist_ok=True)
+            flag.touch()
+        except OSError:
+            pass
+    return ok

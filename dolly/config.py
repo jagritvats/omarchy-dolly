@@ -76,6 +76,7 @@ SCHEMA: list[dict] = [
     {"key": "zoom.idle_speedup", "type": "bool", "default": False},
     # ---- Privacy
     {"key": "privacy.secret_blur", "type": "bool", "default": False},
+    {"key": "privacy.auto", "type": "bool", "default": True},
     {"key": "privacy.dnd", "type": "bool", "default": True},
     {"key": "privacy.solid_windows", "type": "enum", "default": "auto", "options": ["auto", "on", "off"]},
     # ---- Export
@@ -334,7 +335,8 @@ def style_defaults(cfg: dict | None = None, theme: dict | None = None) -> dict:
                      "shadow": cfg["camera"]["shadow"], "auto_move": cfg["camera"]["avoid_cursor"]},
           "audio": {"denoise": cfg["audio"]["denoise"], "duck": cfg["audio"]["duck"],
                     "normalize": cfg["audio"]["normalize"]},
-          "privacy": {"enabled": True, "auto_scrub": cfg["privacy"]["secret_blur"]},
+          "privacy": {"enabled": True, "auto_scrub": cfg["privacy"]["secret_blur"],
+                      "auto": cfg["privacy"]["auto"]},
           "output": {"format": ex["format"], "quality": ex["quality"], "aspect": ex["aspect"]}}
     th = theme if theme is not None else projmod.theme_snapshot()
     st["theme"] = {**th, "follow": bool(lk["follow_theme"])}

@@ -53,6 +53,7 @@ class Timeline:
     workspaces: list = field(default_factory=list)  # dicts t, name, special
     layers: list = field(default_factory=list)      # dicts t, namespace, rect(x0,y0,x1,y1)|None, open, keyboard
     syncs: list = field(default_factory=list)       # dicts t, kind (start|stop|mid)
+    toasts: list = field(default_factory=list)      # dicts t, count (notification toasts on screen)
     monitors: list = field(default_factory=list)    # dicts t, reason, name
     layout_changes: list = field(default_factory=list)  # derived: dicts t, address, reason (open|close|move|resize|focus|fullscreen)
 
@@ -95,6 +96,8 @@ class Timeline:
                                   "open": bool(e.get("open", True)), "keyboard": bool(e.get("keyboard", False))})
             elif kind == "sync":
                 tl.syncs.append({"t": float(e["t"]), "kind": e.get("kind", "start")})
+            elif kind == "toasts":
+                tl.toasts.append({"t": float(e["t"]), "count": int(e.get("count", 0))})
             elif kind == "monitor":
                 tl.monitors.append({"t": float(e["t"]), "reason": e.get("reason", ""), "name": e.get("name", "")})
         if not tl.moves_t:

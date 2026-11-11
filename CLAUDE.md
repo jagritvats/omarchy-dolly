@@ -114,6 +114,57 @@ Recordings: `~/Videos/Dolly/<timestamp>/`, containing:
 - `shares.json`, `captions.srt`, `recorder.log`
 - `exports/`
 
+## Recording what you just built (`dolly run`, for coding agents)
+
+When a change is visible on screen, attach a clip to the pull request (Omarchy's PR
+template asks for visual evidence). Do not record by hand: write a storyboard and let
+Dolly perform it. Reference: `docs/storyboard.md`; working example:
+`examples/terminal-demo.toml`.
+
+1. `dolly run --check` once: it says what this machine can perform (stock Omarchy:
+   everything).
+2. Write `demo.toml` next to the change. Keep it under 30 seconds: one idea, three to
+   six steps. Put slow or noisy preparation (builds, `cd`, `clear`) in `[[setup]]`,
+   which is not recorded. After a command that prints, use `wait = "quiet"`, not a
+   guessed number of seconds. Use `say` for one short caption per idea.
+3. `dolly run demo.toml --dry-run` and read the plan: every command it would run is
+   listed. Fix validation errors (they name the line and the step).
+4. `dolly run demo.toml --json` and read the result: `ok`, `outputs[].file`,
+   `error.where` / `error.why`. On a failure the take up to that step is kept in
+   `project`; fix the storyboard and run it again.
+5. Look at the export before attaching it (`ffmpeg -i out.mp4 -vf fps=1 f-%02d.png`):
+   is the text readable, does the zoom sit on what was typed.
+6. Commit `demo.toml` with the change, so the clip can be re-recorded later.
+
+```toml
+title  = "New --json flag"
+preset = "github"                 # 720p, under GitHub's 10 MB limit
+record = "window:term"
+
+[[setup]]
+open = "terminal"
+as   = "term"
+cwd  = "~/dev/project"
+
+[[step]]
+say = "The new flag prints machine-readable output"
+
+[[step]]
+type  = "mytool status --json"
+enter = true
+
+[[step]]
+wait = "quiet"
+
+[[cleanup]]
+close = "term"
+```
+
+A storyboard types into the live desktop: never put secrets in one, and do not run one
+you did not write without reading its `--dry-run` plan. Modules: `dolly/storyboard.py`
+(parse, validate, plan; runs nothing), `dolly/inject.py` (wtype for keys, Hyprland for pointer, clicks and windows),
+`dolly/script.py` (the runner). Tests: `tests/test_storyboard.py`, `tests/test_script_run.py`.
+
 ## Layout
 
 ```
@@ -133,6 +184,58 @@ harness/  dctl wt.py walkthrough.py chrome-wayland  TEST HARNESS ONLY: drive the
 tests/  test_zoom test_pipeline test_capture_fallback test_share test_features test_aoi test_system
         test_guards test_scaling test_settings test_library test_av editor_smoke pathcheck
 ```
+
+## For agents and scripts (0.6 prototype: `dolly/headless.py`)
+
+To record a demo of your own work from a tool call (same recipe as the README):
+
+```bash
+# record a named window for 12 seconds; no click, no countdown, no editor
+dolly record --window kitty --for 12 --json
+# {"ok": true, "recording": false, "dir": "/home/me/Videos/Dolly/2026-11-10_21-24-56",
+#  "raw": ".../raw.mkv", "duration": 12.4, "trim": [0.0, 12.4], "zooms": 2, "blurs": 0, ...}
+
+# or: start, run the thing you want to show, stop
+dolly record --window class:chromium --json      # returns once it is recording
+./run-my-demo.sh
+dolly stop --json                                # the same object as above
+
+# export; "dir" comes from the object above (no dir: the latest recording)
+dolly export "$DIR" --json --width 1280
+# {"ok": true, "output": ".../2026-11-10_21-24-56.mp4", "bytes": 1070286, "duration": 12.6,
+#  "width": 1280, "height": 720, "aspect": "16:9", "format": "mp4"}
+```
+
+- Target: `--window SELECTOR` (a class, part of a title, `class:NAME`, `title:TEXT`,
+  `address:0x...` or `active`; of several matches the most recently focused wins),
+  `--monitor NAME`, or `--region X,Y,WxH` in logical pixels.
+- `--for SECONDS` stops and finalizes by itself; `--wait` blocks until someone else stops
+  it; with neither, `record` returns as soon as recording has started.
+- `--json` prints exactly one JSON object on stdout and never opens the editor
+  (`--no-editor` does only the latter).
+- It works from a shell with no session variables (ssh, a systemd unit, an agent's tool
+  call), as the logged-in user: the Hyprland session is found by itself.
+- Errors are the same shape with exit code 1:
+  `{"ok": false, "error": "window-not-found", "message": "...", "windows": [...]}`.
+  Codes: `window-not-found`, `monitor-not-found`, `bad-region`, `needs-target`,
+  `already-recording`, `other-recorder`, `not-recording`, `missing-packages`,
+  `folder-not-writable`, `disk-full`, `no-compositor`, `export-failed`.
+- Automatic zooms, cursor smoothing and the automatic privacy blurs apply as in a normal
+  recording; `dolly edit DIR` opens it in the editor later.
+- Code: `dolly/headless.py` (targets, JSON, `--for`), tests in `tests/test_headless.py`.
+  `capture.start`/`stop` are unchanged; headless only names the target and waits.
+
+## Privacy by default (0.6 prototype: `dolly/sensitive.py`, `privacy.auto_boxes`)
+
+- At finalize, every password manager, keyring or authentication prompt window
+  (`sensitive.SECRET_CLASSES`/`SECRET_TITLES`) and every stretch with notification toasts
+  on screen becomes an ordinary privacy box with `"source": "auto"`. Computed once for a
+  new project; deleting one in the editor is final. Setting: `privacy.auto` (default on).
+- Toasts: Hyprland only sees the shell's notification layer, which stays mapped, so the
+  logger polls `omarchy-shell notifications count` and the box is sized from the count.
+- Keys typed while such a window has focus are not written by the logger, and
+  `strip_secret_keys` drops any that slipped through before `events.json` is written.
+- Tests: `tests/test_privacy_auto.py` (synthetic timelines).
 
 ## Prerequisites (`bin/dolly doctor` checks all of these)
 

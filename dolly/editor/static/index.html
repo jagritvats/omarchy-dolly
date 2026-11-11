@@ -147,6 +147,7 @@ canvas#view.drawing{cursor:crosshair}
 .it.manual{border-style:dashed;border-color:var(--magenta);background:rgba(187,154,247,.16)}
 .it.speed{border-color:var(--orange);background:rgba(255,158,100,.16);font-size:10.5px;padding:2px 6px}
 .it.privacy{border-color:var(--red);background:rgba(247,118,142,.14);font-size:10.5px;padding:2px 6px}
+.it.privacy.auto{border-style:dashed}
 .it.privacy.secret{background:repeating-linear-gradient(45deg,rgba(247,118,142,.22) 0 6px,rgba(247,118,142,.1) 6px 12px)}
 .it.off{opacity:.4}
 .it.sel{box-shadow:0 0 0 2px rgba(192,202,245,.5);filter:brightness(1.25)}
@@ -494,7 +495,7 @@ const wrap=$('#tlwrap');
 const X=t=>t/P.video.duration*wrap.clientWidth, T=x=>Math.max(0,Math.min(P.video.duration,x/wrap.clientWidth*P.video.duration));
 const LANES={zoom:{el:'#zlane',arr:()=>S.segments,cls:s=>'it'+(s.source==='manual'?' manual':''),label:s=>`${s.zoom.toFixed(1)}×<span class="r">${s.source==='manual'?'manual':(s.reason||'auto')}</span>`},
   speed:{el:'#slane',arr:()=>S.speed,cls:s=>'it speed'+(S.style.speed.enabled?'':' off'),label:s=>`⏩ ${s.speed}× <span class="r" style="color:var(--orange)">${s.reason||''}</span>`},
-  privacy:{el:'#plane',arr:()=>S.privacy,cls:s=>'it privacy'+(s.source==='secret'?' secret':'')+(s.enabled===false?' off':''),label:s=>(s.source==='secret'?'⚠ ':'▦ ')+(s.label||s.mode)}};
+  privacy:{el:'#plane',arr:()=>S.privacy,cls:s=>'it privacy'+(s.source==='secret'?' secret':'')+(s.source==='auto'?' auto':'')+(s.enabled===false?' off':''),label:s=>(s.source==='secret'?'⚠ ':s.source==='auto'?'auto · ':'▦ ')+(s.label||s.mode)}};
 function laneOf(id){ for(const [n,L] of Object.entries(LANES)){ const it=L.arr().find(s=>s.id===id); if(it) return [n,it] } return [null,null] }
 function drawRuler(){ const r=$('#ruler'); r.innerHTML=''; const d=P.video.duration, step=d>120?15:d>60?10:d>20?5:d>8?2:1; for(let t=0;t<=d+1e-6;t+=step){ const s=document.createElement('span'); s.style.left=X(t)+'px'; s.textContent=fmtT(t).replace(/\.\d+$/,''); r.appendChild(s) } }
 function drawTimeline(){
@@ -515,7 +516,7 @@ function drawTimeline(){
   for(const [i,side] of [[0,'in'],[1,'out']]){ const e=document.createElement('div'); e.className='trim'; e.dataset.side=side; e.style.left=(X(S.trim[i])-(i?0:9))+'px'; cl.appendChild(e) }
   $('#autochip').textContent=`${S.segments.length} zooms · ${S.speed.length} speed-ups · ${S.privacy.length} blurs`;
   const saved=S.speed.reduce((a,s)=>a+(s.end-s.start)*(1-1/s.speed),0); $('#speedInfo').textContent=S.speed.length?`${S.speed.length} stretches, saves ${saved.toFixed(1)} s of ${P.video.duration.toFixed(1)} s`:'No speed-ups yet.';
-  $('#privList').innerHTML=S.privacy.map(b=>`<div><span>${b.source==='secret'?'⚠':'▦'} ${fmtT(b.start)}–${fmtT(b.end)} · ${b.label||b.mode}</span><span><span class="x" data-tog="${b.id}">${b.enabled===false?'enable':'disable'}</span> · <span class="x" data-del="${b.id}">delete</span></span></div>`).join('')||'<div class="small">None.</div>';
+  $('#privList').innerHTML=S.privacy.map(b=>`<div><span>${b.source==='secret'?'⚠':b.source==='auto'?'auto ·':'▦'} ${fmtT(b.start)}–${fmtT(b.end)} · ${b.label||b.mode}</span><span><span class="x" data-tog="${b.id}">${b.enabled===false?'enable':'disable'}</span> · <span class="x" data-del="${b.id}">delete</span></span></div>`).join('')||'<div class="small">None.</div>';
   drawSelPanel(); updatePH() }
 function updatePH(){ $('#ph').style.left=X(vid.currentTime)+'px'; $('#tc').textContent=fmtT(vid.currentTime) }
 function newId(p){ let i=1; const all=[...S.segments,...S.speed,...S.privacy]; while(all.find(s=>s.id===p+i)) i++; return p+i }
@@ -819,7 +820,7 @@ const SL={ // labels + help
  'zoom.between':['Between nearby actions','Stay zoomed and pan to the next one, or zoom out to the whole screen and in again'],
  'zoom.stay_seconds':['Stay zoomed through pauses up to','Seconds between two actions; a longer pause, a far jump or a workspace switch zooms out'],
  'zoom.motion':['Camera motion','How fast the camera zooms and pans'], 'zoom.idle_speedup':['Speed up idle time','Long pauses play faster (editable)'],
- 'privacy.secret_blur':['Blur secrets','OCR each recording once and blur tokens/keys (needs tesseract)'], 'privacy.dnd':['Do Not Disturb while recording','Restored afterwards'], 'privacy.solid_windows':['Solid windows','auto = only when Omarchy Glassy is on'],
+ 'privacy.auto':['Blur secret windows and notifications','Password managers, authentication prompts and notification toasts are blurred automatically; each blur can be removed in the editor'], 'privacy.secret_blur':['Blur secrets','OCR each recording once and blur tokens/keys (needs tesseract)'], 'privacy.dnd':['Do Not Disturb while recording','Restored afterwards'], 'privacy.solid_windows':['Solid windows','auto = only when Omarchy Glassy is on'],
  'export.format':['Format',''], 'export.quality':['Quality',''], 'export.size_cap_mb':['Size cap (MB)','0 = no cap'], 'export.aspect':['Default aspect',''], 'export.also_vertical':['Also export a 9:16 copy',''],
  'sharing.default_target':['Default link target','From ~/.config/dolly/share.json'],
  'storage.folder':['Recordings folder','Empty = Omarchy screen-recording folder/Dolly (or ~/Videos/Dolly)'], 'storage.keep_raw':['Keep raw files after export','Off: raw capture to the trash after a successful export'], 'storage.cleanup_days':['Clean up raw files after (days)','Exported recordings only; 0 = never'] };

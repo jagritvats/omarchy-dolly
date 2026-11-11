@@ -62,6 +62,19 @@ def notify(title, body="", *actions, urgency="normal", timeout=4000, image=None)
         print(f"{title}: {body}", file=sys.stderr)
 
 
+def _dismiss_own_toasts():
+    """Dolly's own card from the last take stays for 10 s; a take started within that time
+    must not open with it. Other apps' notifications are left alone (Do Not Disturb and
+    the automatic privacy blur deal with those)."""
+    if not _have("omarchy-shell"):
+        return
+    try:
+        subprocess.run(["omarchy-shell", "-q", "notifications", "dismiss", t("notify.recorded")], timeout=1.5,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
 def _wanted_fps(a) -> int:
     try:
         if getattr(a, "fps", None):
@@ -354,6 +367,21 @@ def recorder_cmd(backend: str, target, out: Path, fps: int, audio: list[str]) ->
 
 
 # ---------------------------------------------------------------- commands
+def _notification_layers() -> list:
+    """Where the shell shows toasts ([x, y, w, h], logical). Hyprland only knows this area,
+    not each toast; privacy.auto_boxes finds the toasts inside it."""
+    out = []
+    try:
+        for mon in (hypr_json("layers") or {}).values():
+            for level in (mon.get("levels") or {}).values():
+                for lay in level:
+                    if "notif" in str(lay.get("namespace", "")).lower():
+                        out.append([lay.get("x", 0), lay.get("y", 0), lay.get("w", 0), lay.get("h", 0)])
+    except (AttributeError, TypeError):
+        pass
+    return out
+
+
 def start(a):
     """Pick -> countdown -> recorder -> logger. Raw video goes to raw.mkv: Matroska stays
     playable when the recorder is killed (crash, power loss), unlike an MP4 without
@@ -391,14 +419,22 @@ def start(a):
     if plan["level"] == "warn":
         _notify_disk(a, plan)
     try:
-        tgt = pick_target(a.mode)
+        from . import hypr
+        hypr.marker_no_anim()      # a fading sync marker costs the first seconds of a still take
+    except Exception:              # never refuse a recording over this
+        pass
+    _dismiss_own_toasts()
+    try:
+        tgt = pick_target(a.mode, getattr(a, "pick", None))      # pick: named by --window/--monitor/--region
     except Cancelled:
         health.set_phase("idle")
         return
     target_addr = None
     if a.mode == "window" and tgt.kind == "region":
         from .monitors import monitor_target
-        win = window_at(tgt.region)
+        addr = getattr(a, "window_address", None)                # named with --window: no geometry guess
+        win = next((c for c in hypr_json("clients") or [] if c.get("address") == addr), None) if addr else None
+        win = win or window_at(tgt.region)
         x, y, w, h = tgt.region
         mon = monitor_of(x + w / 2, y + h / 2)
         if win and mon:
@@ -517,6 +553,7 @@ def start(a):
             "desktop_audio": any(tr["track"] == "system" for tr in live_tracks),
             "camera_mode": cam_mode, "webcam_clock": cam_clock, "live_bubble": bool(bubble),
             "cursor_size": int(os.environ.get("HYPRCURSOR_SIZE") or os.environ.get("XCURSOR_SIZE") or 24),
+            "notification_layers": _notification_layers(),
             "terminals": TERMINALS, "solid_windows": solid_on, "ttff_ms": round(ttff * 1000), "hotkey_to_first_frame_ms":
             round((time.time() - t_invoke - (a.countdown or 0)) * 1000),
             "webcam": bool(cam_proc), "webcam_launch_mono": time.monotonic() if cam_proc else None}
@@ -1148,6 +1185,8 @@ def finalize(pdir: Path, aoi: bool = True):
             events.append({"t": t, "type": "monitor", "reason": e.get("reason", ""), "name": e.get("name", "")})
         elif kind == "sync":
             events.append({"t": t, "type": "sync", "kind": e.get("kind", "start")})
+        elif kind == "toasts":
+            events.append({"t": max(0.0, t), "type": "toasts", "count": int(e.get("count", 0))})
         elif kind == "warn":
             events.append({"t": t, "type": "warn", "msg": e.get("msg", "")})
         elif kind == "mute":
@@ -1177,6 +1216,19 @@ def finalize(pdir: Path, aoi: bool = True):
                        "target": meta.get("target"), "terminals": meta.get("terminals"),
                        "sync": fit.to_dict(), "monitor": meta.get("monitor")},
            "events": events}
+    # privacy by default: what was typed into a password manager or an authentication prompt
+    # is not kept (no keycaps, no typing zoom, nothing in events.json)
+    try:
+        from .sensitive import strip_secret_keys
+        doc["events"], dropped = strip_secret_keys(events, duration)
+        if dropped:
+            (pdir / "recorder.log").open("a").write(
+                f"privacy: {dropped} key events typed into a secret-bearing window were not kept\n")
+        doc["capture"]["notification_areas"] = [
+            [r[0], r[1], r[0] + r[2], r[1] + r[3]]
+            for r in (_map_rect(n, rx, ry, sx, sy) for n in meta.get("notification_layers") or [])]
+    except Exception as ex:  # never lose a recording over this
+        (pdir / "recorder.log").open("a").write(f"privacy filter failed: {ex}\n")
     fsutil.atomic_write_json(pdir / "events.json", doc, backup=True)
     proj = projmod.Project(pdir)
     new_project = not proj.file.exists()
@@ -1232,6 +1284,16 @@ def finalize(pdir: Path, aoi: bool = True):
             data["speed"] = detect_speedups(tl, aoimod_activity(pdir, tl), SpeedConfig.from_dict(data.get("speed_config")))
         except Exception as ex:
             (pdir / "recorder.log").open("a").write(f"idle speed-up failed: {ex}\n")
+    if new_project and data["style"].get("privacy", {}).get("auto", True):
+        # Settings > Privacy > automatic blur: secret-bearing windows and notification toasts
+        # become ordinary boxes in the editor's privacy lane (computed once; removing one is final)
+        try:
+            from . import privacy as privmod
+            boxes = privmod.auto_boxes(tl)
+            if boxes:
+                data["privacy"] = [b for b in data.get("privacy") or [] if b.get("source") != "auto"] + boxes
+        except Exception as ex:
+            (pdir / "recorder.log").open("a").write(f"automatic privacy blur failed: {ex}\n")
     proj.save(data)
     try:
         from .guards import set_last

@@ -241,6 +241,10 @@ def cmd_captions(a):
 
 
 def cmd_export(a):
+    if getattr(a, "json", False) and not getattr(a, "_json_inner", False):
+        from . import headless
+        a._json_inner, a.quiet = True, True
+        return headless.export_json(lambda: cmd_export(a), a)
     from .render import cli_progress, export
     d = _dir_or_last(a.dir)
     over = {}
@@ -252,6 +256,7 @@ def cmd_export(a):
     out = export(d, a.output, "gif" if a.gif else None, a.quality, progress=cli_progress, style_over=over or None,
                  aspect=a.aspect, notify=not a.quiet)
     print(out)
+    return out
 
 
 def cmd_finalize(a):
@@ -380,9 +385,30 @@ def _main(argv=None):
                    help="record even with little disk space (stops cleanly when the disk is full)")
     r.add_argument("--solid", choices=["auto", "on", "off"], default=None,
                    help="solid windows while recording (auto: only when Omarchy Glassy is on)")
+    # for scripts and coding agents (dolly/headless.py): no picker, no countdown, JSON out
+    r.add_argument("--window", metavar="SELECTOR", help="record this window without a click: class, title text, "
+                   "class:NAME, title:TEXT, address:0x.. or 'active'")
+    r.add_argument("--monitor", metavar="NAME", help="record this monitor (e.g. DP-1) without a click")
+    r.add_argument("--region", metavar="X,Y,WxH", help="record this area (logical pixels) without a click")
+    r.add_argument("--for", dest="duration", type=float, metavar="SECONDS",
+                   help="stop and finalize by itself after this long")
+    r.add_argument("--wait", action="store_true", help="block until the recording is stopped and finalized")
+    r.add_argument("--no-editor", action="store_true", help="do not open the editor afterwards")
+    r.add_argument("--json", action="store_true",
+                   help="exactly one JSON object on stdout, errors included; implies --no-editor")
+    r.add_argument("--pick", help=argparse.SUPPRESS)   # internal (dolly run): "X,Y WxH" instead of the picker
+    rn = sub.add_parser("run", help="perform a storyboard of steps and record it (docs/storyboard.md)")
+    rn.add_argument("file", nargs="?", help="storyboard (.toml or .json); - reads stdin")
+    rn.add_argument("--dry-run", action="store_true", help="print the timed plan; touch nothing")
+    rn.add_argument("--check", action="store_true", help="validate, and say what this machine can perform")
+    rn.add_argument("--json", action="store_true", help="machine-readable result on stdout")
+    rn.add_argument("--no-export", action="store_true", help="record and analyse only")
+    rn.add_argument("--keep-open", action="store_true", help="skip [[cleanup]] and stay on the stage")
     for name in ("stop", "toggle", "cancel"):
         x = sub.add_parser(name)
         x.add_argument("--reason", help=argparse.SUPPRESS)   # watchdog: why the recording ended
+        if name == "stop":
+            x.add_argument("--json", action="store_true", help="describe the finished recording as JSON")
         if name == "toggle":
             for opt in ("--mode",):
                 x.add_argument(opt, help=argparse.SUPPRESS)
@@ -403,6 +429,7 @@ def _main(argv=None):
     e.add_argument("--fps", type=int)
     e.add_argument("--aspect", choices=["16:9", "9:16", "1:1", "4:5"])
     e.add_argument("-q", "--quiet", action="store_true", help="no desktop notification")
+    e.add_argument("--json", action="store_true", help="describe the exported file as one JSON object on stdout")
 
     sh = sub.add_parser("share", help="presets, clipboard, links")
     ss = sh.add_subparsers(dest="share_cmd", required=True)
@@ -468,6 +495,8 @@ def _main(argv=None):
     cs.add_parser("bar"); cs.add_parser("path"); cs.add_parser("schema")
     doc = sub.add_parser("doctor", help="check what Dolly needs on this machine")
     doc.add_argument("--json", action="store_true")
+    doc.add_argument("--report", action="store_true",
+                     help="write a text file to attach to a bug report (no video, no typed keys)")
     it = sub.add_parser("integration", help="menu rows and hotkeys Dolly added; hotkey conflicts")
     it.add_argument("--json", action="store_true")
     sub.add_parser("setup", help="add Dolly's menu rows and hotkeys (opens a terminal)")
@@ -485,8 +514,18 @@ def _main(argv=None):
 
     a = ap.parse_args(argv)
     if a.cmd == "record":
-        from .capture import start
-        start(apply_record_defaults(a))
+        from . import headless
+        if headless.wanted(a):
+            headless.record(a)
+        else:
+            from .capture import start
+            start(apply_record_defaults(a))
+    elif a.cmd == "stop" and getattr(a, "json", False):
+        from . import headless
+        headless.stop_json(a)
+    elif a.cmd == "run":
+        from .script import cmd_run
+        raise SystemExit(cmd_run(a))
     elif a.cmd in ("stop", "toggle", "cancel", "status"):
         from . import capture
         getattr(capture, a.cmd)(a)
@@ -530,11 +569,12 @@ def _main(argv=None):
         import shutil, shlex, subprocess as sp
         setup = Path(__file__).resolve().parent.parent / "bin" / "dolly-setup"
         term = shutil.which("omarchy-launch-floating-terminal-with-presentation")
+        # the button that runs this says what it installs, so setup does not ask again
         if term:
-            sp.Popen([term, shlex.quote(str(setup))], stdin=sp.DEVNULL, stdout=sp.DEVNULL, stderr=sp.DEVNULL,
-                     start_new_session=True)
+            sp.Popen([term, f"DOLLY_SETUP_YES=1 {shlex.quote(str(setup))}"], stdin=sp.DEVNULL, stdout=sp.DEVNULL,
+                     stderr=sp.DEVNULL, start_new_session=True)
         else:
-            raise SystemExit(sp.call([str(setup)]))
+            raise SystemExit(sp.call([str(setup)], env={**os.environ, "DOLLY_SETUP_YES": "1"}))
     elif a.cmd == "deps":
         from . import deps
         m = deps.missing()
@@ -572,6 +612,12 @@ def _main(argv=None):
             sys.exit(1)
         print(p)
     elif a.cmd == "doctor":
+        if a.report:
+            from . import report
+            path = report.write()
+            print(f"{path}\nAttach this file to your bug report: it has Dolly's checks, versions, settings and "
+                  "logs; no video, no typed keys.")
+            return
         from .doctor import run
         sys.exit(run(as_json=a.json))
     elif a.cmd == "demo":

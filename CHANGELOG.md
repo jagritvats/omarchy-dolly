@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.6.0 (2026-11-10)
+
+Tested on Omarchy 4.5 in VirtualBox (wf-recorder, software rendering).
+
+For agents and scripts
+- `dolly record --window SELECTOR | --monitor NAME | --region X,Y,WxH`, `--for SECONDS`,
+  `--wait`, `--no-editor`, `--json`; `dolly stop --json`; `dolly export --json`. No picker,
+  no countdown, one JSON object on stdout (errors too, with exit code 1), and it works
+  from a shell without session variables. See "For agents and scripts" in the README.
+- Starting a take right after another one no longer shows the last take's "Demo
+  recorded" card in the new take.
+- The start marker no longer fades out, so a take of a still screen keeps its first
+  seconds (`--for 5` on a still desktop kept 3.2 s; now 5.2 s).
+
+Privacy by default
+- Password managers, keyring and authentication prompts and notification toasts are
+  blurred automatically. Each one is a normal item in the editor's privacy lane, marked
+  "auto"; removing it is final. Settings > Privacy > "Blur secret windows and
+  notifications" turns it off.
+- Keys typed into such a window are never logged: no keycaps, no typing zoom, nothing in
+  `events.json`.
+
+Scripted demos
+- `dolly run demo.toml` performs a storyboard of steps (open, focus,
+  type, key, wait, move, click, zoom, say, close), records it and exports it. Typing has
+  a human rhythm and is repeatable (seeded); `--dry-run` prints the timed plan and every
+  command without touching anything; `--json` for agents. A failed step, the time limit
+  or Ctrl+C stops the recording and keeps the take. Uses only what Omarchy ships (wtype,
+  Hyprland, grim). Reference: docs/storyboard.md.
+- While a storyboard runs, key repeat is switched off and put back afterwards, so a
+  stalled machine cannot repeat a typed key.
+
+First run and bug reports
+- **Set up** in the panel now finishes everything in one terminal: hotkeys, menu rows
+  and the packages Dolly needs, with one password prompt.
+- Set up also puts `dolly` on your PATH (a link in `~/.local/bin`, removed by
+  `dolly-setup --undo`), so terminals, scripts and agents can call it by name.
+- `dolly doctor --report` writes one text file to attach to a bug report: checks,
+  versions, settings and logs. No video, no screenshots, no typed keys.
+- Issue templates for bugs and ideas; tests run on every push.
+
+Auto-zoom
+- A click that only brought a window forward before typing somewhere else no longer
+  pulls the zoom toward the pointer.
+
 ## 0.5.0 (2026-11-10)
 
 Tested end to end on Omarchy 4.5 in VirtualBox (wf-recorder, software rendering).

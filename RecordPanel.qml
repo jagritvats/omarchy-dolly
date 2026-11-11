@@ -404,7 +404,9 @@ Panel {
                     wrapMode: Text.WordWrap; elide: Text.ElideNone
                     color: root.setUp ? root.urgent : root.fg
                     text: root.setUp ? tr.t("panel.hotkeyConflict").arg(root.hotkeyConflicts.join(", "))
-                                     : tr.t("panel.setupHint") }
+                                     : (root.missingPackages.length > 0
+                                        ? tr.t("panel.setupHintPackages").arg(root.missingPackages.join(", "))
+                                        : tr.t("panel.setupHint")) }
             Button { id: setupBtn; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
                      text: root.setUp ? tr.t("panel.setupFix") : tr.t("panel.setup"); iconText: "󰌌"
                      bordered: true; foreground: root.accent; fontFamily: root.ff
@@ -412,7 +414,7 @@ Panel {
           }
 
           Item {
-            visible: root.missingPackages.length > 0
+            visible: root.missingPackages.length > 0 && (root.setUp || !root.integrationKnown)
             width: parent.width; height: visible ? needsLabel.implicitHeight + Style.space(8) : 0
             Label { id: needsLabel; anchors.left: parent.left; anchors.right: installBtn.left
                     anchors.rightMargin: Style.space(8); anchors.verticalCenter: parent.verticalCenter
