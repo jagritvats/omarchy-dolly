@@ -39,7 +39,8 @@ def cmd_auto(a):
     data = proj.load()
     tl = Timeline.load(proj.events)
     zcfg = ZoomConfig.from_dict(data.get("zoom_config"))
-    segs = build_segments(tl, zcfg)
+    from .capture import _from_go
+    segs = _from_go(build_segments(tl, zcfg), (tl.capture or {}).get("go"))   # a recorded countdown is not the take
     data["segments"] = [s.to_dict() for s in segs]
     proj.save(data)
     for s in segs:
@@ -377,7 +378,8 @@ def _main(argv=None):
     r.add_argument("--desktop-audio", action=argparse.BooleanOptionalAction, default=None, help=argparse.SUPPRESS)
     r.add_argument("--webcam", action=argparse.BooleanOptionalAction, default=None, help=argparse.SUPPRESS)
     r.add_argument("--no-keys", action="store_true", default=None, help="do not log keystrokes")
-    r.add_argument("--fps", type=int, default=None)
+    r.add_argument("--fps", type=int, default=None, choices=[30, 60],
+                   help="30 or 60, the same two as Settings > Capture (default: the setting)")
     r.add_argument("--countdown", type=int, default=None)
     r.add_argument("--no-dnd", action="store_true", default=None, help="leave notifications on")
     r.add_argument("--backend", choices=["auto", "gsr", "gsr-cpu", "wf-recorder"], default="auto")

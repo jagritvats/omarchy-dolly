@@ -1,0 +1,81 @@
+# Regression scene for the camera: the action happens inside floating (or small) windows.
+# Record it with harness/scenes/run.sh (it fills in @PAGE@), then compare the plan:
+#   harness/scenes/run.sh                    -> prints the take folder and its shots
+#   python3 harness/scenes/shots.py TAKE     -> the same numbers again, with the current code
+# What a good plan looks like (1920x1200 screen, 1100x760 floating windows):
+#   16:9  typing is its own shot at about 1.8x or more (the terminal opening may be a
+#         wider beat before it); the three nav clicks share a close shot; the dialog and
+#         its OK button get their own.
+#   9:16  the crop never shows a whole window letterboxed with large bands; the dialog
+#         and its OK button are fully inside the crop.
+# The click points are for an 1100 px wide page (the dialog is centred in the window).
+title  = "Camera regression: floating windows"
+record = "screen"
+aspect = ["16:9", "9:16"]
+quality = "fast"
+max_seconds = 40
+
+[[step]]
+wait = 0.8
+
+[[step]]
+open = "terminal"
+as   = "term"
+
+[[step]]
+wait = 1.2
+
+[[step]]
+type  = "echo Dolly camera regression scene"
+enter = true
+
+[[step]]
+wait = 1.5
+
+[[step]]
+type  = "ls /usr/share/omarchy"
+enter = true
+
+[[step]]
+wait = 2.2
+
+[[step]]
+open = "chromium --app=file://@PAGE@"
+as   = "page"
+
+[[step]]
+wait = 1.5
+
+[[step]]
+click = "190,130"              # Overview
+in    = "page"
+
+[[step]]
+wait = 1.6
+
+[[step]]
+click = "190,230"              # Pricing
+in    = "page"
+
+[[step]]
+wait = 1.6
+
+[[step]]
+click = "190,330"              # Sign up: opens the dialog in the middle of the page
+in    = "page"
+
+[[step]]
+wait = 1.8
+
+[[step]]
+click = "700,622"              # OK, inside the dialog
+in    = "page"
+
+[[step]]
+wait = 2.0
+
+[[cleanup]]
+close = "page"
+
+[[cleanup]]
+close = "term"

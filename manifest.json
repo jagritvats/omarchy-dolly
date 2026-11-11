@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.jagritvats.dolly",
   "name": "Dolly",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "author": "Jagrit Vats",
   "license": "MIT",
   "description": "Polished demo recordings for Omarchy: auto-zoom on what changes, re-drawn cursor, theme-matched frame, camera bubble, separate mic/system audio, keystroke overlay, timeline editor, recordings library and clean MP4/GIF export.",

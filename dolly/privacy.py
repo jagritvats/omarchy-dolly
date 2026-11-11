@@ -313,15 +313,56 @@ def _window_boxes(tl, pad: float = 6.0, lead: float = 0.25, settle: float = 1.0)
     return out
 
 
+START_LINGER = 1.5      # s a card that was up when Record was pressed can outlast the shell's count
+
+
 def toast_spans(tl) -> list[tuple[float, float, int]]:
     """[(t0, t1, toasts on screen)] from the shell's own count, which the logger records on
-    change (including what is already there when the recording starts)."""
-    spans, evs = [], list(getattr(tl, "toasts", []))
-    for i, e in enumerate(evs):
-        t1 = evs[i + 1]["t"] if i + 1 < len(evs) else tl.duration
-        t0 = 0.0 if i == 0 else e["t"]                        # the first count is what was already there
-        if e["count"] > 0 and t1 > t0:
-            spans.append((t0, t1, int(e["count"])))
+    change (including what is already there when the recording starts).
+
+    Two things the logger cannot see by itself come from the capture facts:
+    - `toasts_before`: cards on screen when Record was pressed. A card that expires while
+      the recorder starts is already gone from the count at the logger's first sample, yet
+      its pixels are still in the first frames (found Nov 11). Those cards are taken to be
+      there from the first frame until START_LINGER after that first sample.
+    - `go`: the end of the countdown when it was recorded too (pre-roll). What was gone
+      before it is not in the take, so it gets no box. The logger's count lags by up to
+      its polling interval, so the count read at that instant (`toasts_at_go`) decides
+      what is on screen from "go" until the logger's next change: Dolly's own last
+      countdown card, taken down just before, must not leave a box on an empty corner."""
+    cap = getattr(tl, "capture", None) or {}
+    evs = [{"t": float(e["t"]), "count": int(e["count"])} for e in getattr(tl, "toasts", [])]
+    go = float(cap["go"]) if cap.get("go") else None
+    at_go = cap.get("toasts_at_go") if go is not None else None
+
+    def counted(t: float) -> int:             # the first count is what was already there
+        if at_go is not None and t >= go:
+            c = int(at_go)
+            for e in evs:
+                if go < e["t"] <= t:
+                    c = e["count"]
+            return c
+        c = evs[0]["count"] if evs else 0
+        for e in evs:
+            if e["t"] <= t:
+                c = e["count"]
+        return c
+    before = int(cap.get("toasts_before") or 0)
+    until = 0.0
+    if before > 0 and counted(0.0) < before:
+        until = (evs[0]["t"] if evs else 0.0) + START_LINGER
+    edges = sorted({0.0, until, *(e["t"] for e in evs), *([go] if go is not None else [])})
+    spans = []
+    for i, t0 in enumerate(edges):
+        t1 = edges[i + 1] if i + 1 < len(edges) else tl.duration
+        n = max(counted(t0), before if t0 < until else 0)
+        if n > 0 and t1 > t0:
+            if spans and spans[-1][2] == n and abs(spans[-1][1] - t0) < 1e-9:
+                spans[-1] = (spans[-1][0], t1, n)
+            else:
+                spans.append((t0, t1, n))
+    if go is not None:
+        spans = [(max(t0, go), t1, n) for t0, t1, n in spans if t1 > go]
     return spans
 
 

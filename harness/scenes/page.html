@@ -1,0 +1,20 @@
+<!doctype html><meta charset="utf-8"><title>Dolly test page</title>
+<style>
+body{margin:0;background:#16161e;color:#c0caf5;font:20px/1.5 "JetBrainsMono Nerd Font",monospace}
+.nav button{position:absolute;left:60px;width:260px;height:60px;font:inherit;background:#24283b;color:#c0caf5;border:1px solid #7aa2f7;cursor:pointer}
+#b1{top:100px}#b2{top:200px}#b3{top:300px}
+#panel{position:absolute;left:380px;top:100px;right:40px;min-height:260px;border:1px solid #414868;padding:24px}
+#dlg{display:none;position:absolute;left:50%;top:420px;transform:translateX(-50%);width:420px;height:200px;background:#1f2335;border:2px solid #bb9af7;padding:24px;box-shadow:0 20px 60px #000a}
+#ok{position:absolute;right:24px;bottom:24px;width:120px;height:48px;font:inherit;background:#7aa2f7;border:0}
+small{position:absolute;left:60px;top:30px;color:#565f89}
+</style>
+<small>Local test page for Dolly ground truth (not a real site)</small>
+<div class="nav"><button id="b1">Overview</button><button id="b2">Pricing</button><button id="b3">Sign up…</button></div>
+<div id="panel">Pick a section on the left.</div>
+<div id="dlg"><b>Create account</b><p>This dialog opened from a click.</p><button id="ok">OK</button></div>
+<script>
+const P=document.getElementById('panel'),D=document.getElementById('dlg');
+b1.onclick=()=>P.innerHTML='<h2>Overview</h2><p>Dolly records your screen and frames what you do.</p><p>Line two of the overview text.</p>';
+b2.onclick=()=>P.innerHTML='<h2>Pricing</h2><table><tr><td>Free</td><td>0</td></tr><tr><td>Team</td><td>12 / seat</td></tr></table>';
+b3.onclick=()=>D.style.display='block'; ok.onclick=()=>{D.style.display='none';P.innerHTML='<h2>Welcome</h2><p>Account created.</p>'};
+</script>

@@ -72,6 +72,7 @@ class ZoomConfig:
     pan_reach: float = 1.3         # glide: next action within this many viewports (per axis) -> pan, else pull back
     glide_speed: float = 1.1       # glide: the camera target moves at most this many viewports per second
     glide_land: float = 0.36       # glide: the next action lands within this central fraction of the view
+    closeup_min: float = 1.6       # actions share a shot only while each close-up among them keeps this zoom
     switch_reach: float = 0.6      # glide into another, already open app window only for hops up to this (viewports)
     motion: str = "normal"         # calm | normal | quick: spring speed
 
@@ -139,10 +140,22 @@ def _aoi_of(tl, aoi):
     return aoi if (aoi is not None and len(aoi.t)) else None
 
 
+def take_start(tl: Timeline) -> float:
+    """Where the clip begins inside the recording: 0, or "go", the end of a countdown that
+    was recorded as pre-roll (capture["go"], video seconds; absent on takes without one)."""
+    go = tl.capture.get("go") if isinstance(getattr(tl, "capture", None), dict) else None
+    return float(go) if isinstance(go, (int, float)) and 0 < go < tl.duration else 0.0
+
+
 def extract_actions(tl: Timeline, cfg: ZoomConfig, aoi=None) -> list[Action]:
     """What the camera should show, filtered by the Auto-zoom triggers (clicks,
-    typing, windows/output). "Zoom here" marks are explicit and always kept."""
+    typing, windows/output). "Zoom here" marks are explicit and always kept.
+    What happened before the take starts (during a recorded countdown) is not in it:
+    it must not be grouped with, or widen, the first shot of the take."""
     acts = _extract_actions(tl, cfg, aoi)
+    go = take_start(tl)
+    if go:
+        acts = [a for a in acts if a.t >= go]
     if not cfg.enabled:
         return [a for a in acts if a.kind == "mark"]
     drop = set()
@@ -391,15 +404,24 @@ def cluster_actions(acts: list[Action], W: float, H: float, cfg: ZoomConfig) -> 
             cur = [a]
             continue
         gap = a.t - cur[-1].t
+        z_a, z_cur = _fit_cluster([a], W, H, cfg), _fit_cluster(cur, W, H, cfg)
         # "frame the whole window/screen" moments never merge with close-up actions
-        wide_a = a.rect is not None and _fit_cluster([a], W, H, cfg) < cfg.zoom_min
-        wide_c = _fit_cluster(cur, W, H, cfg) < cfg.zoom_min
+        wide_a = a.rect is not None and z_a < cfg.zoom_min
+        wide_c = z_cur < cfg.zoom_min
         if wide_a != wide_c:
             clusters.append(cur)
             cur = [a]
             continue
-        fits = _fit_cluster(cur + [a], W, H, cfg) >= min(cfg.zoom_min, _fit_cluster(cur, W, H, cfg) - 1e-6)
+        z_both = _fit_cluster(cur + [a], W, H, cfg)
+        fits = z_both >= min(cfg.zoom_min, z_cur - 1e-6)
         same_kind_big = a.kind in ("scroll", "output") and all(c.kind in ("scroll", "output", "type") for c in cur)
+        # a close-up stays a close-up: typing is not shown at the zoom of the window it is in
+        # (a floating terminal that just opened, a page of output), and a click far from the
+        # others gets its own shot, when one shot for both would be shallower than closeup_min.
+        # Only where rects say what must be visible (the cursor-only engine keeps its rule).
+        has_rects = a.rect is not None or any(c.rect is not None for c in cur)
+        if has_rects and z_both < min(cfg.closeup_min, max(z_a, z_cur)) - 1e-6:
+            fits = same_kind_big = False
         if gap <= cfg.merge_gap and (fits or same_kind_big):
             cur.append(a)
         else:
@@ -451,7 +473,7 @@ def build_segments(tl: Timeline, cfg: ZoomConfig | None = None, aoi=None) -> lis
             z = float(np.clip(z, cfg.zoom_min, cfg.zoom_max))
         first, last = cl[0], cl[-1]
         hold = cfg.hold_typing if last.kind in ("type", "scroll", "layout", "output") else cfg.hold_click
-        start = max(0.0, first.t - cfg.lead)
+        start = max(take_start(tl), first.t - cfg.lead)
         end = last.t + hold
         _, _, fx, fy, _ = cluster_extent(cl)
         if not has_rect or all(a.kind == "click" for a in cl):
@@ -626,8 +648,7 @@ def auto_focus(tl: Timeline, seg: Segment, cfg: ZoomConfig, aoi=None) -> tuple[f
     """Focus for a segment: centre of what its actions must show, else cursor at mid."""
     if seg.focus is not None:
         return float(seg.focus[0]), float(seg.focus[1])
-    aoi = _aoi_of(tl, aoi) if cfg.use_aoi else None
-    acts = [a for a in _cached_actions(tl, cfg, aoi) if seg.start - 0.05 <= a.t <= seg.end + 0.05]
+    acts = _seg_actions(tl, seg, cfg, aoi)
     if acts:
         # the first beat matters most for where the camera lands; moving subjects use their first rect
         early = [a for a in acts if a.t <= acts[0].t + 1.2] if any(a.moving for a in acts) else acts
@@ -637,8 +658,14 @@ def auto_focus(tl: Timeline, seg: Segment, cfg: ZoomConfig, aoi=None) -> tuple[f
 
 
 def _seg_actions(tl: Timeline, seg: Segment, cfg: ZoomConfig, aoi=None) -> list:
+    """The actions a shot is about. A wider beat that this shot cut short (a window still
+    settling when the typing starts) leaves actions inside the shot's time span; they are
+    not what it shows, so they do not decide where it aims or how far it zooms."""
     aoi = _aoi_of(tl, aoi) if cfg.use_aoi else None
-    return [a for a in _cached_actions(tl, cfg, aoi) if seg.start - 0.05 <= a.t <= seg.end + 0.05]
+    acts = [a for a in _cached_actions(tl, cfg, aoi) if seg.start - 0.05 <= a.t <= seg.end + 0.05]
+    need = 0.8 * min(seg.zoom, cfg.zoom_default)
+    own = [a for a in acts if a.rect is None or _fit_cluster([a], tl.w, tl.h, cfg) >= need]
+    return own or acts
 
 
 def seg_extent(tl: Timeline, seg: Segment, cfg: ZoomConfig, aoi=None) -> tuple:
@@ -924,6 +951,7 @@ def subject_track(tl: Timeline, aoi, sim_t: np.ndarray, curx, cury, cfg: ZoomCon
     la = cfg.aoi_lookahead if lookahead is None else lookahead
     last_real = -9.0
     held, held_t = None, -9.0          # last real subject, kept READ_HOLD s for reading
+    real_since, was_real = -9.0, False  # when the current / last real subject first appeared
     for i, t in enumerate(sim_t):
         r, kind, foc = aoi.at(t + la)
         if kind in ("typing", "scroll", "layout", "output"):
@@ -948,6 +976,9 @@ def subject_track(tl: Timeline, aoi, sim_t: np.ndarray, curx, cury, cfg: ZoomCon
                 r = around_caret(r, foc, getattr(aoi, "line_h", 0.0) or 18.0, tl.w)
         if fresh_real:
             held, held_t = (r, kind, foc), t
+            if not was_real:
+                real_since = t + la
+        was_real = fresh_real
         if r is not None and kind in ("typing", "scroll", "layout", "pointer", "output"):
             x0[i], y0[i], x1[i], y1[i] = r
             kinds[i] = kind
@@ -957,10 +988,15 @@ def subject_track(tl: Timeline, aoi, sim_t: np.ndarray, curx, cury, cfg: ZoomCon
                 x1[i], y1[i] = max(x1[i], cx + bx), max(y1[i], cy + by)
             if foc is not None and kind == "typing":
                 ax[i], ay[i] = foc
-        elif tl.cursor_inside(t) and not aoi.in_transition(t) and t - tl.last_pointer_before(t, 10 * s) < 1.5:
-            cx, cy = curx[i], cury[i]
-            x0[i], y0[i], x1[i], y1[i] = cx - bx, cy - by, cx + bx, cy + by
-            kinds[i] = "cursor"
+        elif tl.cursor_inside(t) and not aoi.in_transition(t):
+            # the pointer, while it was active a moment ago. One that has not moved since a
+            # dialog or output appeared elsewhere stays where the click left it: it is not
+            # what the viewer should be taken back to
+            moved = tl.last_pointer_before(t, 10 * s)
+            if t - moved < 1.5 and moved > real_since:
+                cx, cy = curx[i], cury[i]
+                x0[i], y0[i], x1[i], y1[i] = cx - bx, cy - by, cx + bx, cy + by
+                kinds[i] = "cursor"
     return SubjectTrack(x0, y0, x1, y1, ax, ay, kinds)
 
 
@@ -1114,6 +1150,11 @@ def camera_path(tl: Timeline, segments: list[Segment], geom: CameraGeometry,
         subj_kinds = np.array([k in ("typing", "scroll", "layout", "pointer", "output") for k in subj.kind])
         for j in range(len(segs)):
             m = (seg_idx == j) & subj_kinds & ~in_gap     # the pause never widens the shot
+            # nor does what is still on screen from the shot before, during this one's
+            # lead-in or a bridged gap (the window that just opened, the last output)
+            own = _seg_actions(tl, segs[j], cfg, aoi)
+            if own and segs[j].source == "auto":
+                m &= sim_t >= min(a.t for a in own) - 0.15
             if m.any():
                 seg_fit[j] = max(1.0, float(np.percentile(zneed[m], 3)))
                 if any(subj.kind[i] == "typing" for i in np.nonzero(m)[0][::24]):

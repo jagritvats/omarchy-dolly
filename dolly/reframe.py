@@ -106,6 +106,14 @@ def reframe_path(tl: Timeline, segments: list[Segment], aspect: float, fps: floa
 
 
 TEXT_KINDS = ("typing", "output", "scroll")
+# A subject may widen the crop past the full-height strip by at most this factor, so the
+# picture still fills 1 / LETTERBOX_MAX of the card's height (bands of about 12 % above and
+# below). Anything wider (a whole window, a screen of output) is not shown whole: the crop
+# stays a full-height strip on the part of it that matters. In order: where the pointer is
+# at work; for text, the start of the lines; for a window, the part nearest to the crop.
+LETTERBOX_MAX = 1.3
+CUT_HOP = 0.6          # a jump of the crop by more than this many crop widths is a cut, not a pan
+POINTER_PAN = 1.1      # following a travelling pointer, the crop moves at most this many widths a second
 
 
 def text_x(c: float, lo: float, hi: float, half: float, anchor: float = math.nan) -> float:
@@ -121,11 +129,13 @@ def text_x(c: float, lo: float, hi: float, half: float, anchor: float = math.nan
 
 
 def _reframe_aoi(tl, segments, aspect, fps, t_start, t_end, cfg, zoom_gain, omega, cursor_sigma, lookahead, aoi):
-    """AOI-aware crop: the whole subject (dialog, typed line, window) stays in the
-    crop. A subject wider than the default strip widens the crop, up to the full
-    screen width with the background above and below (letterbox), but only as
-    far as typed text stays legible. Width only grows inside a zoom segment, so
-    the crop never pumps; workspace switches cut."""
+    """AOI-aware crop: the whole subject (a dialog, a typed line, what a click changed)
+    stays in the crop. A subject a little wider than the full-height strip widens the
+    crop, with the background above and below (letterbox), up to LETTERBOX_MAX and only
+    as far as typed text stays legible. A subject wider than that (a whole window, a
+    screen of output) does not widen it: the strip shows the part of it where the
+    pointer is at work, else where its lines start, else the part nearest to where the
+    crop already is. Workspace switches cut."""
     W, H = tl.w, tl.h
     base_h = min(H, W / aspect)
     base_w = base_h * aspect
@@ -179,14 +189,32 @@ def _reframe_aoi(tl, segments, aspect, fps, t_start, t_end, cfg, zoom_gain, omeg
     vxs, gxs = translation_speed(subj.x0, subj.x1)
     vys, gys = translation_speed(subj.y0, subj.y1)
     slack = 0.18
-    ex = np.maximum(vxs, 0.5 * gxs)          # a window being resized needs some room to grow into
-    ey = vys                                 # (rows of new output grow downwards: no room needed)
+    # only a window being dragged or resized moves as a whole; what a click changed or a
+    # pointer box that jumps is a new subject, not a moving one (the "speed" of such a jump
+    # used to widen the crop to its limit for every click)
+    moving_a = np.array([k == "layout" for k in subj.kind])
+    redrawn_a = np.array([k == "scroll" for k in subj.kind])   # a dragged window that repaints as it goes
+    ex = np.where(moving_a, np.maximum(vxs, 0.5 * gxs),        # a window being resized needs room to grow into
+                  np.where(redrawn_a, vxs, 0.0))
+    ey = np.where(moving_a | redrawn_a, vys, 0.0)              # (rows of new output grow downwards: no room needed)
     need_a = np.maximum((sw + 2 * slack * ex) / fill_, (sh + 2 * slack * ey) / fill_ * aspect)
     typing_a = np.array([k == "typing" for k in subj.kind])
     # nothing gets wider than keeps ordinary UI text readable on a phone (a whole 4K screen
-    # in a 9:16 card is a thumbnail): show the part of a huge subject that matters instead
-    max_w_ui = min(max_w, max(base_w, 1.3 * max_w_text))
-    need_a = np.minimum(need_a, np.where(typing_a, max_w_text, max_w_ui))
+    # in a 9:16 card is a thumbnail), nor wider than LETTERBOX_MAX strips (large empty bands)
+    max_w_ui = min(max_w, max(base_w, 1.3 * max_w_text), LETTERBOX_MAX * base_w)
+    own_a = np.maximum(sw / fill_, sh / fill_ * aspect)       # without the room a moving window gets
+    # the pointer's surroundings (the row a click lit up, the trail of its travel) come and
+    # go by the half second: they never widen the crop past the strip, which just stays with
+    # the pointer. Inside the strip they still count, so a zoomed-in crop does not cut the
+    # dialog the pointer is working in.
+    pointer_a = np.array([k == "pointer" for k in subj.kind])
+    too_big = ~typing_a & ~pointer_a & (own_a > max_w_ui)
+    need_a = np.where(pointer_a, np.where(own_a <= base_w, own_a, 0.0), need_a)
+    # typing with no caret found (keys that show no glyph: a password, a full-screen program)
+    # has the whole window as its rect: that is no line to widen for either
+    blind_a = typing_a & np.isnan(subj.ax) & (own_a > max_w_text)
+    need_a = np.where(typing_a, np.where(blind_a, 0.0, np.minimum(need_a, max_w_text)),
+                      np.where(too_big, 0.0, np.minimum(need_a, max_w_ui)))
     # crop width: what the subject needs now and over the next 1.5 s (look-ahead max), so
     # the crop widens *before* a dialog/window needs it and narrows only after; typed text
     # caps it so the text stays legible
@@ -206,6 +234,16 @@ def _reframe_aoi(tl, segments, aspect, fps, t_start, t_end, cfg, zoom_gain, omeg
     for i in np.nonzero(typ)[0][::12]:
         if not in_term(st[i]):
             typ[i:i + 12] = False
+    scale = float(tl.capture.get("scale", 1.0) or 1.0)
+    pbox = 150.0 * scale                     # what must stay visible around a click
+
+    def pointer_at_work(t):
+        return tl.cursor_inside(t) and t - tl.last_pointer_before(t, 10 * scale) < 1.5
+    click_t = np.array(sorted(float(c["t"]) for c in tl.clicks))
+
+    def near_click(t):
+        j = int(np.searchsorted(click_t, t - 0.6))
+        return j < len(click_t) and click_t[j] <= t + 0.6
     tpad = np.pad(typ.astype(np.float64), (int(0.3 / sim_dt), int(0.8 / sim_dt)), mode="edge")
     typ_f = sliding_window_view(tpad, int(0.3 / sim_dt) + int(0.8 / sim_dt) + 1).max(axis=1)[:n] > 0
     for i in range(n):
@@ -216,28 +254,51 @@ def _reframe_aoi(tl, segments, aspect, fps, t_start, t_end, cfg, zoom_gain, omeg
         if typ_f[i]:
             w = min(w, max(max_w_text, w_zoom))
         ch = w / aspect
+        before = fc[0]
         if has:
-            fc[0] = _dead_zone_rect(fc[0], subj.x0[i], subj.x1[i], 0.5 * w * 0.94, subj.ax[i])
-            if subj.kind[i] in TEXT_KINDS:
-                fc[0] = text_x(fc[0], subj.x0[i], subj.x1[i], 0.5 * w * 0.94, subj.ax[i])
+            kind, half = subj.kind[i], 0.5 * w * 0.94
+            sx0, sx1 = float(subj.x0[i]), float(subj.x1[i])
+            if sx1 - sx0 <= 2 * half or kind == "typing":
+                # it fits; or typed text, shown from the start of its line with the caret in view
+                fc[0] = _dead_zone_rect(fc[0], sx0, sx1, half, subj.ax[i])
+                if kind in TEXT_KINDS:
+                    fc[0] = text_x(fc[0], sx0, sx1, half, subj.ax[i])
+            elif sx0 <= ax_[i] <= sx1 and pointer_at_work(float(st[i])):
+                # stay with the pointer: around a click, with what was clicked; otherwise
+                # (dragging a window or a split, hovering) just the pointer itself
+                pb = pbox if near_click(float(st[i])) else 40.0 * scale
+                fc[0] = _dead_zone_rect(fc[0], ax_[i] - pb, ax_[i] + pb, half)
+            elif kind in TEXT_KINDS:
+                fc[0] = text_x(fc[0], sx0, sx1, half)                                  # where its lines start
+            else:
+                fc[0] = float(np.clip(fc[0], sx0 + w / 2, sx1 - w / 2))                # the nearest part of it
+            if kind in ("pointer", "cursor") and abs(fc[0] - before) < CUT_HOP * w:
+                # a pointer flying across the screen is followed at a calm speed: the narrow
+                # strip would otherwise whip along with it (a jump is left to the cut below)
+                lim = POINTER_PAN * w * sim_dt
+                fc[0] = before + float(np.clip(fc[0] - before, -lim, lim))
             fc[1] = _dead_zone_rect(fc[1], subj.y0[i], subj.y1[i], 0.5 * ch * 0.94, subj.ay[i])
-            # a moving subject (drag) is centred, so the slack covers tracking error both ways
+            # a moving subject (a window being dragged) is centred, so the slack covers
+            # tracking error both ways. Not a travelling pointer (followed at its own calm
+            # pace above), nor a caret that jumps from one line to another
             for a_, v_, c_ in ((0, vxs[i], cxs[i]), (1, vys[i], cys[i])):
-                if v_ > 150:
+                if v_ > 150 and kind in ("layout", "scroll", "output"):
                     u = min(1.0, (v_ - 150) / 300)
                     fc[a_] = fc[a_] + (c_ - fc[a_]) * u
         fc[0] = float(np.clip(fc[0], w / 2, W - w / 2)) if w <= W else W / 2
         fc[1] = float(np.clip(fc[1], ch / 2, H - ch / 2)) if ch <= H else H / 2
         tw[i], tx[i], ty[i] = w, fc[0], fc[1]
     # jump cuts: when the subject switches to somewhere a crop-width away (a window opened on
-    # the other side, focus moved to another window), cut there instead of a long whip-pan
+    # the other side, focus moved to another window), cut there instead of a long whip-pan.
+    # Shorter hops are panned: the strip is narrow, and a dialog that opens beside the
+    # click, or the row a click lit up, is no reason to cut.
     cut_steps = []
     la_steps = int(min(0.45, 2.0 / omega) / sim_dt)
     last_cut = -10 ** 9
     i = 1
     while i < n:
         d = abs(tx[i] - tx[i - 1]) + abs(ty[i] - ty[i - 1]) * 0.5
-        if d > 0.45 * tw[i] and i - last_cut > int(1.5 / sim_dt):
+        if d > CUT_HOP * tw[i] and i - last_cut > int(1.5 / sim_dt):
             c = min(n - 1, i + la_steps)
             tx[i:c], ty[i:c], tw[i:c] = tx[i - 1], ty[i - 1], tw[i - 1]
             cut_steps.append(c)
@@ -245,6 +306,16 @@ def _reframe_aoi(tl, segments, aspect, fps, t_start, t_end, cfg, zoom_gain, omeg
             i = c + 1
             continue
         i += 1
+    # a cut lands on the framing that holds a moment later: what it cuts to is often still
+    # arriving (a pointer on its way to a click), and cutting to where that was would be
+    # followed by a slow drift
+    settle = int(0.5 / sim_dt)
+    for c in list(cut_steps):
+        k = min(n - 1, c + settle)
+        if any(c < o <= k for o in cut_steps):
+            continue
+        if abs(tx[k] - tx[c]) + abs(ty[k] - ty[c]) * 0.5 < CUT_HOP * tw[c]:
+            tx[c:k], ty[c:k] = tx[k], ty[k]
     # transitions (workspace switch): cut straight to the framing of what comes next on the
     # new workspace when that is known within ~2.5 s, else to the whole screen
     if cfg.cut_transitions:
@@ -256,7 +327,16 @@ def _reframe_aoi(tl, segments, aspect, fps, t_start, t_end, cfg, zoom_gain, omeg
                 m = (st >= a) & (st < st[k0])
                 tw[m], tx[m], ty[m] = tw[k0], tx[k0], ty[k0]
             else:
-                tw[m], tx[m], ty[m] = max_w, W / 2, H / 2
+                # nothing happens there yet: the focused window (from its left edge when it
+                # is wider than the strip); an empty workspace is shown whole
+                fw = tl.focused_window_at(b + 0.3)
+                fr = fw.get("rect") if fw else None
+                if fr is not None and fr[2] - fr[0] > 8:
+                    fx = text_x((fr[0] + fr[2]) / 2, fr[0], fr[2], 0.5 * base_w * 0.94)
+                    tw[m], tx[m] = base_w, float(np.clip(fx, base_w / 2, W - base_w / 2))
+                    ty[m] = H / 2
+                else:
+                    tw[m], tx[m], ty[m] = max_w, W / 2, H / 2
             kk = int(np.searchsorted(st, a))
             if 0 < kk < n:
                 cut_steps.append(kk)

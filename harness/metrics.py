@@ -20,6 +20,8 @@ from dolly.render import Compositor, load_aoi
 from dolly.zoom import Segment, ZoomConfig, build_segments
 
 ANTICIPATE = 0.8      # s: a camera may move to the next subject this early (zoom lead-in)
+REACT = 0.8           # s: ... and may still be on the previous one this long after a new one appears
+#                       (a close-up on typing pulls back once the output starts, not before Enter)
 ASPECT_OUT = {"16:9": (1280, 720), "9:16": (608, 1080), "1:1": (720, 720)}
 
 # caps every scenario must meet (after)
@@ -51,6 +53,16 @@ def _visible_rect(comp: Compositor, ts):
     else:
         x0, y0, x1, y1 = 0, 0, comp.lay.OW, comp.lay.OH
     return (vx0 + x0 / k, vy0 + y0 / k, vx0 + x1 / k, vy0 + y1 / k), k
+
+
+def _on_wide_subject(vis, aoi, strip):
+    """Reframed shapes do not letterbox a subject much wider than the full-height strip
+    (reframe.LETTERBOX_MAX): they fill the frame with a part of it. Such a frame shows the
+    subject when (nearly) all of the crop's width lies on it."""
+    if aoi[2] - aoi[0] <= 1.1 * strip:
+        return False
+    on = min(vis[2], aoi[2]) - max(vis[0], aoi[0])
+    return on >= 0.85 * (vis[2] - vis[0])
 
 
 def _contains(outer, inner, tol):
@@ -147,13 +159,24 @@ def evaluate(pdir: Path, aspect: str = "16:9", engine: Engine = Engine("after", 
             aoi_total += 1
             screen_vis = (max(r[0], 0), max(r[1], 0), min(r[2], W), min(r[3], H))
             ok_ = _contains(screen_vis, fr["aoi"], tol=0.004 * W)
+            if not ok_ and comp.reframe:
+                ok_ = _on_wide_subject(screen_vis, fr["aoi"], comp.base_w)
             if not ok_:
                 # anticipation is allowed: framing the *next* subject up to ANTICIPATE s early
                 fi = int(round(ts * tfps))
                 for k in range(1, int(ANTICIPATE * tfps) + 1):
                     nf = frames[min(len(frames) - 1, fi + k)]
                     if nf["kind"] != fr["kind"] and nf["aoi"] is not None:
-                        ok_ = _contains(screen_vis, nf["aoi"], tol=0.004 * W)
+                        ok_ = _contains(screen_vis, nf["aoi"], tol=0.004 * W) or (
+                            comp.reframe and _on_wide_subject(screen_vis, nf["aoi"], comp.base_w))
+                        break
+            if not ok_:
+                # reacting is allowed too: still showing the subject before this one, for a moment
+                fi = int(round(ts * tfps))
+                for k in range(1, int(REACT * tfps) + 1):
+                    pf = frames[max(0, fi - k)]
+                    if pf["kind"] != fr["kind"] and pf["aoi"] is not None:
+                        ok_ = _contains(screen_vis, pf["aoi"], tol=0.004 * W)
                         break
             if ok_:
                 aoi_in += 1

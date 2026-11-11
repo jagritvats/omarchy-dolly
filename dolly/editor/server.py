@@ -158,7 +158,7 @@ class Editor:
         zcfg = ZoomConfig.from_dict(data.get("zoom_config"))
         segs = data["segments"]
         if segs is None:
-            segs = [s.to_dict() for s in build_segments(tl, zcfg, self.aoi(tl, zcfg))]
+            segs = [s.to_dict() for s in _plan(tl, zcfg, self.aoi(tl, zcfg))]
         colors = projmod.theme_colors()
         return {
             "name": self.proj.name, "dir": str(self.proj.dir),
@@ -201,7 +201,7 @@ class Editor:
         zcfg = ZoomConfig.from_dict(data.get("zoom_config"))
         aoi = self.aoi(tl, zcfg)
         segs = [Segment.from_dict(s) for s in data["segments"]] if data["segments"] is not None \
-            else build_segments(tl, zcfg, aoi)
+            else _plan(tl, zcfg, aoi)
         from ..render import Compositor
         comp = Compositor(tl, projmod.deep_merge(data["style"], {"output": {"fps": fps}}), segs, zcfg, 0.0,
                           tl.duration, aspect=aspect or "16:9", aoi=aoi)
@@ -277,7 +277,7 @@ class Editor:
         data["zoom_config"] = zc
         tl = self.timeline(data["style"])
         zcfg = ZoomConfig.from_dict(zc)
-        segs = [s.to_dict() for s in build_segments(tl, zcfg, self.aoi(tl, zcfg))]
+        segs = [s.to_dict() for s in _plan(tl, zcfg, self.aoi(tl, zcfg))]
         if body.get("keep_manual"):
             manual = [s for s in (data.get("segments") or []) if s.get("source") == "manual"]
             keep = []
@@ -370,6 +370,21 @@ class Editor:
         threading.Thread(target=run, daemon=True).start()
 
 
+def _plan(tl, zcfg, aoi) -> list:
+    """The automatic zooms for a timeline. A countdown recorded before the take (pre-roll)
+    is not part of it: no zoom may start there."""
+    from ..capture import _from_go
+    return _from_go(build_segments(tl, zcfg, aoi), (getattr(tl, "capture", None) or {}).get("go"))
+
+
+STALE_PAGE = b"""<!doctype html><meta charset="utf-8"><title>Dolly</title>
+<body style="font:15px system-ui,sans-serif;background:#16161e;color:#c0caf5;margin:15vh auto;max-width:34em;padding:0 2em">
+<h3>This Dolly window is from an earlier session</h3>
+<p>The editor it belonged to has closed. Close this window and open the editor again
+from the record button on the bar, or with <code>dolly edit</code>.</p>
+<script>setTimeout(function(){ window.close() }, 4000)</script>"""
+
+
 def make_handler(ed: Editor):
     class H(BaseHTTPRequestHandler):
         server_version = "dolly-editor"
@@ -380,7 +395,17 @@ def make_handler(ed: Editor):
         def _auth(self, q) -> bool:
             tok = q.get("t", [None])[0] or self.headers.get("X-Dolly-Token")
             if not isinstance(tok, str) or not hmac.compare_digest(tok.encode(), ed.token.encode()):
-                self.send_error(403)
+                if self.command == "GET" and urlparse(self.path).path in ("/", "/index.html"):
+                    # a window left over from an editor that has exited, reloaded against a
+                    # newer one: say so instead of the bare "Error response" page
+                    self.send_response(403)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.send_header("Content-Length", str(len(STALE_PAGE)))
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    self.wfile.write(STALE_PAGE)
+                else:
+                    self.send_error(403)
                 return False
             return True
 

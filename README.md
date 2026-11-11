@@ -77,7 +77,7 @@ omarchy plugin add https://github.com/jagritvats/omarchy-dolly.git --enable
 
 The record button appears on the bar. Open it and click **Set up**: one terminal adds
 the hotkeys (Super+Alt+R to record) and Omarchy menu rows and installs the packages
-Dolly needs (about 45 MB to download; it asks for your password once). That is the
+Dolly needs (about 80 MB to download, 490 MB on disk; it asks for your password once). That is the
 whole setup. Everything else has a default and can be changed later in Settings.
 
 The same from a terminal:

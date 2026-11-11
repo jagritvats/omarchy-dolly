@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.6.1 (2026-11-11)
+
+Fixes, measured on real takes on Omarchy 4.5 in VirtualBox.
+
+Countdown and starting
+- The countdown no longer eats the start of a take: recording and input logging begin
+  before it and the clip starts the instant it ends. A 3 s countdown takes 3 s (it took
+  6.7 s, and keys pressed in the gap were lost).
+- Takes start about 3 s sooner on wf-recorder (virtual machines); `dolly record --for N`
+  returns that much earlier.
+
+Camera
+- Auto-zoom gets close when the action is inside a floating or small window: typing is no
+  longer framed at the size of its window (1.3x became 2.0x on the test scene), and a
+  click far from the others gets its own shot.
+- A shot no longer plays wider than planned because of what the previous shot left on
+  screen.
+- 9:16 and 1:1 fill the frame: a window is no longer shown letterboxed with large bands;
+  the crop stays with the pointer, the start of the lines or the nearest part of the window.
+- A dialog opened by a click stays whole in the vertical crop, button included, even when
+  it is low-contrast.
+
+Commands and notifications
+- `dolly status`, `mark`, `pause`, `mute`, `cancel` and `replay start/stop` say what
+  happened, or why not.
+- `dolly stop --json` during a countdown reports the take as cancelled.
+- After a recorder crash the notification shows the real saved length instead of 0:00,
+  and the saved file is repaired.
+- A notification on screen when you press Record is blurred from the first frame.
+- `dolly record --fps` takes 30 or 60, like Settings.
+- An editor window left over from an earlier session says so and closes.
+
+Docs
+- The README understated the packages Set up installs: about 80 MB to download and
+  490 MB on disk, not 45 MB. Most of it is what the distribution's OpenCV package
+  depends on; removing that dependency is planned.
+
 ## 0.6.0 (2026-11-10)
 
 Tested on Omarchy 4.5 in VirtualBox (wf-recorder, software rendering).

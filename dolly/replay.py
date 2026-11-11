@@ -60,6 +60,7 @@ def start(a):
         return
     if not _have("gpu-screen-recorder"):
         notify(t("notify.replayNeedsGsr"), t("notify.replayNeedsGsrBody"), urgency="critical")
+        print("dolly: instant replay needs gpu-screen-recorder, which is not installed", file=sys.stderr)
         raise SystemExit(2)
     secs = int(getattr(a, "seconds", 60) or 60)
     from .health import other_recorder
@@ -90,6 +91,15 @@ def start(a):
         proc = None
     if not proc:
         notify(t("notify.replayCannotStart"), t("notify.seeLog", f"{work}/recorder.log"), urgency="critical")
+        why = None
+        try:
+            from . import deps
+            why = deps.gsr_unusable()
+        except Exception:
+            why = None
+        print("dolly: instant replay could not start: gpu-screen-recorder "
+              + (f"cannot capture on this machine ({why})" if why else "did not stay running")
+              + f"; see {work}/recorder.log", file=sys.stderr)
         raise SystemExit(1)
     env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1]))
     logger = subprocess.Popen([sys.executable, "-m", "dolly.cli", "log-events", str(work), "--replay", str(secs)],
@@ -180,6 +190,7 @@ def save(a):
 def stop(_a=None):
     st = replay_state()
     if not st:
+        print("replay buffer is not running")
         return
     for k in ("recorder_pid", "logger_pid"):
         if _alive(st.get(k, 0)):
@@ -189,6 +200,7 @@ def stop(_a=None):
     set_replay(None)
     shell_refresh()
     notify(t("notify.replayOff"), "", timeout=1500)
+    print("replay buffer stopped")
 
 
 def status(_a=None):

@@ -263,6 +263,7 @@ def stop_json(a) -> None:
     st = capture.read_state()
     if not st:
         raise fail("not-recording", "nothing is being recorded")
+    counting = capture._counting_down(st)        # stopping a countdown cancels: there is no take to describe
     try:
         with contextlib.redirect_stdout(io.StringIO()):
             capture.stop(a)
@@ -270,6 +271,10 @@ def stop_json(a) -> None:
         if e.code not in (0, None):
             msg = e.code if isinstance(e.code, str) else "nothing was recorded; see recorder.log in the folder"
             raise fail("stop-failed", msg, dir=st["dir"]) from None
+    if counting:
+        _emit({"ok": True, "recording": False, "cancelled": True,
+               "message": "stopped during the countdown: nothing was recorded"})
+        return
     _emit(summary(Path(st["dir"])))
 
 

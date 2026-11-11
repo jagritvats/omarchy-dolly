@@ -56,6 +56,7 @@ class AOIConfig:
     near_cursor: float = 260.0          # video px; activity this close to an active cursor counts
     margin_lines: float = 1.2           # AOI margin around text activity, in text lines
     panel_area: float = 0.006           # a solid new region this big (of the screen) = a dialog / menu
+    panel_max: float = 0.14             # ... and a compact changed region up to this big, right after a click
 
     @classmethod
     def from_dict(cls, d):
@@ -507,6 +508,22 @@ def build_aoi(tl: Timeline, act: Activity | None, cfg: AOIConfig | None = None) 
             win = {"rect": tr, "class": win.get("class", "") if win else ""} if tr else win
         wrect = _clip(tuple(win["rect"]) if win else None, W, H)
         cx, cy = tl.cursor_at(t)
+        # a dialog drawn dark on a dark page changes only its text and border, so it is not
+        # the solid region click_reactions looks for. It still appears as one compact blob
+        # in the focused window within a second of the click; the same blob again is it closing.
+        if wrect is not None and recent(clicks, t, 1.0):
+            for (x0, y0, x1, y1, a) in act.blobs[i]:
+                box = (x1 - x0) * (y1 - y0) / (W * H)
+                if a < cfg.panel_area or box > cfg.panel_max or not _inside((x0 + x1) / 2, (y0 + y1) / 2, wrect):
+                    continue
+                br = (float(x0), float(y0), float(x1), float(y1))
+                hit = next((p for p in panels if _iou(p["rect"], br) > 0.4), None)
+                if hit is None:
+                    panels.append({"rect": br, "t0": float(t), "win": win.get("address") if win else None})
+                elif t - hit["t0"] > 0.5:
+                    panels.remove(hit)          # the same region changed again: it closed
+                else:
+                    hit["rect"] = _union([hit["rect"], br])     # still fading in
         typing = recent(keys, t, cfg.typing_window)
         pointer = recent(pmoves, t, cfg.pointer_window) or recent(clicks, t, cfg.pointer_window)
         layout = recent(layout_t, t, cfg.layout_window) or recent(open_t, t, cfg.open_window)
@@ -515,7 +532,7 @@ def build_aoi(tl: Timeline, act: Activity | None, cfg: AOIConfig | None = None) 
         # gather recent blobs (lookback depends on mode) that pass the filters
         span = cfg.typing_lookback if typing else 0.6
         lo = np.searchsorted(act.t, t - span)
-        kept, freshest, big = [], None, False
+        kept, freshest, fresh_h, big = [], None, 0.0, False
         now_area, now_rows, now_y0, now_y1 = 0.0, 0, float("inf"), float("-inf")
         for j in range(lo, i + 1):
             for (x0, y0, x1, y1, a) in act.blobs[j]:
@@ -541,7 +558,8 @@ def build_aoi(tl: Timeline, act: Activity | None, cfg: AOIConfig | None = None) 
                         now_y0, now_y1 = min(now_y0, y0), max(now_y1, y1)
                 kept.append((x0, y0, x1, y1))
                 if j == i or freshest is None:
-                    freshest = ((x0 + x1) / 2, (y0 + y1) / 2) if j >= i - 2 else freshest
+                    if j >= i - 2:
+                        freshest, fresh_h = ((x0 + x1) / 2, (y0 + y1) / 2), y1 - y0
         if wrect is not None and not big:
             # scrolling text: many rows change at once over most of the window's height
             wa = (wrect[2] - wrect[0]) * (wrect[3] - wrect[1]) / (W * H)
@@ -560,7 +578,15 @@ def build_aoi(tl: Timeline, act: Activity | None, cfg: AOIConfig | None = None) 
             if win is not None and wrect is not None and str(win.get("class", "")).lower() in terms:
                 x0 = wrect[0]      # a command line reads from the prompt, not from the last few glyphs
             rects.append(_clip((x0, u[1] - m, u[2] + m, u[3] + m), W, H)); kinds.append("typing")
-            foci.append(freshest or ((u[0] + u[2]) / 2, (u[1] + u[3]) / 2))
+            # the caret is where the newest glyphs are. A window painting itself while the
+            # first keys arrive is not glyphs: its middle is not a caret (the camera would
+            # frame, and the vertical crop widen for, the middle of the window)
+            if freshest is not None and fresh_h <= 4 * line_h:
+                foci.append(freshest)
+            elif u[3] - u[1] <= 6 * line_h:
+                foci.append(freshest or ((u[0] + u[2]) / 2, (u[1] + u[3]) / 2))
+            else:
+                foci.append(None)
         elif typing and wrect is not None:
             rects.append(wrect); kinds.append("typing"); foci.append(None)
         elif layout and wrect is not None:

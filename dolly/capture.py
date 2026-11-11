@@ -62,17 +62,43 @@ def notify(title, body="", *actions, urgency="normal", timeout=4000, image=None)
         print(f"{title}: {body}", file=sys.stderr)
 
 
-def _dismiss_own_toasts():
+def _dismiss_own_toasts() -> bool:
     """Dolly's own card from the last take stays for 10 s; a take started within that time
     must not open with it. Other apps' notifications are left alone (Do Not Disturb and
-    the automatic privacy blur deal with those)."""
+    the automatic privacy blur deal with those). True when the shell says a card went."""
     if not _have("omarchy-shell"):
+        return False
+    try:
+        r = subprocess.run(["omarchy-shell", "notifications", "dismiss", t("notify.recorded")], timeout=1.5,
+                           capture_output=True, text=True)
+        return (getattr(r, "stdout", "") or "").strip() == "ok"
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def _dismiss_toast(summary: str | None):
+    """Take one of Dolly's own cards off the screen (by its title)."""
+    if not summary or not _have("omarchy-shell"):
         return
     try:
-        subprocess.run(["omarchy-shell", "-q", "notifications", "dismiss", t("notify.recorded")], timeout=1.5,
+        subprocess.run(["omarchy-shell", "-q", "notifications", "dismiss", summary], timeout=1.5,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except (OSError, subprocess.TimeoutExpired):
         pass
+
+
+def _toasts_at_start() -> int:
+    """Other apps' cards on screen when Record is pressed. Dolly's own card from the last
+    take is dismissed first and given a moment to leave the shell's count."""
+    n = _toast_count()
+    if _dismiss_own_toasts() and n:
+        end = time.monotonic() + 0.4
+        while time.monotonic() < end:
+            m = _toast_count()
+            if m < n:
+                return m
+            time.sleep(0.05)
+    return n
 
 
 def _wanted_fps(a) -> int:
@@ -289,21 +315,48 @@ def _slurp(args):
     return r.stdout.strip() if r.returncode == 0 else None
 
 
-def countdown(n: int):
+class RecorderGone(Exception):
+    """The recorder died while the countdown was running."""
+
+
+def countdown(n: int, alive=None, last_call=None, last_call_s: float = 0.5):
     """3-2-1 in the bar (phase 'countdown') and as a toast; `dolly toggle`/`cancel`
-    or a bar click during it cancels (SIGTERM to this process)."""
+    or a bar click during it cancels (SIGTERM to this process).
+
+    The recorder and the event logger are already running when this is called (see
+    `start`), so the take begins the instant it returns and the countdown lasts exactly
+    n seconds. `alive()` returning False raises RecorderGone; `last_call()` runs once,
+    `last_call_s` before the end (the camera preview closes there, before the take)."""
     from .health import set_phase
 
     def _cancel(*_):
         raise Cancelled()
     old = signal.signal(signal.SIGTERM, _cancel)
+    shown = None
     try:
+        t_end = time.monotonic() + n
         for i in range(n, 0, -1):
             set_phase("countdown", left=i)
-            notify(t("notify.countdown", i), t("notify.countdownBody", "Super+Alt+R"), timeout=900)
-            time.sleep(1)
+            _dismiss_toast(shown)          # one card at a time, and none may outlive the countdown:
+            shown = t("notify.countdown", i)       # the shell keeps a card longer than it is asked to
+            notify(shown, t("notify.countdownBody", "Super+Alt+R"), timeout=900 if i > 1 else 550)
+            tick_end = t_end - (i - 1)
+            while True:
+                left = tick_end - time.monotonic()
+                if alive is not None and not alive():
+                    raise RecorderGone()
+                if i == 1 and last_call is not None and left <= last_call_s:
+                    last_call()
+                    last_call = None
+                if i == 1 and shown and left <= 0.35:
+                    _dismiss_toast(shown)  # gone before the take starts
+                    shown = None
+                if left <= 0:
+                    break
+                time.sleep(min(0.05, left))
     finally:
         signal.signal(signal.SIGTERM, old)
+        _dismiss_toast(shown)
 
 
 # ---------------------------------------------------------------- backends
@@ -315,8 +368,85 @@ def backend_order(pref: str) -> list[str]:
     if _have("gpu-screen-recorder"):
         order += ["gsr", "gsr-cpu"]
     if _have("wf-recorder"):
+        if order and _gsr_known_unusable():
+            order = []              # two failed launches on every start are time the take does not have
         order.append("wf")
     return order or ["gsr"]
+
+
+def _gsr_known_unusable() -> bool:
+    """A note from an earlier failed start or check says gpu-screen-recorder can never
+    capture on this machine (a VM, no usable GPU; see dolly/deps.py). This only reads the
+    note: nothing is probed while a recording is starting."""
+    try:
+        from . import deps
+        gsr = shutil.which("gpu-screen-recorder")
+        n = json.loads(deps._note_path().read_text())
+        return bool(n.get("reason")) and n.get("gsr") == gsr and abs(n.get("mtime", 0) - os.path.getmtime(gsr)) < 1
+    except (OSError, ValueError, TypeError, AttributeError):
+        return False
+
+
+def _recorder_up(proc, raw: Path, log_path: Path, log_from: int, backend: str, limit: float = 3.0) -> bool:
+    """Wait until the recorder is capturing (True) or has died (False).
+
+    Proof of capture is a video file with bytes in it, or the encoder's start-up lines in
+    the recorder's output. wf-recorder gives neither while the screen is still: it gets a
+    frame only when something on screen changes and holds the first one until the second
+    (VM, Nov 11: 0 bytes after 5 s on a still desktop, so every take sat out the whole
+    `limit` here before the event logger was even started). Once it has connected and
+    picked its region it is listening; the bar changing a moment later gives it a frame."""
+    t0 = time.monotonic()
+    while True:
+        if proc.poll() is not None:
+            return False
+        try:
+            if raw.stat().st_size > 0:
+                return True
+        except OSError:
+            pass
+        el = time.monotonic() - t0
+        if backend == "wf" and el >= 0.15:
+            try:
+                with open(log_path, "rb") as f:
+                    f.seek(log_from)
+                    out = f.read()
+            except OSError:
+                out = b""
+            if b"Output #0" in out or (b"selected region" in out and el >= 0.3):
+                return True
+        if el >= limit:
+            return proc.poll() is None
+        time.sleep(0.02)
+
+
+def _end_process(pid, sig, wait: float):
+    """Signal a process, give it `wait` seconds, then kill it."""
+    if not pid or not _alive(pid):
+        return
+    try:
+        os.kill(pid, sig)
+    except OSError:
+        return
+    end = time.monotonic() + wait
+    while time.monotonic() < end and _alive(pid):
+        time.sleep(0.05)
+    if _alive(pid):
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+
+
+def _toast_count() -> int:
+    """Notification cards on screen right now (the shell's own count); 0 when unknown."""
+    if not _have("omarchy-shell"):
+        return 0
+    try:
+        r = subprocess.run(["omarchy-shell", "notifications", "count"], capture_output=True, text=True, timeout=1.5)
+        return max(0, int((r.stdout or "").strip()))
+    except (OSError, ValueError, AttributeError, subprocess.TimeoutExpired):
+        return 0
 
 
 def _pactl_out(*args) -> str:
@@ -423,12 +553,15 @@ def start(a):
         hypr.marker_no_anim()      # a fading sync marker costs the first seconds of a still take
     except Exception:              # never refuse a recording over this
         pass
-    _dismiss_own_toasts()
+    toasts_before = _toasts_at_start()     # cards whose pixels can outlast the shell's count
+    t_pick = time.monotonic()
     try:
         tgt = pick_target(a.mode, getattr(a, "pick", None))      # pick: named by --window/--monitor/--region
     except Cancelled:
         health.set_phase("idle")
         return
+    if time.monotonic() - t_pick > 0.5:
+        toasts_before = _toast_count()     # a pick by hand took a while: count again
     target_addr = None
     if a.mode == "window" and tgt.kind == "region":
         from .monitors import monitor_target
@@ -468,18 +601,12 @@ def start(a):
         solid.restore()
         stop_bubble(bubble)
         health.set_phase("idle")
-    try:
-        if a.countdown:
-            countdown(a.countdown)
-    except Cancelled:
-        undo_setup()
-        shutil.rmtree(pdir, ignore_errors=True)
-        notify(t("notify.cancelled"), "", timeout=1500)
-        return
-    if cam_mode == "edit":
-        stop_bubble(bubble)                 # the camera is recorded separately; never burned in
-        bubble = None
-    t_go = time.time()
+    # Pre-roll: the recorder and the event logger start now, before the countdown, so the
+    # take begins the instant the countdown ends ("go") and nothing pressed right after it
+    # is lost. Before this, both were started after the countdown and needed 3-4 more
+    # seconds (VM, Nov 10: a 3 s countdown took 6.7 s, and a key pressed in the gap was
+    # not in the take). The countdown itself is recorded and cut by the default trim.
+    n_count = max(0, int(a.countdown or 0))
     log = open(pdir / "recorder.log", "a")
     # audio: separate tracks (mic / system), started just before the recorder
     from . import audio as audiomod
@@ -500,15 +627,14 @@ def start(a):
         log.write(f"\n=== {time.strftime('%F %T')} backend={backend}\n$ {' '.join(cmd)}\n")
         log.flush()
         try:
+            log_from = os.path.getsize(pdir / "recorder.log")
+        except OSError:
+            log_from = 0
+        try:
             proc = subprocess.Popen(cmd, stdout=log, stderr=log, start_new_session=True)
         except FileNotFoundError:
             continue
-        # wait until the file exists (recorder initialised) or the process dies
-        for _ in range(60):
-            if proc.poll() is not None or (raw.exists() and raw.stat().st_size > 0):
-                break
-            time.sleep(0.05)
-        if proc.poll() is None:
+        if _recorder_up(proc, raw, pdir / "recorder.log", log_from, backend):
             chosen = backend
             break
         raw.unlink(missing_ok=True)
@@ -530,17 +656,29 @@ def start(a):
         raise SystemExit(1)
 
     t_ready = time.monotonic()
-    ttff = time.time() - t_go
-    cam_proc, cam_clock = None, None
-    if cam_mode == "edit":
+    ttff = time.time() - clock_wall
+    if chosen == "wf" and backend_order(a.backend)[0] != "wf":
+        try:                        # the GPU recorder was tried first and failed: if it can never
+            from . import deps      # work here, remember that and go straight to wf-recorder next time
+            log.flush()
+            deps.note_gsr_failure((pdir / "recorder.log").read_text(errors="replace"))
+        except Exception:
+            _dlog.swallowed()
+    cam_proc, cam_clock, cam_launch = None, None, None
+
+    def start_camera():
+        nonlocal cam_proc, cam_clock, cam_launch
         from . import camera as cammod
         cam_proc, cam_clock, err = cammod.start_recording(pdir, getattr(a, "camera_device", None) or None, log)
+        cam_launch = time.monotonic() if cam_proc else None
         if err:
             warn.append(t("notify.cameraFailed", err))
+    if cam_mode == "edit" and not n_count:
+        stop_bubble(bubble)                 # the camera is recorded separately; never burned in
+        bubble = None
+        start_camera()
     elif cam_mode == "live" and bubble is None:
         warn.append(t("notify.cameraFailed", "mpv could not show the camera"))
-    if warn:
-        notify(t("notify.recordingWithout"), "\n".join(warn), urgency="critical", timeout=8000)
     live_tracks = [tr for tr in tracks if tr.get("pid")]
     meta = {"backend": chosen, "region": region, "scale": scale, "monitor": monitor, "fps": a.fps,
             "target_info": tgt.to_meta(), "monitors": _monitor_snapshot(),
@@ -553,22 +691,74 @@ def start(a):
             "desktop_audio": any(tr["track"] == "system" for tr in live_tracks),
             "camera_mode": cam_mode, "webcam_clock": cam_clock, "live_bubble": bool(bubble),
             "cursor_size": int(os.environ.get("HYPRCURSOR_SIZE") or os.environ.get("XCURSOR_SIZE") or 24),
-            "notification_layers": _notification_layers(),
+            "notification_layers": _notification_layers(), "toasts_before": toasts_before,
             "terminals": TERMINALS, "solid_windows": solid_on, "ttff_ms": round(ttff * 1000), "hotkey_to_first_frame_ms":
-            round((time.time() - t_invoke - (a.countdown or 0)) * 1000),
-            "webcam": bool(cam_proc), "webcam_launch_mono": time.monotonic() if cam_proc else None}
+            round((time.time() - t_invoke) * 1000), "countdown": n_count,
+            "webcam": bool(cam_proc), "webcam_launch_mono": cam_launch}
     fsutil.atomic_write_json(pdir / "capture.json", meta, indent=2)
     lg_cmd = [sys.executable, "-m", "dolly.cli", "log-events", str(pdir)] + (["--no-keys"] if a.no_keys else [])
     env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1]))
     logger = subprocess.Popen(lg_cmd, stdout=log, stderr=log, env=env, start_new_session=True)
+    # "preroll": the countdown is still running; `dolly status` says countdown, `dolly stop`
+    # cancels. The file exists from here on so a recorder is never left without an owner.
     st = {"dir": str(pdir), "recorder_pid": proc.pid, "logger_pid": logger.pid, "backend": chosen,
           "started": meta["started"], "webcam_pid": cam_proc.pid if cam_proc else None,
           "track_pids": [tr["pid"] for tr in live_tracks], "bubble_pid": bubble.pid if bubble else None,
-          "region": region, "paused_total": 0.0, "paused_at": None, "dnd_prev": dnd_prev, "muted": False}
+          "region": region, "paused_total": 0.0, "paused_at": None, "dnd_prev": dnd_prev, "muted": False,
+          "preroll": bool(n_count)}
     fsutil.atomic_write_json(state_path(), st, durable=False)
+    if n_count:
+        def close_preview():
+            nonlocal bubble
+            if cam_mode == "edit":
+                stop_bubble(bubble)         # the camera is recorded separately; never burned in
+                bubble = None
+        try:
+            countdown(n_count, alive=lambda: proc.poll() is None, last_call=close_preview)
+        except (Cancelled, RecorderGone) as ex:
+            _end_process(logger.pid, signal.SIGTERM, 2.5)    # it switches the input bridge off as it leaves
+            _end_process(proc.pid, signal.SIGINT, 3.0)
+            proc.poll()
+            audiomod.stop_tracks(tracks)
+            state_path().unlink(missing_ok=True)
+            undo_setup()
+            log.close()
+            if isinstance(ex, Cancelled):
+                shutil.rmtree(pdir, ignore_errors=True)
+                notify(t("notify.cancelled"), "", timeout=1500)
+                return
+            for f in list(pdir.iterdir()):                   # keep only the recorder's own words
+                if f.name != "recorder.log":
+                    shutil.rmtree(f, ignore_errors=True) if f.is_dir() else f.unlink(missing_ok=True)
+            notify(t("notify.cannotStart"), t("notify.cannotStartBody", f"{pdir}/recorder.log"),
+                   urgency="critical", timeout=10000)
+            raise SystemExit(1) from None
+        if cam_mode == "edit":
+            close_preview()
+    # ---- "go": the take starts here
+    go_wall, go_mono = time.time(), time.monotonic()
+    if n_count:
+        st.update({"started": go_wall, "preroll": False, "bubble_pid": bubble.pid if bubble else None})
+        fsutil.atomic_write_json(state_path(), st, durable=False)
     from .guards import set_recording
     set_recording(proc.pid)                 # menu guard file (no Python on menu open)
     health.set_phase("recording", dir=str(pdir), pid=proc.pid)
+    if n_count:
+        # the cards on screen at "go", read directly: the logger's own count lags by its
+        # polling interval, and Dolly's last countdown card was taken down a moment ago
+        toasts_go = _toast_count()
+        if cam_mode == "edit":
+            start_camera()                  # the preview had the camera until now
+            st["webcam_pid"] = cam_proc.pid if cam_proc else None
+            fsutil.atomic_write_json(state_path(), st, durable=False)
+        meta.update({"started": go_wall, "go_wall": go_wall, "go_mono": go_mono, "toasts_at_go": toasts_go,
+                     "live_bubble": bool(bubble), "audio_warnings": warn, "webcam_clock": cam_clock,
+                     "webcam": bool(cam_proc), "webcam_launch_mono": cam_launch})
+        fsutil.atomic_write_json(pdir / "capture.json", meta, indent=2)
+    if warn:
+        notify(t("notify.recordingWithout"), "\n".join(warn), urgency="critical", timeout=8000)
+    if not getattr(a, "json", False):
+        print(f"dolly: recording to {pdir} (stop with: dolly stop)", file=sys.stderr)
     print(pdir)
 
 
@@ -646,11 +836,37 @@ def reason_text(reason: str) -> str:
     return t(f"reason.{reason}") if reason in STOP_REASONS else reason
 
 
+def _counting_down(st: dict | None) -> bool:
+    """The countdown is still running: the recorder and the logger are up (pre-roll), the
+    take has not started. False once the process that counts down is gone."""
+    if not st or not st.get("preroll"):
+        return False
+    from . import health
+    ph = health.get_phase()
+    return ph.get("phase") == "countdown" and bool(ph.get("pid")) and _alive(ph["pid"])
+
+
+def _live_state() -> dict | None:
+    """The state of a take that has started (None while idle or still counting down)."""
+    st = read_state()
+    return None if _counting_down(st) else st
+
+
+def _clock(seconds: float) -> str:
+    m, s = divmod(max(0, int(seconds)), 60)
+    return f"{m}:{s:02d}"
+
+
 def _recording_details(pdir: Path) -> str:
     """"1:23 · 41 MB" like Omarchy's "Screen recording saved" toast."""
     try:
         raw = projmod.Project(pdir).raw
         dur = video_info(raw).get("duration", 0)
+        if not dur:                 # a file a killed recorder left without its length
+            try:
+                dur = float(json.loads((pdir / "events.json").read_text())["video"]["duration"])
+            except (OSError, ValueError, KeyError, TypeError):
+                dur = 0
         m, sec = divmod(int(dur), 60)                    # same rounding as the editor (0:10.52 -> 0:10)
         from .units import human_size
         return t("notify.recordedDetails", f"{m}:{sec:02d}", human_size(raw.stat().st_size))
@@ -679,6 +895,10 @@ def stop(_a=None):
             return            # a watchdog raced a manual stop
         print("not recording", file=sys.stderr)
         raise SystemExit(1)
+    if _counting_down(st):
+        if not reason:             # nothing of the take exists yet: stopping the countdown is a cancel
+            cancel(_a)
+        return                     # (a watchdog's stop: the countdown notices a dead recorder itself)
     pdir = Path(st["dir"])
     stopped_at = time.time()
     health.set_phase("finalizing", dir=str(pdir))
@@ -734,6 +954,11 @@ def stop(_a=None):
         notify(t("notify.nothingRecorded"), t("notify.nothingRecordedBody", f"{pdir}/recorder.log"),
                urgency="critical", timeout=10000)
         raise SystemExit(1)
+    if reason:
+        try:                       # a recorder that died leaves a file without its length or index
+            _repair_raw(pdir)
+        except Exception as ex:
+            (pdir / "recorder.log").open("a").write(f"video repair failed: {ex}\n")
     try:
         finalize(pdir)
     except Exception as e:  # keep the raw files; tell the user
@@ -772,9 +997,11 @@ def cancel(_a=None):
     ph = health.get_phase()
     if ph.get("phase") == "countdown" and ph.get("pid") and _alive(ph["pid"]):
         os.kill(int(ph["pid"]), signal.SIGTERM)       # the countdown cleans up after itself
+        print("countdown cancelled")
         return
     st = read_state()
     if not st:
+        print("nothing to cancel: not recording")
         return
     for p in [st.get("logger_pid"), st.get("recorder_pid"), st.get("webcam_pid"), st.get("bubble_pid"),
               *(st.get("track_pids") or [])]:
@@ -788,6 +1015,7 @@ def cancel(_a=None):
     health.dnd_end(st.get("dnd_prev"))
     shutil.rmtree(st["dir"], ignore_errors=True)
     health.set_phase("idle")
+    print("recording discarded")
 
 
 def toggle(a):
@@ -810,7 +1038,16 @@ def toggle(a):
 
 
 def status(a):
+    """`dolly status`: one line for people, `--json` for the bar and scripts. Exit code 0
+    while a take is running (recording or paused), 1 otherwise."""
     st = read_state()
+    from . import health
+    ph = health.get_phase()
+    phase = ph.get("phase", "idle")
+    if _counting_down(st):
+        st = None                 # recorder and logger are up (pre-roll); the take has not started
+    if st:
+        phase = "paused" if st.get("paused_at") else "recording"
     if getattr(a, "json", False):
         last = projmod.latest_project()
         rep = {}
@@ -820,11 +1057,6 @@ def status(a):
             rep = {"replay": bool(rs), "replay_seconds": rs.get("seconds") if rs else None}
         except Exception:
             rep = {"replay": False}
-        from . import health
-        ph = health.get_phase()
-        phase = ph.get("phase", "idle")
-        if st:
-            phase = "paused" if st.get("paused_at") else "recording"
         print(json.dumps({**rep, "recording": bool(st), "elapsed": round(elapsed(st), 1) if st else 0,
                           "phase": phase, "countdown": ph.get("left", 0) if phase == "countdown" else 0,
                           "jobs": health.jobs(), "bar": _bar_view(),
@@ -832,7 +1064,11 @@ def status(a):
                           "backend": st.get("backend") if st else None, "dir": st.get("dir") if st else None,
                           "last": str(last) if last else None}))
     elif st:
-        print(int(elapsed(st)))
+        print(f"{phase} {_clock(elapsed(st))}" + (", microphone muted" if st.get("muted") else ""))
+    elif phase == "countdown":
+        print(f"countdown {ph.get('left', 0)}")
+    else:
+        print("not recording" + (f" ({phase})" if phase != "idle" else ""))
     raise SystemExit(0 if st else 1)
 
 
@@ -861,12 +1097,14 @@ def _signal(st, sig):
 def pause(_a=None):
     """Toggle pause (gpu-screen-recorder SIGUSR2). The logger drops events while
     paused and finalize closes the gap, so events stay in sync with the video."""
-    st = read_state()
+    st = _live_state()
     if not st:
         print("not recording", file=sys.stderr)
         raise SystemExit(1)
     if st["backend"] == "wf":
         notify(t("notify.pauseNeedsGsr"), t("notify.pauseNeedsGsrBody"))
+        print("cannot pause: this recording uses wf-recorder, and pausing needs gpu-screen-recorder",
+              file=sys.stderr)
         raise SystemExit(2)
     _signal(st, signal.SIGUSR2)
     if st.get("paused_at"):
@@ -878,12 +1116,13 @@ def pause(_a=None):
         notify(t("notify.paused"), t("notify.pausedBody", "Super+Alt+P"), timeout=2000)
     fsutil.atomic_write_json(state_path(), st, durable=False)
     shell_refresh()
+    print(f"paused at {_clock(elapsed(st))}" if st.get("paused_at") else f"resumed at {_clock(elapsed(st))}")
 
 
 def mute(_a=None):
     """Mute / unmute the microphone track while recording: a muted span (silence at
     export), not a cut. The logger records the span on the shared time base."""
-    st = read_state()
+    st = _live_state()
     if not st:
         print("not recording", file=sys.stderr)
         raise SystemExit(1)
@@ -893,6 +1132,7 @@ def mute(_a=None):
     fsutil.atomic_write_json(state_path(), st, durable=False)
     notify(t("notify.micMuted") if st["muted"] else t("notify.micOn"), "", timeout=1200)
     shell_refresh()
+    print("microphone muted" if st["muted"] else "microphone on")
 
 
 def camera_cmd(a):
@@ -930,12 +1170,17 @@ def camera_cmd(a):
 
 def mark(_a=None):
     """'Zoom here' marker at the cursor (logger SIGUSR1) -> becomes a zoom segment."""
-    st = read_state()
+    st = _live_state()
     if not st:
+        print("not recording: there is nothing to mark", file=sys.stderr)
         raise SystemExit(1)
     if st.get("logger_pid") and _alive(st["logger_pid"]):
         os.kill(st["logger_pid"], signal.SIGUSR1)
         notify(t("notify.marked"), "", timeout=900)
+        print(f"marked a zoom point at {_clock(elapsed(st))}")
+    else:
+        print("nothing marked: the event logger of this recording is not running", file=sys.stderr)
+        raise SystemExit(1)
 
 
 def webcam_device() -> str | None:
@@ -997,6 +1242,26 @@ def _unpause(ms: float, intervals) -> float | None:
 
 
 # ---------------------------------------------------------------- recovery
+def _repair_raw(pdir: Path) -> bool:
+    """A recorder that was killed leaves a video without its length and its seek index.
+    Rewrite the container (a stream copy; the original is kept as *.damaged) so the toast,
+    the library, the editor and the export all see a normal file. True when rewritten."""
+    raw = projmod.Project(pdir).raw
+    if video_info(raw).get("duration"):
+        return False
+    from .render import ffmpeg_bin
+    fixed = pdir / "raw.recovered.mkv"
+    # no timeout: a stream copy of the whole recording, its time grows with its length
+    subprocess.run([ffmpeg_bin(), "-v", "error", "-y", "-err_detect", "ignore_err", "-i", str(raw),
+                    "-c", "copy", str(fixed)], capture_output=True)
+    if fixed.exists() and video_info(fixed).get("duration"):
+        raw.rename(raw.with_suffix(raw.suffix + ".damaged"))
+        fixed.rename(pdir / "raw.mkv")
+        return True
+    fixed.unlink(missing_ok=True)
+    return False
+
+
 def recover_dir(pdir: Path) -> dict:
     """Make an interrupted recording usable: kill leftovers, make sure the video
     is readable (remux a damaged MKV/MP4 if needed) and finalize it."""
@@ -1004,16 +1269,7 @@ def recover_dir(pdir: Path) -> dict:
     raw = projmod.Project(pdir).raw
     if not raw.exists() or raw.stat().st_size == 0:
         raise RuntimeError("no video was written")
-    info = video_info(raw)
-    if not info.get("duration"):
-        from .render import ffmpeg_bin
-        fixed = pdir / "raw.recovered.mkv"
-        # no timeout: a stream copy of the whole recording, its time grows with its length
-        subprocess.run([ffmpeg_bin(), "-v", "error", "-y", "-err_detect", "ignore_err", "-i", str(raw),
-                        "-c", "copy", str(fixed)], capture_output=True)
-        if fixed.exists() and video_info(fixed).get("duration"):
-            raw.rename(raw.with_suffix(raw.suffix + ".damaged"))
-            fixed.rename(pdir / "raw.mkv")
+    _repair_raw(pdir)
     if not (pdir / "events.raw.jsonl").exists():
         (pdir / "events.raw.jsonl").write_text("")
     meta_p = pdir / "capture.json"
@@ -1105,6 +1361,36 @@ def _map_rect(r, rx, ry, sx, sy):
     return [round((x - rx) * sx, 1), round((y - ry) * sy, 1), round(w * sx, 1), round(h * sy, 1)]
 
 
+def _go_time(meta: dict, lines: list, fit) -> float | None:
+    """Video time of "go" (the end of the countdown) for a take recorded with pre-roll;
+    None when there was no countdown. Both clocks are CLOCK_MONOTONIC: capture.json has
+    go, the logger's first line has its own start."""
+    if not meta.get("countdown") or meta.get("go_mono") is None:
+        return None
+    t0 = next((e.get("t0_mono") for e in lines if e.get("type") == "start" and e.get("t0_mono") is not None), None)
+    if t0 is None:
+        return None
+    try:
+        t = round(float(fit.map(float(meta["go_mono"]) - float(t0))), 4)
+    except (TypeError, ValueError):
+        return None
+    return t if t > 0 else None
+
+
+def _from_go(segs: list, go_t: float | None) -> list:
+    """No zoom planned from what happened during the countdown may reach into the take."""
+    if go_t is None:
+        return segs
+    out = []
+    for s in segs:
+        if s.end <= go_t + 0.3:
+            continue
+        if s.start < go_t:
+            s.start = go_t
+        out.append(s)
+    return out
+
+
 def finalize(pdir: Path, aoi: bool = True):
     """events.raw.jsonl + raw video -> events.json (video px, seconds) + auto segments.
 
@@ -1149,6 +1435,7 @@ def finalize(pdir: Path, aoi: bool = True):
             fit = syncmod.fit(log_marks, runs, info["fps"] or 60, clock_a)
         except Exception as ex:  # never lose a recording over sync
             fit = syncmod.SyncFit(method=f"failed: {ex}"[:80])
+    go_t = _go_time(meta, lines, fit)
     events = []
     for e in lines:
         ms = _unpause(e.get("ms", 0), pauses)
@@ -1158,6 +1445,8 @@ def finalize(pdir: Path, aoi: bool = True):
         kind = e.get("type")
         if kind == "info" and e.get("click_source"):
             click_source = e["click_source"]
+        if go_t is not None and t < go_t and kind in ("click", "key", "mark"):
+            continue                # pressed during the countdown: recorded (pre-roll), not part of the take
         if kind in ("move", "click"):
             ev = {"t": t, "type": kind, "x": round((e["x"] - rx) * sx, 2), "y": round((e["y"] - ry) * sy, 2)}
             if kind == "click":
@@ -1214,7 +1503,10 @@ def finalize(pdir: Path, aoi: bool = True):
                        "audio_mode": meta.get("audio_mode"), "audio_tracks": audio_tracks, "mic_mutes": mic_mutes,
                        "cursor_size": cursor_size, "mode": meta.get("mode", "screen"),
                        "target": meta.get("target"), "terminals": meta.get("terminals"),
-                       "sync": fit.to_dict(), "monitor": meta.get("monitor")},
+                       "sync": fit.to_dict(), "monitor": meta.get("monitor"),
+                       # "go": where the take starts when a countdown was recorded before it
+                       "go": go_t, "toasts_before": int(meta.get("toasts_before") or 0),
+                       "toasts_at_go": meta.get("toasts_at_go") if go_t is not None else None},
            "events": events}
     # privacy by default: what was typed into a password manager or an authentication prompt
     # is not kept (no keycaps, no typing zoom, nothing in events.json)
@@ -1257,8 +1549,10 @@ def finalize(pdir: Path, aoi: bool = True):
             track = aoimod.build_aoi(tl, aoimod.cached_activity(pdir, tl))
         except Exception as ex:
             (pdir / "recorder.log").open("a").write(f"aoi analysis failed: {ex}\n")
-    data["segments"] = [s.to_dict() for s in build_segments(tl, cfg, track)]
+    data["segments"] = [s.to_dict() for s in _from_go(build_segments(tl, cfg, track), go_t)]
     trim = list(syncmod.marker_trim(runs, info["fps"] or 60, duration) or (0.0, duration))
+    if go_t is not None and go_t < duration:
+        trim[0] = round(max(trim[0], go_t), 4)       # the countdown is in the file, not in the clip
     target = meta.get("target") if meta.get("mode") == "window" else None
     if target and tl.snapshots:
         # window mode: the recording ends when the followed window closes, or when it
