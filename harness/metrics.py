@@ -296,7 +296,8 @@ def check(res: dict):
 
 def debug_frames(pdir, aspect, engine, times, out_png, fps=30.0):
     """Composite frames at `times` with the truth AOI outlined (red) - diagnostics only."""
-    import cv2
+    from dolly import imgops
+    from scene import blit_text
     pdir = Path(pdir)
     truth = json.loads((pdir / "truth.json").read_text())
     proj = projmod.Project(pdir)
@@ -323,13 +324,14 @@ def debug_frames(pdir, aspect, engine, times, out_png, fps=30.0):
         z, k, vx0, vy0 = comp.affine_at(t)
         if fr["aoi"]:
             a = fr["aoi"]
-            cv2.rectangle(img, (int((a[0] - vx0) * k), int((a[1] - vy0) * k)), (int((a[2] - vx0) * k), int((a[3] - vy0) * k)),
-                          (60, 60, 255), 2)
-        cv2.putText(img, f"{t:.2f}s {fr.get('kind') or ''}", (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+            x0, y0, x1, y1 = (int((a[0] - vx0) * k), int((a[1] - vy0) * k), int((a[2] - vx0) * k), int((a[3] - vy0) * k))
+            for p0, p1 in (((x0, y0), (x1, y0 + 1)), ((x0, y1 - 1), (x1, y1)), ((x0, y0), (x0 + 1, y1)), ((x1 - 1, y0), (x1, y1))):
+                imgops.fill_rect(img, p0, p1, (60, 60, 255))
+        blit_text(img, 10, 8, f"{t:.2f}s {fr.get('kind') or ''}", 20, (255, 255, 255), bold=True)
         tiles.append(img)
     h = max(t.shape[0] for t in tiles)
     row = np.concatenate([np.pad(t, ((0, h - t.shape[0]), (0, 4), (0, 0))) for t in tiles], 1)
-    cv2.imwrite(str(out_png), row)
+    imgops.write_image(out_png, row)
 
 
 def trace(pdir, aspect, engine=Engine("after", True), fps=30.0):

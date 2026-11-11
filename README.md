@@ -1,7 +1,8 @@
-# Dolly
+# Dolly: Screen Recorder
 
-Polished demo recordings for Omarchy: the camera zooms in on what you are doing,
-then you trim, frame and share from a built-in editor.
+A screen recorder for Omarchy that makes polished demo videos and screencasts: the
+camera zooms in on what you are doing, then you trim, frame and share from a built-in
+editor.
 
 ![Dolly: a framed export, an auto-zoomed export, the record panel and Settings](preview.png)
 
@@ -77,7 +78,7 @@ omarchy plugin add https://github.com/jagritvats/omarchy-dolly.git --enable
 
 The record button appears on the bar. Open it and click **Set up**: one terminal adds
 the hotkeys (Super+Alt+R to record) and Omarchy menu rows and installs the packages
-Dolly needs (about 80 MB to download, 490 MB on disk; it asks for your password once). That is the
+Dolly needs (about 9 MB to download, 55 MB on disk; it asks for your password once). That is the
 whole setup. Everything else has a default and can be changed later in Settings.
 
 The same from a terminal:
@@ -90,11 +91,19 @@ dolly doctor                                                           # what wo
 Set up also puts `dolly` on your PATH (a link in `~/.local/bin`), so the commands
 below work in any terminal, script or agent shell.
 
+**Updating.** `dolly update` runs Omarchy's own `omarchy plugin update` and then
+refreshes what Set up wrote (the menu entry, the hotkeys, the `dolly` command): no
+password, no terminal. If you update with Omarchy's command directly, Dolly does the
+same refresh by itself. A running Omarchy shell keeps the bar button it has loaded, so
+`dolly update` restarts the shell when the button changed (`--no-restart` to skip that);
+after Omarchy's own command the new button appears at the next shell start, and a card
+offers to restart it.
+
 Needs Omarchy 4.x (the Quattro shell).
 
-**Required packages** (not in Omarchy's base): `python-numpy`, `python-opencv`,
-`python-pillow`. In a virtual machine also `wf-recorder` (gpu-screen-recorder,
-which ships with Omarchy, cannot use a virtual GPU). `ffmpeg` ships with Omarchy.
+**Required packages** (not in Omarchy's base): `python-numpy` and `python-pillow`.
+In a virtual machine also `wf-recorder` (gpu-screen-recorder, which ships with
+Omarchy, cannot use a virtual GPU). `ffmpeg` ships with Omarchy.
 
 **Optional**: `tesseract` and `tesseract-data-eng` (scrub secrets), `rclone`
 (Drive/Dropbox/... links), whisper.cpp or faster-whisper (captions), a camera, `mpv`
@@ -104,12 +113,12 @@ which ships with Omarchy, cannot use a virtual GPU). `ffmpeg` ships with Omarchy
 
 | | |
 |---|---|
-| Bar button | click: the Dolly panel (capture mode, audio, camera, Start, recent recordings, **Settings**) · right-click: quick record · while recording: click stops, right-click shows pause / mute mic / stop / discard |
-| Hotkeys (after **Set up**) | Super+Alt+R record/stop · Super+Alt+P pause · Super+Alt+N mute mic · Super+Alt+M zoom here · Super+Alt+Shift+R save last 30 s (instant replay) · Super+Alt+L recordings (Omarchy 4.5 uses it, so it is skipped there). A combination that is already bound is never taken; if an Omarchy update later claims one, the panel says so and **Fix** re-runs setup. Omarchy's Super+K lists them |
-| Menu (Super+Space, after **Set up**) | Trigger → Capture → Record demo / Dolly recordings / Dolly settings / Open last / Instant replay · Trigger → Share → Last demo recording |
+| Bar button | click: the Dolly panel (capture mode, audio, camera, Start, recent recordings, **Settings**) · right-click: quick record · while recording: click stops, right-click shows pause / mute mic / stop / discard · Omarchy's `Super+Ctrl+<n>` opens the panel by its place in the bar's right section. The button watches Dolly's state files; nothing runs in the background while you are not recording |
+| Hotkeys (after **Set up**) | Super+Alt+R record/stop · Super+Alt+P pause · Super+Alt+N mute mic · Super+Alt+M zoom here · Super+Alt+Shift+R save last 30 s (instant replay) · Super+Alt+L recordings (Omarchy 4.5 uses it, so it is skipped there). Change any of them, or switch one off, in **Settings › Shortcuts** (or `dolly config set shortcuts.toggle="SUPER + CTRL + D"`; empty = off); only Dolly's own marked block in `~/.config/hypr/bindings.lua` is rewritten. A combination that is already bound is never taken; if an Omarchy update later claims one, the panel says so and **Fix** gives those keys up. Omarchy's Super+K lists them |
+| Menu (Super+Space, after **Set up**) | Trigger → Capture → **Demo**: record a window, a region or the screen · open last · recordings · share last recording · instant replay · settings. While a take is running the entry is **Stop demo** |
 | Editor | opens after you stop, without taking focus. Library · Editor · Settings. Timeline lanes for zoom, speed and privacy; 16:9 / 9:16 / 1:1 preview; In/Out trim; camera bubble shape, size and position (drag it); camera-only ranges; per-track volume and mute; blur boxes; Scrub secrets; captions; title card; **Share** (Ctrl+E) |
 | Settings | the editor's Settings view (also `dolly settings`): Capture, Audio, Camera, Look, Auto-zoom, Privacy, Export, Sharing, Storage. Stored in `~/.config/dolly/config.json`; the bar widget's own options stay in sync |
-| CLI | `dolly record [--mode screen|window|region] [--audio none|mic|system|both] [--camera off|edit|live] · stop · pause · mute · mark · replay · edit · library [--open] · settings · config get/set · export [--aspect 16:9|9:16|1:1|4:5] [--quality draft|fast|high|best] [--gif] · share … · run demo.toml [--dry-run] [--json] · recover · deps · setup · integration · doctor` |
+| CLI | `dolly record [--mode screen|window|region] [--audio none|mic|system|both] [--camera off|edit|live] · stop · pause · mute · mark · replay · edit · library [--open] · settings · config get/set · export [--aspect 16:9|9:16|1:1|4:5] [--quality draft|fast|high|best] [--gif] · share … · run demo.toml [--dry-run] [--json] · recover · deps · setup · update · integration · doctor` |
 
 ### Scripted demos
 
@@ -287,7 +296,7 @@ Everything is in this repository:
   desktop: notifications, Hyprland and the bar are stubbed.
 - `make scenarios` / `make demo`: the synthetic-desktop harness (`harness/`) that
   checks the camera on generated recordings.
-- `TESTING.md` and `CLAUDE.md`: the real-hardware test plan (also written so an
+- `TESTING.md` and `AGENTS.md`: the real-hardware test plan (also written so an
   AI coding agent can run it).
 - `CHANGELOG.md`: what changed in each version.
 

@@ -1,14 +1,14 @@
 # Dolly: test checklist
 
 Tick each box, and add notes or numbers. Step numbers refer to the test plan
-in CLAUDE.md. Keep evidence in `~/dolly-evidence/<date>/`.
+in AGENTS.md. Keep evidence in `~/dolly-evidence/<date>/`.
 
 Machine: ☐ Omarchy VM on Windows (hypervisor: ______)  ☐ real hardware (GPU: ______)
 Omarchy: ______   Hyprland: ______   gpu-screen-recorder: ______   webcam: ______   mic: ______
 
 ## Verified in the cloud box (no Hyprland/GPU/webcam/network), re-check locally
 
-- [x] `make test`: see CLAUDE.md Reference results for the count (cloud). Local: [ ] pass [ ] fail ____
+- [x] `make test`: see AGENTS.md Reference results for the count (cloud). Local: [ ] pass [ ] fail ____
 - [x] `make scenarios`: 12 scenarios (incl. 1.6667x, 2x, rotated) × 16:9/9:16/1:1, every area-of-interest metric within its cap (cloud). Local: [ ] pass [ ] fail ____
 - [x] Menu guards: pure shell, < 10 ms each (cloud, `tests/test_guards.py`). Local Omarchy budget test: [ ] pass [ ] fail ____
 - [x] Watchdog/recover/disk guard/countdown cancel/Glassy restore with stubbed gsr + hyprctl (cloud)
@@ -54,7 +54,7 @@ Omarchy: ______   Hyprland: ______   gpu-screen-recorder: ______   webcam: _____
 | 25 | wf path: pause/replay refuse cleanly | [ ] | [ ] | |
 | 26 | 5-min recording export time ____ ; cancel cleans up | [ ] | [ ] | |
 
-## Round 3 on real hardware (CLAUDE.md "Round 3: real-hardware plan per scenario")
+## Round 3 on real hardware (AGENTS.md "Round 3: real-hardware plan per scenario")
 
 | # | Check | Pass | Fail | Notes / evidence |
 |---|---|---|---|---|
@@ -77,7 +77,7 @@ Omarchy: ______   Hyprland: ______   gpu-screen-recorder: ______   webcam: _____
 | R17 | Theme change reaches open editor + bar | [ ] | [ ] | |
 | R18 | Menu guards ≤ 10 ms each, rows correct | [ ] | [ ] | |
 | R19 | Export fps high ____ draft ____ (1 worker: ____) | [ ] | [ ] | |
-| R20 | Arch OpenCV (TBB): exports from the editor finish, no "no progress" note | [ ] | [ ] | |
+| R20 | Exports from the editor finish (3x), no "no progress" note | [ ] | [ ] | |
 | R21 | hyprctl scale printed as ____; logical sizes whole | [ ] | [ ] | |
 | R22 | Region on the unfocused monitor / spanning pick | [ ] | [ ] | |
 | R23 | Whole-monitor pick records by name (-w/-o NAME) | [ ] | [ ] | |
@@ -96,7 +96,7 @@ Omarchy: ______   Hyprland: ______   gpu-screen-recorder: ______   webcam: _____
 
 ## Quality review (watch the exports critically)
 
-See also the smoothness checklist in CLAUDE.md.
+See also the smoothness checklist in AGENTS.md.
 
 - [ ] Zoom-ins frame the target; no hunting or jitter
 - [ ] Idle cut feels natural; ⏩ badge readable; no cut mid-sentence (mic)

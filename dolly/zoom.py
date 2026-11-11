@@ -930,6 +930,7 @@ class SubjectTrack:
     ax: np.ndarray      # anchor (caret / newest output); NaN = none
     ay: np.ndarray
     kind: list
+    idle: np.ndarray | None = None   # the step only names the followed window (window mode at rest)
 
 
 READ_HOLD = 0.5     # s a finished subject (command output, typed line) stays framed for reading
@@ -941,6 +942,8 @@ def subject_track(tl: Timeline, aoi, sim_t: np.ndarray, curx, cury, cfg: ZoomCon
     x0, y0, x1, y1 = (np.full(n, np.nan) for _ in range(4))
     ax, ay = np.full(n, np.nan), np.full(n, np.nan)
     kinds: list = [None] * n
+    idle = np.zeros(n, dtype=bool)
+    idle_at = getattr(aoi, "idle_at", None)
     s = float(tl.capture.get("scale", 1.0) or 1.0)
     bx, by = 40 * s, 34 * s
     # anticipation: pointer travel that leads to typing / output elsewhere (the mouse
@@ -954,22 +957,28 @@ def subject_track(tl: Timeline, aoi, sim_t: np.ndarray, curx, cury, cfg: ZoomCon
     real_since, was_real = -9.0, False  # when the current / last real subject first appeared
     for i, t in enumerate(sim_t):
         r, kind, foc = aoi.at(t + la)
-        if kind in ("typing", "scroll", "layout", "output"):
+        # window mode at rest: the track names the followed window. It is the resting frame,
+        # not an event: what comes next is still anticipated and the last result still read
+        rest = bool(idle_at(t + la)) if idle_at else False
+        if kind in ("typing", "scroll", "layout", "output") and not rest:
             last_real = t
-        if kind in ("pointer", None) and len(act_t):
+        if (kind in ("pointer", None) or rest) and len(act_t):
             j = int(np.searchsorted(act_t, t))
             # leave the last result on screen ~1 s (reading time) before moving to what's next
             # (a moving pointer is already on its way: follow where it is going)
             horizon = 2.0 if (kind == "pointer" or t - last_real > cfg.hold_typing * 0.8) else 0.6
             if j < len(acts) and acts[j].kind == "click" and acts[j].t - t < 0.6:
                 r, kind, foc = acts[j].rect, "pointer", None      # frame the click target before it happens
+                rest = False
             elif j < len(acts) and acts[j].t - t < horizon and acts[j].kind in ("type", "scroll", "layout", "output"):
                 kc = int(np.searchsorted(click_t, t))
                 if kc >= len(click_t) or click_t[kc] > acts[j].t:
                     r, kind, foc = acts[j].rect, "typing" if acts[j].kind == "type" else acts[j].kind, None
-        fresh_real = r is not None and kind in ("typing", "scroll", "layout", "output")
-        if r is None and held is not None and t - held_t < READ_HOLD and not aoi.in_transition(t):
+                    rest = False
+        fresh_real = r is not None and kind in ("typing", "scroll", "layout", "output") and not rest
+        if (r is None or rest) and held is not None and t - held_t < READ_HOLD and not aoi.in_transition(t):
             r, kind, foc = held          # the result stays the subject while it is being read
+            rest = False
         if r is not None and kind == "typing":
             foc = foc if foc is not None else last_caret(aoi, t + la)
             if foc is not None:
@@ -982,6 +991,7 @@ def subject_track(tl: Timeline, aoi, sim_t: np.ndarray, curx, cury, cfg: ZoomCon
         if r is not None and kind in ("typing", "scroll", "layout", "pointer", "output"):
             x0[i], y0[i], x1[i], y1[i] = r
             kinds[i] = kind
+            idle[i] = rest
             if kind == "pointer":
                 cx, cy = curx[i], cury[i]
                 x0[i], y0[i] = min(x0[i], cx - bx), min(y0[i], cy - by)
@@ -997,7 +1007,7 @@ def subject_track(tl: Timeline, aoi, sim_t: np.ndarray, curx, cury, cfg: ZoomCon
                 cx, cy = curx[i], cury[i]
                 x0[i], y0[i], x1[i], y1[i] = cx - bx, cy - by, cx + bx, cy + by
                 kinds[i] = "cursor"
-    return SubjectTrack(x0, y0, x1, y1, ax, ay, kinds)
+    return SubjectTrack(x0, y0, x1, y1, ax, ay, kinds, idle)
 
 
 def _dead_zone_rect(c: float, lo: float, hi: float, half: float, anchor: float = math.nan) -> float:
@@ -1097,6 +1107,8 @@ def camera_path(tl: Timeline, segments: list[Segment], geom: CameraGeometry,
     # resized, output scrolling past) is not held zoomed: the camera pulls back for it.
     if cfg.glide and zneed is not None:
         big = np.array([k in ("typing", "scroll", "layout", "output", "pointer") for k in subj.kind])
+        if subj.idle is not None:
+            big &= ~subj.idle                 # the followed window at rest asks for nothing
         for j in range(1, len(segs)):
             if not bridged[j]:
                 continue
@@ -1148,6 +1160,10 @@ def camera_path(tl: Timeline, segments: list[Segment], geom: CameraGeometry,
     seg_fit = {}
     if zneed is not None:
         subj_kinds = np.array([k in ("typing", "scroll", "layout", "pointer", "output") for k in subj.kind])
+        if subj.idle is not None:
+            # window mode: the followed window at rest is where the camera returns to, not
+            # something this shot has to fit (it held every typing shot at about 1.0x)
+            subj_kinds &= ~subj.idle
         for j in range(len(segs)):
             m = (seg_idx == j) & subj_kinds & ~in_gap     # the pause never widens the shot
             # nor does what is still on screen from the shot before, during this one's
@@ -1211,7 +1227,7 @@ def camera_path(tl: Timeline, segments: list[Segment], geom: CameraGeometry,
             follow_c[1] = _dead_zone_rect(follow_c[1], lo_y, hi_y, hy)
         if s.follow and cfg.follow:
             if subj is not None:
-                if not math.isnan(subj.x0[i]):
+                if not math.isnan(subj.x0[i]) and not (subj.idle is not None and subj.idle[i]):
                     follow_c[0] = _dead_zone_rect(follow_c[0], subj.x0[i], subj.x1[i], hx, subj.ax[i])
                     follow_c[1] = _dead_zone_rect(follow_c[1], subj.y0[i], subj.y1[i], hy, subj.ay[i])
             elif not gliding:

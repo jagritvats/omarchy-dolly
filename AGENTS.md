@@ -1,10 +1,10 @@
-# CLAUDE.md: Dolly (Omarchy demo recorder plugin)
+# Dolly: notes for contributors and coding agents
 
-You are a local Claude Code session on an **Omarchy** machine (a VM on Windows
-or real hardware). This repo was built and tested in a cloud box with **no
-Wayland/Hyprland, no GPU, no webcam/mic and no real network uploads**. Your
-job: install it, run the parts that could only be tested on real hardware,
-collect evidence, fix what breaks, and report. Start with "First 15 minutes".
+The working brief for anyone, a person or a coding agent, who picks Dolly up on an
+**Omarchy** machine (a VM or real hardware). Much of it was first built and tested on
+a machine with **no Wayland/Hyprland, no GPU, no webcam/mic and no real network
+uploads**, so the parts that need real hardware still need running: install it, run
+them, collect evidence, fix what breaks, and report. Start with "First 15 minutes".
 
 ## What this is
 
@@ -77,7 +77,7 @@ fresh processes (`dolly/render_chunk.py`). See CHANGELOG.md and "Round 4" below.
    Settings › Auto-zoom and the editor sidebar expose enabled, level,
    triggers (`zoom_clicks`, `follow_typing`, `zoom_windows`), glide,
    `stay_gap` and `motion` (calm 0.75×, normal, quick 1.3× spring speed).
-5. **Render** (`dolly/render.py`), CPU only:
+5. **Render** (`dolly/render.py`), CPU only, on NumPy + Pillow (the image operations live in `dolly/imgops.py`; no OpenCV):
    - background, padding, rounded corners, shadow
    - re-drawn cursor (optional motion blur), click ripples, shortcut keycaps
    - speed ramps with a "⏩ 4×" badge (`dolly/timemap.py`)
@@ -174,15 +174,17 @@ hypr/dolly-input.lua                            Lua click/key bridge, loaded onl
 dolly/  cli capture logger replay events zoom timemap reframe render privacy captions project doctor demo keymap
         aoi (area of interest) sync (markers) health (disk/DND/phases/jobs/focus/other recorders) solid (Glassy)
         guards (menu files) monitors (scale/targets) audio (tracks/mix/meter) camera (bubble) library config i18n
-        render_chunk (export worker process)
+        render_chunk (export worker process) imgops (resize, place, blur, blend, masks: NumPy + Pillow)
 i18n/en.json                                    strings for the panel (Commons.Translations) and notifications
 dolly/share/  presets encode clipboard config targets  (+ __init__: flow + history)
 dolly/editor/server.py + static/index.html
 harness/  make_demo.py desktop.html             synthetic recording generator (headless Chromium)
 harness/  scene.py scenarios.py metrics.py run_scenarios.py   scenario suite (`make scenarios`)
+harness/bench/                                  compare two checkouts: stills, zoom plan, timed export (README.md there)
 harness/  dctl wt.py walkthrough.py chrome-wayland  TEST HARNESS ONLY: drive the Omarchy shell harness
 tests/  test_zoom test_pipeline test_capture_fallback test_share test_features test_aoi test_system
         test_guards test_scaling test_settings test_library test_av editor_smoke pathcheck
+        test_imgops (against frozen OpenCV results) test_no_opencv (cv2 is hidden in every test run)
 ```
 
 ## For agents and scripts (0.6 prototype: `dolly/headless.py`)
@@ -248,7 +250,7 @@ dolly export "$DIR" --json --width 1280
 | wf-recorder | `sudo pacman -S wf-recorder` | **install in a VM**: software fallback (no pause/replay, cursor baked in) |
 | gdbus (glib2) | ships with Omarchy | stop cleanly on suspend/lock (login1 PrepareForSleep) |
 | Dolly bar widget enabled | `omarchy plugin add ... --enable` | sync marker overlay + phases; without it events are timed from the logger start |
-| Python 3.10+, numpy, opencv, pillow | `bin/dolly deps --install` (omarchy-pkg-add in a floating terminal) | not on a fresh Omarchy; or `bin/dolly-setup` offers a venv |
+| Python 3.10+, numpy, pillow | `bin/dolly deps --install` (omarchy-pkg-add in a floating terminal) | not on a fresh Omarchy; or `bin/dolly-setup` offers a venv. No OpenCV: `dolly/imgops.py` does that work on NumPy + Pillow (tests run with `cv2` hidden) |
 | wl-clipboard | ships with Omarchy | "Copy file", link to clipboard |
 | tesseract + eng data | `sudo pacman -S tesseract tesseract-data-eng` | optional: "Scrub secrets" |
 | rclone | `sudo pacman -S rclone` | optional: links via Drive/Dropbox/OneDrive/... |
@@ -425,13 +427,13 @@ python3 -c "import sys,json;sys.path.insert(0,'.');from dolly import aoi;from do
 | R17 | **Theme change mid-session** | open the editor, switch theme (Super+Ctrl+Shift+Space) | editor colours and "Theme:" follow within ~4 s; bar widget restyles | screenshot |
 | R18 | **Menu guards** | `time bash -c "<each when: from omarchy-menu.jsonc>"` and Omarchy's `test/shell.d/menu-guard-budget-test.sh` | each ≤ 10 ms, batch ≤ 200 ms; rows flip correctly while recording / replay armed / after deleting the last recording | timings |
 | R19 | **Export speed** | `time bin/dolly export --quality high` and `--quality draft` on a 1-min recording | note fps (Reference results: 1080p60 high ~40 fps, draft ~46 fps on 2 vCPU); `DOLLY_WORKERS=1` for comparison | timings |
-| R20 | **Arch OpenCV (TBB) + fork** | with the pacman packages (`python-opencv`, not the venv: `DOLLY_VENV=/nonexistent`), `python -c 'import cv2; print(cv2.__version__); print([l for l in cv2.getBuildInformation().splitlines() if "Parallel framework" in l])'`; then export the same project 3x from the **editor** (Ctrl+E > Export) and once via `bin/dolly export` | prints 5.x and TBB; every export finishes at roughly R19 speed with no "no progress" line on stderr (run `bin/dolly edit` from a terminal to see the editor's stderr) | timings, stderr |
+| R20 | **Exports from the editor** | with the pacman packages (not the venv: `DOLLY_VENV=/nonexistent`), export the same project 3x from the **editor** (Ctrl+E > Export) and once via `bin/dolly export` | every export finishes at roughly R19 speed with no "no progress" line on stderr (run `bin/dolly edit` from a terminal to see the editor's stderr) | timings, stderr |
 
 ## Fresh Omarchy 4.0.4 VM findings (Nov 10) and 0.4.2
 
 On Omarchy 4.0.4 in VirtualBox (VMSVGA): gpu-screen-recorder 6.1 fails with
 "unknown gpu vendor: VMware, Inc." / "failed to load opengl" for both `gsr` and
-`gsr-cpu`, so a VM needs wf-recorder. A fresh install has no python-numpy/opencv/pillow.
+`gsr-cpu`, so a VM needs wf-recorder. A fresh install has no python-numpy/pillow (and no python-opencv, which Dolly needed until 0.7.0).
 `omarchy bar get` and `omarchy-system` do not exist on 4.0.4 (`omarchy-bar set` is
 best-effort in Dolly; Session Keeper falls back to uwsm/systemctl). Quickshell needs
 `QT_QUICK_BACKEND=software` in `~/.config/uwsm/env` there.
@@ -463,7 +465,7 @@ Keep the evidence bundle for each.
 | R26 | **Window dragged across monitors** | `--mode window`, drag the picked window to the other monitor and back within 1 s; again and leave it there | brief trip: kept, the card shows the part still on the monitor; leaving: stop toast "the recorded window moved to another monitor", export ends where it left | capture.json `stop_reason`, export |
 | R27 | **XWayland at fractional scale** | an X11 app with `xwayland:force_zero_scaling` true (Omarchy default) and false | `events.json` clients rects match the window on both settings (`capture.json xwayland_zero_scaling`) | events.json |
 | R28 | **Theme follow** | open the panel and the editor, `omarchy theme set catppuccin-latte`, then back | bar, panel and editor recolour within ~4 s, editor font = `omarchy font current`; an old recording re-exports with its pinned theme (Settings › Look › Follow theme on) | screenshots, export frames |
-| R29 | **Coexistence with Omarchy's recorder** | start Omarchy's recorder (Alt+Print), then Super+Alt+R; separately start Dolly and press Omarchy's stop key / its bar indicator | first: Dolly refuses with "Another screen recording is running"; second: Dolly's recording stops, is saved as normal (`stop_reason stopped-outside`), editor opens, no error toast. Run `/home/claude/work/upstream/repro/coexistence.sh` if you have it | capture.json, toasts |
+| R29 | **Coexistence with Omarchy's recorder** | start Omarchy's recorder (Alt+Print), then Super+Alt+R; separately start Dolly and press Omarchy's stop key / its bar indicator | first: Dolly refuses with "Another screen recording is running"; second: Dolly's recording stops, is saved as normal (`stop_reason stopped-outside`), editor opens, no error toast. | capture.json, toasts |
 | R30 | **Audio, four modes, both backends** | Settings or panel: None / Mic / System / Mic + System; play music and speak; once with `DOLLY_BACKEND=wf-recorder` | `tracks/mic.mka` and/or `tracks/system.mka` present; export has both; meters move in the panel while open; voice and music in sync with the video (clap test); Super+Alt+N mid-way gives silence for that span only | tracks/, export, `ffmpeg -i out.mp4 -af ebur128 -f null -` |
 | R31 | **Camera, bubble in edit** | panel: Bubble in edit, pick the camera, Start | preview bubble during 3-2-1, gone when recording starts, `webcam.mkv` recorded; editor shows the bubble; change shape/size, drag it, add a camera-only range; export matches; clap test for camera sync | webcam.log, capture.json `webcam_offset`, export |
 | R32 | **Camera, live bubble** | panel: Live bubble, Start, Super+drag it, `dolly camera snap`, `dolly camera size` | round bubble (Hyprland `rounding`), theme-accent border, never takes focus, pinned on workspace switch; in the raw video exactly as on screen; no second bubble in the export | screenshots, raw frame |
@@ -542,9 +544,9 @@ rm -rf ~/.local/share/dolly ${XDG_RUNTIME_DIR}/dolly ~/.local/state/dolly   # op
    `gpu-screen-recorder --help` on the installed version.
 10. **Render speed**: CPU. The 1080p60 bench went from 25 to 40 fps on 2 vCPU
     (parallel chunks + reuse); `--quality draft` gives a half-size 30 fps
-    preview. Arch's `python-opencv` is OpenCV 5 built on TBB (pip's wheel
-    uses pthreads), and TBB is not fork-safe once its pool is running, so
-    export workers are fresh processes (`dolly/render_chunk.py`), not forks.
+    preview. Export workers are fresh processes (`dolly/render_chunk.py`), not
+    forks: a fork of a process with live threads (the editor's HTTP server, a
+    logging handler, a library's thread pool) can inherit a held lock.
     A watchdog still kills workers that land no frame for `DOLLY_STALL_S`
     (default 90 s) and finishes inline with a stderr note. Covered by
     `test_stalled_render_workers_fall_back_inline`; R20 checks it on the real
@@ -605,7 +607,7 @@ Round 4 (0.4.0):
   The suite caught a 0.4.0 regression before release: the window card clipped
   Timeline corner boxes as if they were x/y/w/h (window-mode 16:9 fell to 74 %).
 - `make demo`: export 43.3 fps 1080p60 high (round 3: 32.6), draft 38.3 fps.
-- Shell harness (`/home/claude/work/shell-harness`, headless sway + fakehypr):
+- Shell harness (a separate checkout, its path in `$DOLLY_SHELL_HARNESS`; headless sway + fakehypr):
   the editor export of a 27 s recording took 2 min 42 s with forked workers
   (stuck at 0 for a minute); with worker processes it takes about 40 s.
 - Walkthrough (`harness/walkthrough.py`, about 25 min incl. two exports) writes

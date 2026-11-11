@@ -21,15 +21,17 @@ from __future__ import annotations
 
 import math
 import random
+import sys
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 
-import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent))
+from dolly import imgops  # noqa: E402
 MONO = str(HERE / "fonts" / "jetbrains-mono-latin-400-normal.woff2")
 MONO_B = str(HERE / "fonts" / "jetbrains-mono-latin-700-normal.woff2")
 
@@ -88,6 +90,19 @@ def blit_text(img, x, y, text, px, color, bold=False, clip=None):
     pa = a[y0 - y:y1 - y, x0 - x:x1 - x]
     pp = prem[y0 - y:y1 - y, x0 - x:x1 - x]
     img[y0:y1, x0:x1] = (pp + roi * (1 - pa)).astype(np.uint8)
+
+
+def arc(img, cx, cy, r, start, sweep, color, width):
+    """A circular arc drawn into the frame: `sweep` degrees clockwise from `start` (0 = 3 o'clock)."""
+    H, W = img.shape[:2]
+    pad = int(r + width + 2)
+    x0, y0, x1, y1 = max(0, int(cx) - pad), max(0, int(cy) - pad), min(W, int(cx) + pad), min(H, int(cy) + pad)
+    if x1 <= x0 or y1 <= y0:
+        return
+    tile = Image.fromarray(np.ascontiguousarray(img[y0:y1, x0:x1]))
+    ImageDraw.Draw(tile).arc([cx - r - x0, cy - r - y0, cx + r - x0, cy + r - y0], start, start + sweep,
+                             fill=tuple(int(c) for c in color), width=int(width))
+    img[y0:y1, x0:x1] = np.asarray(tile)
 
 
 def fill(img, r, color, clip=None):
@@ -302,11 +317,12 @@ class Scene:
     # ---------------------------------------------------------- render
     def _wallpaper(self):
         p = HERE / "wall.jpg"
-        img = cv2.imread(str(p)) if p.exists() else None
-        if img is None:
+        if p.exists():
+            img = np.ascontiguousarray(np.asarray(Image.open(p).convert("RGB"))[..., ::-1])      # BGR, like the frames
+        else:
             img = np.zeros((self.H, self.W, 3), np.uint8)
             img[:] = (60, 40, 30)
-        return cv2.resize(img, (self.W, self.H), interpolation=cv2.INTER_AREA)
+        return imgops.resize(img, (self.W, self.H))
 
     def L(self, v):
         return v * self.s
@@ -403,7 +419,7 @@ class Scene:
         elif isinstance(w.content, App):
             self._draw_app(layer, t, w, inner, clip)
         if layer is not img:
-            cv2.addWeighted(layer, a, img, 1 - a, 0, dst=img)
+            img[...] = imgops.mix(img, layer, a)
 
     # terminal metrics (video px)
     def term_metrics(self):
@@ -473,7 +489,7 @@ class Scene:
         if app.spinner:
             cx, cy = X1 - 30 * s, Y0 + 17 * s
             ang = (t * 360 * 1.2) % 360
-            cv2.ellipse(img, (int(cx), int(cy)), (int(8 * s), int(8 * s)), ang, 0, 270, FG, max(1, int(2 * s)), cv2.LINE_AA)
+            arc(img, int(cx), int(cy), int(8 * s), ang, 270, FG, max(1, int(2 * s)))
         d = app.dialog_at(t)
         if d is not None:
             u = ease_out_quint((t - d["t0"]) / 0.2)
@@ -481,7 +497,7 @@ class Scene:
             D = (X0 + rx * s, Y0 + ry * s, X0 + (rx + rw) * s, Y0 + (ry + rh) * s)
             sh = img.copy()
             fill(sh, (X0, Y0, X1, Y1), (0, 0, 0), clip)
-            cv2.addWeighted(sh, 0.35 * u, img, 1 - 0.35 * u, 0, dst=img)
+            img[...] = imgops.mix(img, sh, 0.35 * u)
             fill(img, D, (0x44, 0x30, 0x2c), clip)
             fill(img, (D[0], D[1], D[2], D[1] + 3 * s), ACTIVE, clip)
             blit_text(img, D[0] + 18 * s, D[1] + 16 * s, d["title"], int(15 * s), FG, bold=True, clip=clip)
@@ -512,8 +528,7 @@ class Scene:
         clock = f"Mon 14:{3 + sec // 60:02d}:{sec % 60:02d}"
         blit_text(img, self.W / 2 - 60 * s, 5 * s, clock, int(12 * s), FG)
         ang = (t * 300) % 360
-        cv2.ellipse(img, (int(self.W - 24 * s), int(13 * s)), (int(6 * s), int(6 * s)), ang, 0, 250, FG,
-                    max(1, int(1.5 * s)), cv2.LINE_AA)
+        arc(img, int(self.W - 24 * s), int(13 * s), int(6 * s), ang, 250, FG, max(1, int(1.5 * s)))
 
     def notif_rect(self, n, t):
         s = self.s

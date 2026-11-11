@@ -362,14 +362,14 @@ def test_stalled_render_workers_fall_back_inline(av_proj, monkeypatch, capfd):
 
 def test_workers_progress_while_parent_threads_hold_locks(av_proj):
     """The harness hang: a parent with live threads (the editor's HTTP server, a logging
-    handler mid-emit, OpenCV pools) forked render workers that inherited a held lock
-    and waited on it forever. Workers are now fresh interpreters: with a background
-    thread holding the logging lock and another busy inside cv2 for the whole export,
+    handler mid-emit, a library's thread pool) forked render workers that inherited a held
+    lock and waited on it forever. Workers are now fresh interpreters: with a background
+    thread holding the logging lock and another busy blurring for the whole export,
     the first frames still land within 10 s and the export completes."""
     import logging
     import threading
-    import cv2
     import numpy as np
+    from dolly import imgops
     from dolly import render as R
     held = threading.Event()
     release = threading.Event()
@@ -384,11 +384,11 @@ def test_workers_progress_while_parent_threads_hold_locks(av_proj):
         logging._releaseLock() if hasattr(logging, "_releaseLock") else logging._lock.release()
         h.release()
 
-    def busy_cv2():
+    def busy_blurring():
         a = np.random.rand(600, 600).astype(np.float32)
         while not release.is_set():
-            cv2.GaussianBlur(a, (0, 0), 5)
-    ts = [threading.Thread(target=hold_logging_lock, daemon=True), threading.Thread(target=busy_cv2, daemon=True)]
+            imgops.gaussian_blur(a, 5)
+    ts = [threading.Thread(target=hold_logging_lock, daemon=True), threading.Thread(target=busy_blurring, daemon=True)]
     for t in ts:
         t.start()
     held.wait(5)

@@ -275,7 +275,8 @@ class Runner:
             res["error"] = {"where": "before starting", "line": 0, "why": "; ".join(problems)}
             return res
         plan = sbmod.plan(sb)
-        home = {"workspace": desk.workspace(), "window": desk.focused(), "pointer": desk.pointer()}
+        home = {"workspace": desk.workspace(), "window": desk.focused(), "pointer": desk.pointer(),
+                "monitor": desk.monitor() if hasattr(desk, "monitor") else None}
         old = {s: signal.signal(s, self._on_signal) for s in (signal.SIGINT, signal.SIGTERM)}
         try:
             try:
@@ -382,6 +383,8 @@ class Runner:
         proj = projmod.Project(pdir)
         if not proj.events.exists():
             raise RuntimeError(f"the take was not analysed (see {pdir}/recorder.log)")
+        from . import analysis
+        analysis.ensure(pdir)                # `dolly stop` sends its card first; the plan may still be running
         if sb.title:
             library.rename(pdir, sb.title)
         if self.cues:
@@ -426,7 +429,11 @@ class Runner:
                 self.perform(row)
             except (StepFailed, Ended) as e:
                 self.warn(f"cleanup {row.step.index} ({row.step.action}): {getattr(e, 'why', e)}")
-        for what in (lambda: home["workspace"] is not None and self.desk.workspace() != home["workspace"]
+        # the monitor first: a workspace that no longer exists (Hyprland drops an empty one
+        # you leave) is opened on whichever monitor has the focus when it is asked for
+        for what in (lambda: home.get("monitor") and self.desk.monitor() != home["monitor"]
+                     and self.desk.go_monitor(home["monitor"]),
+                     lambda: home["workspace"] is not None and self.desk.workspace() != home["workspace"]
                      and self.desk.go_workspace(home["workspace"]),
                      lambda: home["window"] and self.desk.window(home["window"]) and self.desk.focus(home["window"]),
                      lambda: self.desk.move_to(*home["pointer"], seconds=0.0)):

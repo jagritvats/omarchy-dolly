@@ -36,6 +36,8 @@ def cmd_auto(a):
     from .events import Timeline
     from .zoom import ZoomConfig, build_segments
     proj = projmod.Project(_dir_or_last(a.dir))
+    from . import analysis
+    analysis.ensure(proj.dir)
     data = proj.load()
     tl = Timeline.load(proj.events)
     zcfg = ZoomConfig.from_dict(data.get("zoom_config"))
@@ -197,10 +199,159 @@ def cmd_config(a):
         print(json.dumps(cfgmod.describe(), indent=2))
 
 
+def cmd_panel(a):
+    """Everything the bar panel shows, as one JSON object (the panel used to start six
+    commands every time it opened). A part that fails is null and named under "errors"."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    def config():
+        from . import config as cfgmod
+        return cfgmod.load()
+
+    def recent():
+        from . import library
+        return library.index(refresh=True, posters=True)["items"][:5]
+
+    def audio():
+        from . import audio as audiomod
+        return audiomod.devices()
+
+    def cameras():
+        from . import camera
+        return camera.devices()
+
+    def integration():
+        from . import integration as integ
+        return integ.status()
+
+    def deps():
+        from . import deps as depsmod
+        return depsmod.missing()
+
+    parts = {"config": config, "recent": recent, "audio": audio, "cameras": cameras,
+             "integration": integration, "deps": deps}
+    out: dict = {}
+    errors: dict = {}
+
+    def run(name):
+        try:
+            return name, parts[name](), None
+        except Exception as e:                      # one broken part must not empty the panel
+            return name, None, f"{type(e).__name__}: {str(e)[:160]}"
+
+    # the parts wait on other programs (pactl, v4l2, hyprctl): side by side, the panel
+    # waits for the slowest one, not for the sum
+    with ThreadPoolExecutor(max_workers=len(parts)) as pool:
+        for name, value, err in pool.map(run, parts):
+            out[name] = value
+            if err:
+                errors[name] = err
+    if errors:
+        out["errors"] = errors
+    print(json.dumps(out))
+
+
+def _say_refreshed(res: dict | None):
+    """A short card when an update refreshed the menu entry, hotkeys or command link, or
+    when the running shell still shows the old bar button (it offers to restart the shell)."""
+    if not res or not (res.get("changed") or res.get("ui_stale")):
+        return
+    try:
+        import shutil
+        from . import integration
+        from .capture import notify
+        lines = [integration.summary(res).capitalize() + "."] if res.get("changed") else []
+        actions = []
+        if res.get("ui_stale"):
+            lines.append(t("notify.updatedRestart"))
+            restart = shutil.which("omarchy-restart-shell")
+            if restart:
+                actions.append((t("notify.restartShell"), restart))
+        notify(t("notify.updated", res.get("version", "")), " ".join(lines), *actions,
+               timeout=12000 if actions else 5000)
+    except Exception:
+        from . import log
+        log.swallowed("update card")
+
+
+def cmd_shell_start(a):
+    """Run once by the bar widget when the shell loads the plugin (start, restart, or the
+    reload after `omarchy plugin update`): the runtime folder exists for the widget's
+    file watchers, and what Set up wrote is refreshed if this is a new version."""
+    from . import config as cfgmod
+    from .logger import runtime_dir
+    rd = runtime_dir()
+    (rd / "jobs").mkdir(exist_ok=True)
+    try:                                    # the widget watches config.json: its folder must be there
+        cfgmod.path().parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    res = None
+    try:
+        from . import integration
+        res = integration.auto_apply()
+    except Exception:
+        from . import log
+        log.swallowed("auto-apply at shell start")
+    _say_refreshed(res)
+    print(json.dumps({"runtime": str(rd), "changed": (res or {}).get("changed", [])}))
+
+
+def cmd_update(a):
+    """Update through Omarchy's own command, then refresh what Set up wrote."""
+    import shutil
+    import subprocess as sp
+    from . import integration
+    before, t0 = integration.version(), time.time()
+    exe = shutil.which("omarchy")
+    if not exe:
+        raise SystemExit(f"dolly: `omarchy` was not found; update with: omarchy plugin update {integration.PLUGIN_ID}")
+    r = sp.run([exe, "plugin", "update", integration.PLUGIN_ID, "--yes"])
+    if r.returncode != 0:
+        raise SystemExit(f"dolly: Omarchy could not update the plugin (exit code {r.returncode}); nothing else was changed")
+    # the files on disk are the new version now; this process still runs the old code
+    sp.run([str(integration.launcher()), "integration", "auto"], stdout=sp.DEVNULL, stderr=sp.DEVNULL)
+    after, st = integration.version(), integration.stamp()
+    print(f"Dolly {before} -> {after}." if after != before else f"Dolly is up to date ({after}).")
+    if st.get("at", 0) >= t0 and st.get("set_up") and st.get("summary"):
+        print(str(st["summary"]).capitalize() + ".")
+    elif not st.get("set_up"):
+        print("Set up has not been run: open the Dolly panel and click Set up for the hotkeys and the menu entry.")
+    # a running shell keeps the bar button it loaded; only a restart shows the new one
+    if after != before and integration.ui_stale():
+        restart = shutil.which("omarchy-restart-shell")
+        if a.no_restart or not restart:
+            print("The bar button and panel update the next time the shell starts (omarchy-restart-shell).")
+        elif integration._recording():
+            print("A recording is running: the bar button and panel update the next time the shell starts.")
+        else:
+            sp.run([restart], stdout=sp.DEVNULL, stderr=sp.DEVNULL)
+            print("Restarted the Omarchy shell to load the new bar button and panel.")
+
+
+def _after_update(argv: list[str]):
+    """`omarchy plugin update` runs nothing of the plugin. The bar widget refreshes what Set
+    up wrote when the shell reloads it; this is the backstop for a machine without the
+    button on the bar: the first Dolly command of a new version does it. Normally it costs
+    two small file reads."""
+    if (argv[0] if argv else "") in ("log-events", "integration", "setup", "shell-start", "update"):
+        return
+    try:
+        from . import integration
+        if integration.stamp().get("version") == integration.version():
+            return
+        _say_refreshed(integration.auto_apply())
+    except Exception:
+        from . import log
+        log.swallowed("auto-apply")
+
+
 def cmd_speed(a):
     from .events import Timeline
     from .timemap import SpeedConfig, cached_activity, detect_speedups
     proj = projmod.Project(_dir_or_last(a.dir))
+    from . import analysis
+    analysis.ensure(proj.dir)
     data = proj.load()
     if a.clear:
         data["speed"] = []
@@ -217,6 +368,8 @@ def cmd_scrub(a):
     from .events import Timeline
     from .privacy import scan_secrets
     proj = projmod.Project(_dir_or_last(a.dir))
+    from . import analysis
+    analysis.ensure(proj.dir)
     data = proj.load()
     tl = Timeline.load(proj.events)
     boxes = scan_secrets(proj.raw, tl.duration, every=a.every,
@@ -248,6 +401,8 @@ def cmd_export(a):
         return headless.export_json(lambda: cmd_export(a), a)
     from .render import cli_progress, export
     d = _dir_or_last(a.dir)
+    from . import analysis
+    analysis.ensure(d, say=None if a.quiet else (lambda m: print(f"dolly: {m}", file=sys.stderr)))
     over = {}
     if a.width:
         over.setdefault("output", {})["width"] = a.width
@@ -305,7 +460,8 @@ def apply_record_defaults(a):
 
 # commands the bar / panel poll in the background: an error there goes to stderr and the
 # log, never to a toast (it would repeat every few seconds)
-QUIET_CMDS = {"log-events", "status", "config", "audio", "camera", "last", "deps", "doctor"}
+QUIET_CMDS = {"log-events", "status", "config", "audio", "camera", "last", "deps", "doctor", "panel",
+              "shell-start", "integration"}
 
 
 def _known_error(e: BaseException) -> str | None:
@@ -354,6 +510,7 @@ def main(argv=None):
     """Errors end as one clear line (and a toast when launched from the bar or a hotkey),
     exit code 1; unexpected ones also leave their traceback in last-error.log."""
     try:
+        _after_update(list(sys.argv[1:] if argv is None else argv))
         return _main(argv)
     except SystemExit:
         raise
@@ -499,9 +656,18 @@ def _main(argv=None):
     doc.add_argument("--json", action="store_true")
     doc.add_argument("--report", action="store_true",
                      help="write a text file to attach to a bug report (no video, no typed keys)")
-    it = sub.add_parser("integration", help="menu rows and hotkeys Dolly added; hotkey conflicts")
+    it = sub.add_parser("integration", help="the menu entry and hotkeys Dolly added; hotkey conflicts")
+    it.add_argument("action", nargs="?", choices=["status", "apply", "undo", "auto"], default="status",
+                    help="apply: write the menu entry, hotkeys and the dolly command again (no password); "
+                         "undo: remove them; auto: apply only after an update")
     it.add_argument("--json", action="store_true")
-    sub.add_parser("setup", help="add Dolly's menu rows and hotkeys (opens a terminal)")
+    sub.add_parser("setup", help="add Dolly's menu entry and hotkeys, install missing packages (opens a terminal)")
+    up = sub.add_parser("update", help="update Dolly with `omarchy plugin update`, then refresh hotkeys and the menu entry")
+    up.add_argument("--no-restart", action="store_true",
+                    help="do not restart the Omarchy shell (the new bar button then loads at the next shell start)")
+    pn = sub.add_parser("panel")           # internal: what the bar panel shows, in one call
+    pn.add_argument("--json", action="store_true")
+    sub.add_parser("shell-start")          # internal: run by the bar widget when the shell loads the plugin
     dp = sub.add_parser("deps", help="list missing packages; --install opens a terminal that installs them")
     dp.add_argument("--install", action="store_true")
     dp.add_argument("--json", action="store_true")
@@ -509,7 +675,7 @@ def _main(argv=None):
     dm.add_argument("out", nargs="?")
     dm.add_argument("--fast", action="store_true", help="720p preview quality")
     lg = sub.add_parser("log-events")  # internal: event logger process (hidden from --help below)
-    sub._choices_actions = [c for c in sub._choices_actions if c.dest != "log-events"]
+    sub._choices_actions = [c for c in sub._choices_actions if c.dest not in ("log-events", "panel", "shell-start")]
     lg.add_argument("dir")
     lg.add_argument("--no-keys", action="store_true")
     lg.add_argument("--replay", type=int, default=0)
@@ -566,7 +732,13 @@ def _main(argv=None):
         getattr(capture, a.cmd)(a)
     elif a.cmd == "integration":
         from . import integration
-        raise SystemExit(integration.main(["--json"] if a.json else []))
+        raise SystemExit(integration.main([a.action] + (["--json"] if a.json else [])))
+    elif a.cmd == "panel":
+        cmd_panel(a)
+    elif a.cmd == "shell-start":
+        cmd_shell_start(a)
+    elif a.cmd == "update":
+        cmd_update(a)
     elif a.cmd == "setup":
         import shutil, shlex, subprocess as sp
         setup = Path(__file__).resolve().parent.parent / "bin" / "dolly-setup"

@@ -10,6 +10,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 from . import fsutil
@@ -159,12 +160,252 @@ def dnd_begin() -> bool | None:
     prev = dnd_state()
     if prev is None or prev:
         return prev
-    return False if dnd_set(True) else None
+    # It was off and Dolly asked for it on. Whether or not that call answered in time, the
+    # shell may have applied it (it did, on a loaded machine, after Dolly's 1.5 s limit), so
+    # the end of the take always puts it back off. Noted on disk first: a Dolly that dies
+    # before it has a state file still leaves a trace to heal from.
+    ledger_set("dnd_prev", False)
+    dnd_set(True)
+    return False
+
+
+def _dnd_off_later():
+    """The shell did not confirm DND is off again: keep asking in the background for half a
+    minute. A take must never leave Do Not Disturb on."""
+    sh = ('for i in 1 2 3 4 5 6 7 8 9 10; do sleep 3; '
+          'omarchy-shell notifications setDnd off >/dev/null 2>&1; '
+          '[ "$(omarchy-shell notifications isDnd 2>/dev/null)" = off ] && exit 0; done')
+    try:
+        subprocess.Popen(["sh", "-c", sh], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+    except OSError:
+        _dlog.swallowed()
 
 
 def dnd_end(prev: bool | None):
-    if prev is False:
-        dnd_set(False)
+    """Put DND back off when Dolly turned it on (prev is False), and make sure it happened."""
+    if prev is not False:
+        return
+    dnd_set(False)
+    if dnd_state() is not False:
+        _dnd_off_later()
+    ledger_del("dnd_prev")
+
+
+# ------------------------------------------------------------------ leave the desktop as found
+# What a recording changes on the desktop, and who puts it back:
+#   Do Not Disturb        on for the take          dnd_end() at stop / cancel
+#   Stay Awake            Omarchy's own marker     awake_end() at stop / cancel; the watcher when the recorder dies
+#   solid windows         only with Glassy         solid.restore() (its own ledger)
+#   key repeat            only during `dolly run`  hypr.restore_key_repeat() (its own file)
+#   input bridge (Lua)    loaded into Hyprland     the logger as it leaves; heal() if it was killed
+#   sync-marker rule      no animation for Dolly's own "dolly-sync" layer: left in place on
+#                         purpose (it touches nothing else and goes with the next config reload)
+# Anything still changed with no recording running is a leftover: heal() undoes it (next
+# `dolly record`, `dolly recover`, and the watcher right after a recorder dies) and
+# `dolly doctor` lists it.
+def _ledger_file() -> Path:
+    return _dlog.state_dir() / "desktop.json"       # not the runtime dir: must survive a logout
+
+
+def ledger() -> dict:
+    try:
+        d = json.loads(_ledger_file().read_text())
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def ledger_set(key: str, value) -> None:
+    d = ledger()
+    d[key] = value
+    try:
+        _ledger_file().parent.mkdir(parents=True, exist_ok=True)
+        fsutil.atomic_write_json(_ledger_file(), d, durable=False)
+    except OSError:
+        _dlog.swallowed()
+
+
+def ledger_del(key: str) -> None:
+    d = ledger()
+    if key not in d:
+        return
+    d.pop(key, None)
+    try:
+        if d:
+            fsutil.atomic_write_json(_ledger_file(), d, durable=False)
+        else:
+            _ledger_file().unlink(missing_ok=True)
+    except OSError:
+        _dlog.swallowed()
+
+
+# ---- Stay Awake: Omarchy's screensaver (150 s) and lock (300 s) must not start in a take
+AWAKE_PREFIX = "dolly:"
+
+
+def stay_awake_file() -> Path:
+    """Omarchy's own "Stay Awake" marker (omarchy-toggle-idle; the shell's idle service
+    watches this folder). Omarchy's updater uses the same file the same way: it writes an
+    owner line into it and only removes a marker that still carries its own line."""
+    return Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state") / "omarchy" / "indicators" / "stay-awake"
+
+
+def awake_begin() -> str | None:
+    """Keep the machine awake for a take. Returns Dolly's owner line, or None when nothing
+    was changed (already awake: the user's or an update's marker is not Dolly's to touch)."""
+    if os.environ.get("DOLLY_STAY_AWAKE", "1") == "0":
+        return None
+    f = stay_awake_file()
+    token = f"{AWAKE_PREFIX}{os.getpid()}:{int(time.time())}"
+    try:
+        f.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(f, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)      # never over an existing marker
+    except FileExistsError:
+        return None
+    except OSError:
+        _dlog.swallowed()
+        return None
+    with os.fdopen(fd, "w") as fh:
+        fh.write(token + "\n")
+    ledger_set("awake", token)
+    return token
+
+
+def _awake_owner() -> str:
+    try:
+        return stay_awake_file().read_text().strip()
+    except OSError:
+        return ""
+
+
+def awake_end(token: str | None) -> bool:
+    """Remove Dolly's Stay Awake marker (only the one with this owner line). True if removed."""
+    done = False
+    if token and _awake_owner() == token:
+        try:
+            stay_awake_file().unlink(missing_ok=True)
+            done = True
+        except OSError:
+            _dlog.swallowed()
+    if token and ledger().get("awake") == token:
+        ledger_del("awake")
+    return done
+
+
+def watch_recorder(recorder_pid: int) -> None:
+    """A tiny shell that waits for the recorder to go away, however it goes, and then runs
+    `python -m dolly.health heal`: a recorder or a Dolly that was killed still leaves the
+    desktop as it was found, seconds later and without anyone starting Dolly again."""
+    root = Path(__file__).resolve().parents[1]
+    env = dict(os.environ, PYTHONPATH=str(root) + (os.pathsep + os.environ["PYTHONPATH"] if os.environ.get("PYTHONPATH") else ""))
+    sh = 'tail --pid="$1" -f /dev/null 2>/dev/null; sleep 3; exec "$2" -m dolly.health heal'
+    try:
+        subprocess.Popen(["sh", "-c", sh, "dolly-watch", str(int(recorder_pid)), sys.executable],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True, env=env)
+    except (OSError, ValueError):
+        _dlog.swallowed()
+
+
+def _recording_live() -> bool:
+    """A take (or its countdown, or its stop) is in progress: nothing may be healed now."""
+    from .capture import read_state
+    if read_state():
+        return True
+    ph = get_phase()
+    return ph.get("phase") in ("starting", "countdown", "finalizing") and bool(ph.get("pid")) and _alive(ph["pid"])
+
+
+def leftovers() -> list[str]:
+    """What a finished or crashed recording left changed on the desktop (plain words).
+    Empty while a recording is running: its changes are not leftovers."""
+    if _recording_live():
+        return []
+    out = []
+    led = ledger()
+    if led.get("dnd_prev") is False and dnd_state() is True:
+        out.append("Do Not Disturb is still on from a recording that ended")
+    if _awake_owner().startswith(AWAKE_PREFIX):
+        out.append("Stay Awake is still on from a recording that ended")
+    try:
+        from . import solid
+        if solid._load():
+            out.append("windows are still forced solid from a recording that ended")
+    except Exception:
+        _dlog.swallowed()
+    try:
+        from . import hypr
+        if hypr._repeat_file().exists():
+            out.append("key repeat is still switched off from a scripted take that ended")
+    except Exception:
+        _dlog.swallowed()
+    return out
+
+
+def heal(key_repeat: bool = True) -> list[str]:
+    """Undo every leftover; returns what was undone (plain words). Does nothing while a
+    recording is running. `key_repeat=False`: called from a recording that a scripted take
+    is starting (the runner holds key repeat on purpose around it)."""
+    if _recording_live():
+        return []
+    done = []
+    led = ledger()
+    if led.get("dnd_prev") is False:
+        if dnd_state() is True:
+            done.append("switched Do Not Disturb back off")
+        dnd_end(False)
+    owner = _awake_owner()
+    if owner.startswith(AWAKE_PREFIX):
+        if awake_end(owner):
+            done.append("switched Stay Awake back off")
+    elif led.get("awake"):
+        ledger_del("awake")                  # the user or the shell already removed the marker
+    try:
+        from . import solid
+        if solid._load() and solid.restore():
+            done.append("let windows be translucent again")
+    except Exception:
+        _dlog.swallowed()
+    if key_repeat:
+        try:
+            from . import hypr
+            if hypr._repeat_file().exists() and hypr.restore_key_repeat():
+                done.append("switched key repeat back on")
+        except Exception:
+            _dlog.swallowed()
+    if shutil.which("hyprctl") and os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"):
+        try:                                 # a logger that was killed leaves its input bridge listening
+            subprocess.run(["hyprctl", "eval", "if dolly_input_stop then dolly_input_stop() end"],
+                           capture_output=True, timeout=2)
+        except Exception:
+            _dlog.swallowed()
+    if done:
+        _dlog.get().info("desktop healed: %s", "; ".join(done))
+    return done
+
+
+def main(argv=None) -> int:
+    """`python -m dolly.health heal`: what the recorder's watcher runs when the recorder is gone."""
+    argv = sys.argv[1:] if argv is None else argv
+    if argv != ["heal"]:
+        print("usage: python -m dolly.health heal", file=sys.stderr)
+        return 2
+    end = time.monotonic() + 120
+    while time.monotonic() < end:            # a normal stop is finishing: let it
+        ph = get_phase()
+        if not (ph.get("phase") == "finalizing" and ph.get("pid") and _alive(ph["pid"])):
+            break
+        time.sleep(0.5)
+    try:
+        from .capture import _recover_stale
+        _recover_stale()                     # a state file whose recorder is gone: finalize the take
+    except SystemExit:
+        pass
+    except Exception:
+        _dlog.swallowed()
+    heal()
+    return 0
 
 
 # ------------------------------------------------------------------ phases / jobs
@@ -451,3 +692,7 @@ def software_gl_env(base: dict | None = None) -> dict:
     if force == "1" or virtual_gpu():
         env.setdefault("LIBGL_ALWAYS_SOFTWARE", "1")
     return env
+
+
+if __name__ == "__main__":       # `python -m dolly.health heal`: the recorder's watcher (watch_recorder)
+    raise SystemExit(main())

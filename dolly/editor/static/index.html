@@ -670,9 +670,30 @@ function applyTheme(th){ const c=th.colors||{}, R=document.documentElement.style
 // theme switches (Omarchy Super+Ctrl+Shift+Space) and recorder/export phases reach an open editor
 async function pollState(){ try{ const st=await api('/api/state'); if(st.theme&&(!THEME||st.theme.name!==THEME.name||st.theme.font!==THEME.font)){ applyTheme(st.theme); if(P) render(); if(VIEW==='settings') drawSettingsPreview() }
   const j=(st.jobs||[])[0]; const el=$('#phase'); if(el) el.textContent= st.phase==='recording'?'● recording': st.phase==='finalizing'?'saving…': j? `${j.kind} ${Math.round(j.progress*100)}%`:'' }catch(e){} }
+// A take opens as soon as it is recorded; its automatic zooms are worked out in the
+// background and arrive here (no reload). Until then the zoom lane says so and the
+// page's own "no zooms" is not saved over the plan (the server ignores it as well).
+let planT=null, planBusy=false;
+function planNote(){ let el=$('#planNote'); if(!el){ el=document.createElement('span'); el.id='planNote'; el.style.cssText='margin-left:10px;opacity:.75;font-size:12px'; const host=$('#pmeta'); if(host&&host.parentNode) host.parentNode.insertBefore(el, host.nextSibling) }
+  const zooms=!!(P&&P.analysis==='pending'), prev=!!(P&&P.preview==='pending');
+  el.textContent=[prev?'preparing preview…':'', zooms?'planning zooms…':''].filter(Boolean).join(' · ');
+  for(const id of ['#reauto','#speedDetect']){ const b=$(id); if(b) b.disabled=zooms } }
+function loadVideo(){ vid.src='/media/raw.mp4?t='+TOKEN; if(P.has_webcam&&P.camera_mode!=='live') camv.src='/media/webcam.mp4?t='+TOKEN; seek(Math.min(P.video.duration*0.1,2)) }
+function waitForPlan(){ planNote(); clearInterval(planT); planT=setInterval(async()=>{ if(!P){ clearInterval(planT); return } if(planBusy) return; planBusy=true;
+  try{ const r=await api('/api/plan'); if(!r||r.error) return;
+    if(P.preview==='pending'&&r.preview==='ready'){ P.preview='ready'; loadVideo(); planNote() }
+    if(P.analysis==='pending'&&r.analysis==='ready'){ P.analysis='ready'; const mine=(S.segments||[]).filter(s=>s.source==='manual');
+      S.segments=r.segments||[]; if((r.speed||[]).length) S.speed=r.speed;
+      if(mine.length){ // zooms added by hand while waiting stay; the automatic ones make room for them
+        await api('/api/save',{segments:[...S.segments,...mine].sort((a,b)=>a.start-b.start)}); const a=await api('/api/auto',{keep_manual:true}); if(a&&a.segments) S.segments=a.segments }
+      P.segments=S.segments; sel=null; lastSnap=snapshot(); planNote(); drawTimeline(); scheduleRepath();
+      toast(`${S.segments.length} zoom${S.segments.length===1?'':'s'} planned`) }
+    if(P.analysis!=='pending'&&P.preview!=='pending') clearInterval(planT)
+  }catch(e){}finally{ planBusy=false } }, 700) }
 async function init(){
   if(P) return;
   P=await api('/api/project'); if(P.error){ P=null; show('library'); return } S={segments:P.segments,style:P.style,trim:P.trim,speed:P.speed||[],privacy:P.privacy||[]}; lastSnap=snapshot();
+  if(P.analysis==='pending'||P.preview==='pending') waitForPlan();
   $('#pname').textContent=P.name; $('#pmeta').textContent=`${fmtT(P.video.duration)} · ${P.video.w}×${P.video.h} · ${P.capture.fps&&Math.abs(P.capture.fps-P.video.fps)>1?`${P.capture.fps} fps (file ${Math.round(P.video.fps)})`:`${Math.round(P.video.fps)} fps`} · ${P.capture.backend||''}${P.capture.click_source?' · clicks: '+P.capture.click_source:''}`;
   $('#dur').textContent='/ '+fmtT(P.video.duration); $('#themeName').textContent='Theme: '+P.theme.name;
   applyTheme(THEME||P.theme);
@@ -717,7 +738,7 @@ async function init(){
   $('#transcribe').onclick=async()=>{ $('#transcribe').disabled=true; await api('/api/captions',{}); pollJob({style:{}},{set textContent(v){ $('#capInfo').textContent=v }},async s=>{ $('#transcribe').disabled=false;
     if(s.result){ P.caption_cues=s.result.cues; S.style.captions.enabled=true; commit(); syncControls(); drawTimeline(); $('#capInfo').textContent=`${s.result.cues.length} cues` } else toast(s.error||'failed') }) };
   $('#privList').addEventListener('click',e=>{ const t=e.target; if(t.dataset.del){ sel=t.dataset.del; delSel() } else if(t.dataset.tog){ const b=S.privacy.find(x=>x.id===t.dataset.tog); b.enabled=b.enabled===false; commit(); drawTimeline(); render() } });
-  syncControls(); vid.src='/media/raw.mp4?t='+TOKEN; if(P.has_webcam&&P.camera_mode!=='live') camv.src='/media/webcam.mp4?t='+TOKEN; drawRuler(); drawTimeline(); await repath(); seek(Math.min(P.video.duration*0.1,2)); loop();
+  syncControls(); if(P.preview!=='pending'){ vid.src='/media/raw.mp4?t='+TOKEN; if(P.has_webcam&&P.camera_mode!=='live') camv.src='/media/webcam.mp4?t='+TOKEN } drawRuler(); drawTimeline(); await repath(); if(P.preview!=='pending') seek(Math.min(P.video.duration*0.1,2)); loop();
   new ResizeObserver(()=>{ drawRuler(); drawTimeline() }).observe(wrap) }
 // ------------------------------------------------------------ audio tracks + camera (editor)
 const camv=$('#camv');
@@ -824,15 +845,19 @@ const SL={ // labels + help
  'export.format':['Format',''], 'export.quality':['Quality',''], 'export.size_cap_mb':['Size cap (MB)','0 = no cap'], 'export.aspect':['Default aspect',''], 'export.also_vertical':['Also export a 9:16 copy',''],
  'sharing.default_target':['Default link target','From ~/.config/dolly/share.json'],
  'storage.folder':['Recordings folder','Empty = Omarchy screen-recording folder/Dolly (or ~/Videos/Dolly)'], 'storage.keep_raw':['Keep raw files after export','Off: raw capture to the trash after a successful export'], 'storage.cleanup_days':['Clean up raw files after (days)','Exported recordings only; 0 = never'] };
-const GT={capture:['Capture','How recordings start'],audio:['Audio','Recorded as separate tracks, mixed at export'],camera:['Camera','A bubble of you on the recording; off by default'],look:['Look','How new recordings are framed'],zoom:['Auto-zoom','The camera that follows the action'],privacy:['Privacy',''],export:['Export',''],sharing:['Sharing','Nothing uploads unless you add a target'],storage:['Storage','']};
+const GT={capture:['Capture','How recordings start'],shortcuts:['Shortcuts','Hotkeys. Change the keys, or leave a field empty to switch one off'],audio:['Audio','Recorded as separate tracks, mixed at export'],camera:['Camera','A bubble of you on the recording; off by default'],look:['Look','How new recordings are framed'],zoom:['Auto-zoom','The camera that follows the action'],privacy:['Privacy',''],export:['Export',''],sharing:['Sharing','Nothing uploads unless you add a target'],storage:['Storage','']};
 const OPTL={'zoom.between':{glide:'Stay zoomed and glide','zoom-out':'Zoom out to the whole screen'},'zoom.motion':{calm:'Calm',normal:'Normal',quick:'Quick'}};
 let SET=null, saveTimer=null, pending={};
+const SC_STATE={active:'Active',off:'Off',pending:'Applies after Set up'};
+function scLabel(s){ const r=(SET.shortcuts||[]).find(x=>x.key===s.key)||{}; const name=String(s.label||s.key).replace(/^Dolly: /,''); const st=r.state==='taken'?`<span class="warn">Not applied: these keys already belong to ${esc((r.others||[]).join(', ')||'something else')}</span>`:(r.state==='active'&&(r.others||[]).length?`<span class="warn">Also used by ${esc(r.others.join(', '))}</span>`:(SC_STATE[r.state]||'')); return [esc(name.charAt(0).toUpperCase()+name.slice(1)), st+(r.default&&r.default!==r.combo?` · default ${esc(r.default)}`:'')] }
+function comboFromEvent(e){ if(['Control','Alt','Shift','Meta','OS','Super'].includes(e.key)) return null; if(!(e.ctrlKey||e.altKey||e.metaKey)) return null; let k=e.code||''; if(/^Key[A-Z]$/.test(k)) k=k.slice(3); else if(/^Digit[0-9]$/.test(k)) k=k.slice(5); else if(/^F[0-9]{1,2}$/.test(k)){} else if(k==='Space') k='SPACE'; else if(k==='Enter') k='RETURN'; else if(/^[a-zA-Z0-9]$/.test(e.key)) k=e.key.toUpperCase(); else return null; return [e.metaKey?'SUPER':'',e.ctrlKey?'CTRL':'',e.altKey?'ALT':'',e.shiftKey?'SHIFT':''].filter(Boolean).concat(k).join(' + ') }
 async function loadSettings(){ SET=await api('/api/settings'); drawSettings(); drawSettingsPreview() }
 function setVal(k,v){ const [g,n]=k.split('.'); SET.values[g][n]=v; pending[k]=v; clearTimeout(saveTimer); drawSettingsPreview();
-  saveTimer=setTimeout(async()=>{ const r=await api('/api/settings',{updates:pending}); pending={}; if(r.error){ toast(r.error); return } SET.values=r.values; const sv=document.getElementById('sv_'+k.replace('.','_')); if(sv){ sv.classList.add('on'); setTimeout(()=>sv.classList.remove('on'),1200) } },350) }
+  saveTimer=setTimeout(async()=>{ const r=await api('/api/settings',{updates:pending}); pending={}; if(r.error){ toast(r.error); if(k.startsWith('shortcuts.')) loadSettings(); return } SET.values=r.values; if(k.startsWith('shortcuts.')){ SET.shortcuts=r.shortcuts; SET.set_up=r.set_up; drawSettings() } const sv=document.getElementById('sv_'+k.replace('.','_')); if(sv){ sv.classList.add('on'); setTimeout(()=>sv.classList.remove('on'),1200) } },350) }
 function ctl(s,v){ const id='s_'+s.key.replace('.','_');
   if(s.key==='audio.mic_device'||s.key==='audio.system_device'){ const list=s.key==='audio.mic_device'?(SET.mic_devices||[]):[]; return `<input type="text" id="${id}" value="${esc(v)}" list="${id}_l"><datalist id="${id}_l"><option value="default">${list.map(d=>`<option value="${esc(d.name)}">`).join('')}</datalist>` }
   if(s.key==='sharing.default_target') return `<select id="${id}"><option value="">(share.json default)</option>${(SET.share_targets||[]).map(t=>`<option ${t.name===v?'selected':''}>${esc(t.name)}</option>`).join('')}</select>`;
+  if(s.type==='shortcut') return `<input type="text" id="${id}" value="${esc(v)}" placeholder="off" spellcheck="false" autocomplete="off">`;
   if(s.type==='bool') return `<div class="tg ${v?'on':''}" id="${id}" style="margin:0"><span></span><i></i></div>`;
   if(s.type==='enum'){ const L=OPTL[s.key]||{}; return `<select id="${id}">${s.options.map(o=>`<option value="${esc(o)}" ${String(o)===String(v)?'selected':''}>${esc(L[o]||o)}</option>`).join('')}</select>` }
   if(s.type==='color') return `<input type="color" id="${id}" value="${esc(v)}">`;
@@ -841,10 +866,10 @@ function ctl(s,v){ const id='s_'+s.key.replace('.','_');
 function fmtSet(s,v){ if(s.type==='int') return v; if(s.key==='look.background_blur') return Math.round(+v)+' px'; if(s.key==='zoom.level'||s.key==='zoom.max_zoom') return (+v).toFixed(2)+'×'; if(s.key==='zoom.stay_seconds') return (+v).toFixed(1)+' s'; return (+v).toFixed(2) }
   return `<input type="text" id="${id}" value="${esc(v)}">` }
 function drawSettings(){ const sf=$('#sform'), groups=SET.groups; $('#snav').innerHTML=groups.map(g=>`<div data-g="${g}">${GT[g][0]}</div>`).join('');
-  sf.innerHTML=groups.map(g=>{ const rows=SET.schema.filter(s=>s.key.startsWith(g+'.')).map(s=>{ const [gg,n]=s.key.split('.'); const v=SET.values[gg][n]; const lab=SL[s.key]||[s.key,''];
+  sf.innerHTML=groups.map(g=>{ const rows=SET.schema.filter(s=>s.key.startsWith(g+'.')).map(s=>{ const [gg,n]=s.key.split('.'); const v=SET.values[gg][n]; const lab=s.type==='shortcut'?scLabel(s):(SL[s.key]||[s.key,'']);
       return `<div class="srow"><div><div class="lb">${lab[0]}<span class="saved" id="sv_${s.key.replace('.','_')}">saved</span></div>${lab[1]?`<div class="hp">${lab[1]}</div>`:''}</div><div>${ctl(s,v)}</div></div>` }).join('');
     let extra='';
-    if(g==='capture') extra=`<div class="sd" style="margin-top:12px">Hotkeys (read-only)</div>${SET.hotkeys.map(h=>`<div class="kbdrow"><span class="kbd">${esc(h.keys)}</span><span>${esc(h.action)}</span></div>`).join('')}<div class="hp" style="margin-top:6px">Change them in ~/.config/hypr/bindings.lua between the "dolly" markers (Omarchy menu › Setup › Keybindings opens it), or rerun dolly-setup. Omarchy's Super+K lists them.</div>`;
+    if(g==='shortcuts') extra=`<div class="hp" style="margin-top:8px">Type a combination such as <span class="kbd">SUPER + ALT + R</span>, or click a field and press the keys. Keys that already belong to something else are left alone. Omarchy's Super+K lists the active ones.${SET.set_up?'':' They take effect after Set up (the Dolly panel on the bar).'}</div>`;
     if(g==='sharing') extra=`<div class="sd" style="margin-top:12px">Targets in ${esc(SET.share_path)}</div>${(SET.share_targets||[]).map(t=>`<div class="kbdrow"><span>${esc(t.name)} · ${esc(t.type)}${t.public?' · <span class="warn">public</span>':''}</span><span class="small">${esc(t.bucket||t.remote||t.endpoint||'')} · ${esc(t.credentials)}</span></div>`).join('')||`<div class="hp">Local-only: no targets. Run <span class="kbd">dolly share init</span> for a template.</div>`}${SET.share_error?`<div class="warn">${esc(SET.share_error)}</div>`:''}`;
     if(g==='storage') extra=`<div class="hp" style="margin-top:8px">Recordings are in ${esc(SET.videos_root)}. See the Library for disk usage and clean-up.</div>`;
     const lead=g==='look'&&SET.capture_bakes_cursor?`<div class="note">On this system recordings have the real cursor (wf-recorder: gpu-screen-recorder cannot capture here, as in most VMs). The re-drawn cursor and its motion blur need gpu-screen-recorder; cursor size still sets the click ripple and smoothing still steadies how the camera follows the pointer.</div>`:'';
@@ -854,7 +879,7 @@ function drawSettings(){ const sf=$('#sform'), groups=SET.groups; $('#snav').inn
       const clr=document.getElementById(el.id+'_clr'); if(clr) clr.onclick=()=>{ setVal(s.key,''); if(SET.values.look.background==='image') setVal('look.background','theme-glow'); drawSettings() }; continue }
     if(s.type==='bool') el.onclick=()=>{ el.classList.toggle('on'); setVal(s.key,el.classList.contains('on')) };
     else if(s.type==='int'||s.type==='float'){ el.oninput=()=>{ const v=s.type==='int'?parseInt(el.value):parseFloat(el.value); document.getElementById(el.id+'_v').textContent=fmtSet(s,v); setVal(s.key,v) } }
-    else el.onchange=()=>setVal(s.key,el.value) }
+    else { if(s.type==='shortcut') el.onkeydown=e=>{ const c=comboFromEvent(e); if(c===null) return; e.preventDefault(); el.value=c; setVal(s.key,c) }; el.onchange=()=>setVal(s.key,el.value) } }
   $('#snav').querySelectorAll('div').forEach(d=>d.onclick=()=>{ document.getElementById('g_'+d.dataset.g).scrollIntoView({behavior:'smooth'}); $('#snav').querySelectorAll('div').forEach(x=>x.classList.toggle('on',x===d)) }) }
 let spvImg=null;
 function drawSettingsPreview(){ if(!SET) return; const c=$('#spv'), x=c.getContext('2d'), W=c.width, H=c.height, v=SET.values, th=(THEME&&THEME.colors)||{}, L=v.look;

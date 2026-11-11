@@ -87,6 +87,8 @@ def _cached_master(project_dir, p) -> Path | None:
 def render_master(project_dir, p: dict, progress=None) -> Path:
     """High-quality intermediate at the preset's aspect/size/fps (cached)."""
     from ..render import export
+    from .. import analysis
+    analysis.ensure(project_dir)             # never render a take whose zoom plan is still being worked out
     proj = projmod.Project(project_dir)
     cache = proj.exports / ".cache"
     cache.mkdir(parents=True, exist_ok=True)

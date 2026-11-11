@@ -1,5 +1,5 @@
 """Export worker count. No third-party imports: `dolly doctor` uses it when
-numpy/OpenCV are missing."""
+NumPy and Pillow are missing."""
 import os
 
 

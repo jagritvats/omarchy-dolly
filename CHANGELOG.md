@@ -1,5 +1,104 @@
 # Changelog
 
+## 0.7.0 (2026-11-11)
+
+Faster, lighter and closer to Omarchy. Tested on Omarchy 4.5 in VirtualBox (wf-recorder,
+software rendering); not yet on real hardware.
+
+Stop answers at once
+- The "Demo recorded" card no longer waits for the whole recording to be read. It comes
+  about 3 s after Stop whatever the length of the take (measured in a VM: 8.5 s before
+  for a 10 s take, 21 s for a 45 s take), and most of what is left is the recorder
+  shutting down. The sync markers are looked for only at the start and the end of the
+  file, and the automatic zooms are worked out afterwards, in the background.
+- Stopping on a completely still screen no longer hangs for ten seconds: the software
+  recorder only noticed the stop when the screen next repainted, so Dolly now repaints
+  one invisible corner.
+- The editor opens straight away: it no longer waits for its preview or for the zoom
+  plan. Both arrive in the open window ("preparing the preview", "planning zooms").
+- Export, share, `dolly run` and the JSON commands wait for the zoom plan, so nothing is
+  ever exported or reported half-analysed. The plan is the same as before.
+- An analysis cut short by a crash or a logout is finished when the recording is next
+  opened or exported, or by `dolly recover`.
+
+Leaves the desktop as it found it
+- Do Not Disturb is always switched back off after a take. If the shell answered late
+  when Dolly turned it on, Dolly treated it as untouched and left it on.
+- No screensaver or lock in the middle of a take: Dolly switches Omarchy's Stay Awake on
+  for the length of the recording and off again afterwards (the mug in the bar shows it).
+  If you had Stay Awake on yourself, it is left alone. `DOLLY_STAY_AWAKE=0` turns this off.
+- If the recorder, or Dolly itself, is killed, the desktop is still put back a few
+  seconds later and the take is saved. Anything that could not be undone then is undone
+  by the next recording or by `dolly recover`, and `dolly doctor` lists it.
+
+Name
+- The plugin is now listed as "Dolly: Screen Recorder", with a description that says what
+  it is, so a search for a screen recorder finds it. The id, the `dolly` command and
+  the bar button are unchanged.
+
+The bar and the menu
+- No polling. The bar button watches Dolly's small state files instead of asking
+  `dolly status` every few seconds: nothing of Dolly runs while you are not recording
+  (it was 8 to 12 starts a minute, and 42 to 62 while an export ran), and the button
+  follows a start, a stop or the countdown at once.
+- The panel fills from one command when it opens (it started six).
+- The bar button answers a press of Record at once, before the countdown or the first frame.
+- One **Demo** entry under Trigger > Capture, with recording, recordings, share,
+  instant replay and settings inside it, instead of five rows next to Omarchy's own and
+  another under Share. While a take is running the entry is "Stop demo".
+- Shortcuts are settings: change any hotkey or switch it off in Settings > Shortcuts or
+  with `dolly config set shortcuts.toggle="SUPER + CTRL + D"` (empty = off). Only Dolly's
+  marked block in `~/.config/hypr/bindings.lua` is rewritten, without a terminal or a
+  password; keys that belong to something else are never taken, and the row says so.
+- An update applies itself. After `omarchy plugin update`, Dolly refreshes what Set up
+  wrote (menu entry, hotkeys, the `dolly` command) by itself, only for someone who ran
+  Set up and did not undo it. `dolly update` does both steps and says what changed.
+  A running Omarchy shell keeps the bar button it has loaded: `dolly update` restarts
+  the shell when the button changed; after Omarchy's own command a card offers to.
+- `dolly integration apply` / `undo` do what `dolly-setup` does to your files, without
+  the package step.
+
+Smaller install
+- Dolly no longer needs OpenCV. Set up now installs `python-numpy` and `python-pillow`
+  only: about 9 MB to download and 55 MB on disk, where it was about 80 MB and 490 MB
+  (most of that was what the distribution's OpenCV package depends on).
+- Every feature is kept, and exports look the same. Against 0.6.1, on three exports in a
+  virtual machine: frames score SSIM 0.994 to 0.999 on average (0.988 for the worst
+  frame), files are 0 to 4 % larger, and CPU time is the same within measurement noise
+  (-3 to +6 %).
+- Nothing to do when you update. If nothing else on your machine uses it, the old package
+  can go: `sudo pacman -Rs python-opencv` also removes what was installed only for it
+  (vtk, openmpi and a few small libraries; about 430 MB in all). pacman lists them before
+  it asks. `opencv` itself stays where another program needs it (kdenlive does).
+- `dolly export --json` reports `"engine": "compositor"` (it said `"opencv"`).
+
+For developers
+- `dolly/imgops.py` holds the image operations, on NumPy and Pillow. Tests run with OpenCV
+  hidden (`DOLLY_TEST_NO_CV2=1`, the default) and CI no longer installs it.
+- `harness/bench/` compares two checkouts of Dolly: still frames, zoom plan, export time.
+
+Several monitors
+- Checked with a second monitor right of, left of and above the first one, at another
+  size and at scale 1.5 and 2: the picture, clicks, typing zoom, 9:16 and 1:1, privacy
+  boxes and the sync marker are all measured from the monitor being recorded.
+- `dolly run` takes its clean stage on the monitor you are on. It could move the take to
+  the other monitor when that one was showing an empty workspace. Afterwards it goes back
+  to your monitor first, then your workspace (it could open your workspace on the other
+  monitor).
+- Stop on a still second monitor is as quick as on the first: the corner that is
+  repainted to wake the software recorder is now on the monitor being recorded.
+- Unplugging the monitor being recorded ends the take in about 4 s (it took 13). The take
+  is kept and says the monitor was disconnected.
+- `--json`: a region across two monitors, or a window hanging over a monitor edge, is
+  recorded as the part on one monitor, and `warnings` now says so.
+
+Camera
+- Window mode: typing in the followed window gets its close-up. A shot was sized to show
+  the whole window, so a shot planned at 2.0x played at about 1.0x (since 0.5.0, on any
+  number of monitors).
+- A notification card sliding in or fading out over the window you are typing in no
+  longer pulls the camera to it.
+
 ## 0.6.1 (2026-11-11)
 
 Fixes, measured on real takes on Omarchy 4.5 in VirtualBox.

@@ -31,9 +31,9 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import cv2
 import numpy as np
 
+from . import imgops
 from .events import Timeline
 
 TERMINAL_CLASSES = {"alacritty", "foot", "footclient", "kitty", "ghostty", "com.mitchellh.ghostty",
@@ -124,8 +124,8 @@ def click_reactions(frames: np.ndarray, fps: float, W: int, H: int, clicks, thre
             if hist[k] > 0.25 * rc.size and abs(mode - 1.0) > 0.12:
                 changed &= ~((np.abs(ratio - mode) < 0.07) & (fa > 20))
         m = changed.astype(np.uint8)
-        m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
-        nl, lab, stats, _ = cv2.connectedComponentsWithStats(m, connectivity=8)
+        m = imgops.close_gaps(m, 5)
+        nl, _, stats = imgops.regions(m)
         best = None
         for j in range(1, nl):
             x, y, w, h, area = stats[j]
@@ -221,7 +221,7 @@ def compute_activity(raw: Path, W: int, H: int, cfg: AOIConfig | None = None, fr
         ph, pw = frames.shape[1:]
         source = iter(frames)
     sx, sy = W / pw, H / ph
-    kern = np.ones((1, 5), np.uint8)  # horizontal only: glyphs merge into words/lines, lines stay apart
+    kern = (1, 5)  # 1 row x 5 columns, horizontal only: glyphs merge into words/lines, lines stay apart
     want = _click_frame_indices(clicks, cfg.fps)
     keep: dict = {}
     fracs: list = []
@@ -258,8 +258,8 @@ def compute_activity(raw: Path, W: int, H: int, cfg: AOIConfig | None = None, fr
         fracs.append(fr)
         row = []
         if fr:
-            md = cv2.dilate(m, kern, iterations=2)
-            nl, lab, stats, _ = cv2.connectedComponentsWithStats(md, connectivity=8)
+            md = imgops.dilate(m, kern, iterations=2)
+            nl, _, stats = imgops.regions(md)
             for j in range(1, nl):
                 x, y, w, h, a = stats[j]
                 real = int(m[y:y + h, x:x + w].sum())
@@ -380,6 +380,38 @@ def _open_layers(tl: Timeline, t: float) -> list:
     return list(state.values())
 
 
+TOAST_PAD = 0.8           # s around a change of the card count: the card sliding in or fading out
+
+
+def _toast_rects(tl: Timeline, t: float) -> list:
+    """Where notification cards are on this recording around time t (corner boxes), from the
+    shell's own count and the notification area of the recorded monitor. The top of the area,
+    tall enough for that many cards with action buttons, like the privacy boxes."""
+    areas = tl.capture.get("notification_areas") or []
+    evs = getattr(tl, "toasts", None) or []
+    if not areas or not evs:
+        return []
+    n, cur = 0, int(evs[0]["count"])          # the first count is what was already there
+    for e in evs:
+        if e["t"] <= t - TOAST_PAD:
+            cur = int(e["count"])
+        elif e["t"] <= t + TOAST_PAD:
+            n = max(n, cur, int(e["count"]))  # the count before and after a change in the window
+            cur = int(e["count"])
+        else:
+            break
+    n = max(n, cur) if not any(t - TOAST_PAD < e["t"] <= t + TOAST_PAD for e in evs) else n
+    if n <= 0:
+        return []
+    vs = float(tl.capture.get("scale", 1.0) or 1.0)
+    out = []
+    for ax0, ay0, ax1, ay1 in areas:
+        x0, y0, x1, y1 = max(0.0, ax0), max(0.0, ay0), min(tl.w, ax1), min(tl.h, ay1, ay0 + (60 + 150 * n) * vs)
+        if x1 - x0 >= 8 and y1 - y0 >= 8:     # (an area on another monitor is not in this recording)
+            out.append((x0, y0, x1, y1))
+    return out
+
+
 def _iou(a, b):
     ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
     iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
@@ -403,12 +435,21 @@ class AOITrack:
     focus: list           # per sample (x, y) or None: freshest change (caret / newest output)
     transitions: list     # [(t0, t1)]
     line_h: float         # text line height estimate (video px)
+    idle: list | None = None   # per sample: only the followed window is named (window mode, nothing happening)
 
     def at(self, t: float):
         if len(self.t) == 0:
             return None, None, None
         i = int(np.clip(np.searchsorted(self.t, t, side="right") - 1, 0, len(self.t) - 1))
         return self.rect[i], self.kind[i], self.focus[i]
+
+    def idle_at(self, t: float) -> bool:
+        """Window mode with nothing happening: the sample names the followed window itself.
+        That is where the camera rests, not something a shot has to show."""
+        if not self.idle or len(self.t) == 0:
+            return False
+        i = int(np.clip(np.searchsorted(self.t, t, side="right") - 1, 0, len(self.t) - 1))
+        return bool(self.idle[i])
 
     def in_transition(self, t: float, pad: float = 0.0) -> bool:
         return any(a - pad <= t <= b + pad for a, b in self.transitions)
@@ -431,6 +472,7 @@ def build_aoi(tl: Timeline, act: Activity | None, cfg: AOIConfig | None = None) 
     baked = bool(tl.capture.get("cursor_baked"))
     ptr_r = 40.0 * scale
     trans = transitions(act, cfg)
+    idle_idx: set = set()
     # workspace switches are cuts even when the two workspaces look alike (Omarchy switches
     # instantly; with animations on, the frame-diff interval above covers the slide)
     cur_ws = None
@@ -528,7 +570,7 @@ def build_aoi(tl: Timeline, act: Activity | None, cfg: AOIConfig | None = None) 
         pointer = recent(pmoves, t, cfg.pointer_window) or recent(clicks, t, cfg.pointer_window)
         layout = recent(layout_t, t, cfg.layout_window) or recent(open_t, t, cfg.open_window)
         # notification toasts (layers without keyboard focus) are never the subject
-        toasts = [l["rect"] for l in _open_layers(tl, t) if not l["keyboard"]]
+        toasts = [l["rect"] for l in _open_layers(tl, t) if not l["keyboard"]] + _toast_rects(tl, t)
         # gather recent blobs (lookback depends on mode) that pass the filters
         span = cfg.typing_lookback if typing else 0.6
         lo = np.searchsorted(act.t, t - span)
@@ -616,6 +658,7 @@ def build_aoi(tl: Timeline, act: Activity | None, cfg: AOIConfig | None = None) 
             near = [k for k in kept if math.hypot((k[0] + k[2]) / 2 - cx, (k[1] + k[3]) / 2 - cy) < cfg.near_cursor * 1.6]
             rects.append(_clip(_union([pr] + near), W, H)); kinds.append("pointer"); foci.append((cx, cy))
         elif target and wrect is not None:
+            idle_idx.add(len(kinds))        # nothing is happening: the followed window is only the resting frame
             rects.append(wrect); kinds.append("layout"); foci.append(None)
         else:
             rects.append(None); kinds.append(None); foci.append(None)
@@ -653,4 +696,5 @@ def build_aoi(tl: Timeline, act: Activity | None, cfg: AOIConfig | None = None) 
             i = j
         else:
             i += 1
-    return AOITrack(act.t, rects, kinds, foci, trans, line_h)
+    return AOITrack(act.t, rects, kinds, foci, trans, line_h,
+                    [i in idle_idx and kinds[i] == "layout" for i in range(len(kinds))])

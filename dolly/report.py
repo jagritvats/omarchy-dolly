@@ -55,7 +55,7 @@ def _versions() -> list[str]:
             out.append(f"{label}: {(_run(cmd).splitlines() or ['?'])[0][:120]}")
         else:
             out.append(f"{label}: not installed")
-    for mod in ("numpy", "cv2", "PIL"):
+    for mod in ("numpy", "PIL"):
         try:
             m = __import__(mod)
             out.append(f"python {mod}: {getattr(m, '__version__', '?')}")

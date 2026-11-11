@@ -2,6 +2,7 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 import Quickshell.Wayland
+import Qt.labs.folderlistmodel
 import qs.Commons
 import qs.Commons as Commons
 import qs.Ui
@@ -12,9 +13,9 @@ import qs.Ui
 //             starts a recording straight away with the saved defaults,
 //             middle click opens the last recording in the editor.
 // Recording:  red dot + mm:ss timer; any click stops (and opens the editor).
-// Phases (from `dolly status --json`): countdown 3-2-1, recording, paused,
-// finalizing, rendering/exporting NN % - the same state the panel and the
-// editor show.
+// Phases: starting (Record was pressed), countdown 3-2-1, recording, paused, finalizing,
+// rendering/exporting
+// NN % - the same state the panel and the editor show.
 //
 // syncFlash(json): a 40 px magenta square with a green centre on an Overlay
 // layer for ~70 ms at the recorded region's top-left. The logger asks for it
@@ -27,9 +28,10 @@ import qs.Ui
 // ways: config.json changes -> updateEntryInline; a widget setting changed elsewhere ->
 // `dolly config set --from-bar`. Values that already agree are never written back.
 //
-// State comes from `dolly status --json` (polled once a second only while
-// recording, otherwise every 5 s and on `refresh`). The panel lives in
-// RecordPanel.qml and is loaded through a Loader like the built-in clock.
+// State is never polled: the widget watches the small files Dolly keeps in its
+// runtime folder (see "state, without polling" below) and starts no process to
+// learn it. One `dolly shell-start` runs when the shell loads the plugin. The panel
+// lives in RecordPanel.qml and is loaded through a Loader like the built-in clock.
 BarWidget {
   id: root
   moduleName: "io.github.jagritvats.dolly"
@@ -45,7 +47,6 @@ BarWidget {
   property bool replay: false
   property int replaySeconds: 0
   property real elapsed: 0
-  property string lastDir: ""
   property string backend: ""
   property real startedAt: 0
   property string phase: "idle"
@@ -61,7 +62,7 @@ BarWidget {
   readonly property var barKeys: ({ mode: "capture.mode", countdown: "capture.countdown", fps: "capture.fps",
                                     keys: "capture.keys", audioMode: "audio.mode", camera: "camera.mode",
                                     replaySeconds: "capture.replay_seconds", solidWindows: "privacy.solid_windows" })
-  // bar-key -> value from config.json, delivered by `dolly status --json` ("bar")
+  // bar-key -> value from ~/.config/dolly/config.json (watched, see below)
   property var barCfg: ({})
   property bool _configLoaded: false
   function mirrorConfigToWidget() {
@@ -89,7 +90,16 @@ BarWidget {
     root._lastSettings = Object.assign({}, root.settings || {})
     if (pairs.length) Quickshell.execDetached([root.dolly, "config", "set", "--from-bar"].concat(pairs))
   }
-  // ~/.config/dolly/config.json changes reach the widget through the status poll ("bar")
+  function applyConfig(c) {
+    var view = {}
+    for (var bk in root.barKeys) {
+      var kp = root.barKeys[bk].split("."), g = c[kp[0]]
+      if (g && g[kp[1]] !== undefined) view[bk] = g[kp[1]]
+    }
+    root.barCfg = view
+    if (!root._configLoaded) { root._lastSettings = Object.assign({}, root.settings || {}); root._configLoaded = true }
+    root.mirrorConfigToWidget()
+  }
 
   readonly property string timerText: {
     var s = Math.max(0, Math.floor(root.elapsed))
@@ -102,9 +112,7 @@ BarWidget {
     Quickshell.execDetached([root.dolly].concat(args))
   }
 
-  function refresh() {
-    if (!statusProc.running) statusProc.running = true
-  }
+  function refresh() { reloadAll() }
 
   // Flags only for what the panel chose; everything else comes from Settings (config.json)
   function startRecording(opts) {
@@ -116,17 +124,17 @@ BarWidget {
     if (o.keys === false) args.push("--no-keys")
     close()
     run(args)
-    pollFast.restart()
   }
 
   function togglePause() { run(["pause"]); Qt.callLater(refresh) }
-  function toggleReplay() { run(["replay", root.replay ? "stop" : "start", "--seconds", String(setting("replaySeconds", 60))]); pollFast.restart() }
+  function toggleReplay() { run(["replay", root.replay ? "stop" : "start", "--seconds", String(setting("replaySeconds", 60))]) }
   function saveReplay(last) { run(last ? ["replay", "save", "--last", String(last)] : ["replay", "save"]) }
 
   function stopRecording() {
     run(["stop"])
-    root.recording = false
-    Qt.callLater(refresh)
+    root.stopRequested = true       // show "finishing" at once; the files confirm it a moment later
+    stopGiveUp.restart()
+    derive()
   }
 
   function openLast() {
@@ -154,7 +162,7 @@ BarWidget {
   implicitHeight: button.implicitHeight
   onBarChanged: injectPanel()
   onSettingsChanged: { injectPanel(); Qt.callLater(mirrorWidgetToConfig) }
-  Component.onCompleted: refresh()
+  Component.onCompleted: { startProc.running = true; startGiveUp.start() }
 
   Loader {
     id: panelLoader
@@ -164,69 +172,228 @@ BarWidget {
     onLoaded: { root.injectPanel(); Qt.callLater(root.injectPanel) }
   }
 
-  Process {
-    id: statusProc
-    command: [root.dolly, "status", "--json"]
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        try {
-          var s = JSON.parse(text)
-          root.recording = s.recording === true
-          root.paused = s.paused === true
-          root.muted = s.muted === true
-          if (s.bar) {
-            root.barCfg = s.bar
-            if (!root._configLoaded) { root._lastSettings = Object.assign({}, root.settings || {}); root._configLoaded = true }
-            root.mirrorConfigToWidget()
-          }
-          root.replay = s.replay === true
-          root.replaySeconds = Number(s.replay_seconds || 0)
-          root.lastDir = s.last || ""
-          root.backend = s.backend || ""
-          root.phase = s.phase || (root.recording ? "recording" : "idle")
-          root.countdownLeft = Number(s.countdown || 0)
-          var j = (s.jobs || [])[0]
-          root.jobProgress = j ? Number(j.progress || 0) : -1
-          root.jobKind = j ? String(j.kind || "rendering") : ""
-          if (root.recording) {
-            root.startedAt = Date.now() / 1000 - Number(s.elapsed || 0)
-            root.elapsed = Number(s.elapsed || 0)
-          }
-        } catch (e) { root.recording = false }
+  // ---- state, without polling ---------------------------------------------------------
+  // Dolly keeps small files in its runtime folder and replaces them atomically whenever
+  // something changes. The widget watches them (the way Omarchy's Agents panel watches its
+  // records) and starts no process to learn the state:
+  //   state.json    a recorder is up: recorder_pid, started, paused_at, paused_total, muted,
+  //                 backend, preroll (true while the countdown runs)
+  //   phase.json    phase (countdown | recording | finalizing | ...), left, pid
+  //   replay.json   the instant-replay recorder: recorder_pid, seconds
+  //   jobs/*.json   one per running export: kind, progress, pid
+  //   ~/.config/dolly/config.json   Settings (mirrored into the widget's own entry)
+  // While something is shown as running, /proc/<pid>/stat is re-read every few seconds, so
+  // a process that died without cleaning up cannot leave the bar stuck. Nothing runs while
+  // idle. tests/test_bar_state_files.py keeps the field names here and in the code that
+  // writes the files in step.
+  readonly property string home: Quickshell.env("HOME") || ""
+  readonly property string runDir: (Quickshell.env("XDG_RUNTIME_DIR") || (home + "/.local/state")) + "/dolly"
+  readonly property string configPath: Quickshell.env("DOLLY_CONFIG")
+      || ((Quickshell.env("XDG_CONFIG_HOME") || (home + "/.config")) + "/dolly/config.json")
+  property bool ready: false           // the folders exist: `dolly shell-start` has run
+  property var st: null
+  property var ph: null
+  property var rp: null
+  property var jobInfo: null
+  property string jobName: ""
+  property var deadJobs: ({})
+  property bool recorderAlive: true
+  property bool phaseAlive: true
+  property bool replayAlive: true
+  property bool jobAlive: true
+  property bool stopRequested: false
+  property int retries: 0
+
+  function parseObj(text) {
+    try { var o = JSON.parse(text); return (o !== null && typeof o === "object") ? o : null } catch (e) { return null }
+  }
+  function procAlive(text) { return !/\)\s[ZX]\s/.test(text) }      // gone or a zombie = not running
+  function procPath(pid) { return pid ? "/proc/" + Number(pid) + "/stat" : "" }
+  // a file caught mid-write reads empty: look again shortly, a few times at most
+  function unreadable() { if (root.retries < 4) { root.retries++; retry.restart() } }
+
+  function derive() {
+    var st = root.st, ph = root.ph
+    var phName = (ph && ph.phase && root.phaseAlive) ? String(ph.phase) : "idle"
+    var counting = !!(st && st.preroll === true && phName === "countdown")
+    var stopping = phName === "finalizing" || root.stopRequested
+    var rec = !!(st && st.recorder_pid && root.recorderAlive && !counting && !stopping)
+    var paused = rec && !!st.paused_at
+    root.recording = rec
+    root.paused = paused
+    root.muted = rec && st.muted === true
+    root.backend = rec ? String(st.backend || "") : ""
+    root.phase = rec ? (paused ? "paused" : "recording")
+               : (root.stopRequested && st && phName !== "countdown") ? "finalizing" : phName
+    root.countdownLeft = phName === "countdown" ? Number(ph.left || 0) : 0
+    if (rec) {
+      root.startedAt = Number(st.started || 0) + Number(st.paused_total || 0)
+      root.elapsed = (paused ? Number(st.paused_at) : Date.now() / 1000) - root.startedAt
+    }
+    var rp = root.rp
+    root.replay = !!(rp && rp.recorder_pid && root.replayAlive)
+    root.replaySeconds = root.replay ? Number(rp.seconds || 0) : 0
+    var j = root.jobAlive ? root.jobInfo : null
+    root.jobProgress = j ? Number(j.progress || 0) : -1
+    root.jobKind = j ? String(j.kind || "rendering") : ""
+  }
+
+  function setState(o) {
+    root.st = o
+    root.recorderAlive = true
+    if (o === null) { root.stopRequested = false; stopGiveUp.stop() }
+    recProc.path = procPath(o ? o.recorder_pid : 0)
+    derive()
+  }
+  function setPhase(o) {
+    root.ph = o
+    root.phaseAlive = true
+    phProc.path = procPath(o ? o.pid : 0)
+    derive()
+  }
+  function setReplay(o) {
+    root.rp = o
+    root.replayAlive = true
+    rpProc.path = procPath(o ? o.recorder_pid : 0)
+    derive()
+  }
+  function setJob(o) {
+    root.jobInfo = o
+    root.jobAlive = true
+    jobProc.path = procPath(o ? o.pid : 0)
+    derive()
+  }
+  // the first export whose process is still there (like `dolly status`: jobs()[0])
+  function pickJob() {
+    var m = jobsLoader.item, name = ""
+    for (var i = 0; m && i < m.count; i++) {
+      var n = m.get(i, "fileName")
+      if (n && !root.deadJobs[n]) { name = n; break }
+    }
+    if (name === root.jobName) return
+    root.jobName = name
+    jobFile.path = name ? root.runDir + "/jobs/" + name : ""
+    if (!name) setJob(null)
+  }
+  function reloadAll() {
+    if (!root.ready) return
+    stateFile.reload(); phaseFile.reload(); replayFile.reload(); configFile.reload()
+    if (jobFile.path) jobFile.reload()
+    pickJob()
+  }
+
+  FileView {
+    id: stateFile
+    path: root.ready ? root.runDir + "/state.json" : ""
+    watchChanges: true; printErrors: false
+    onFileChanged: reload()
+    onLoaded: { var o = root.parseObj(text()); if (o === null) root.unreadable(); else { root.retries = 0; root.setState(o) } }
+    onLoadFailed: root.setState(null)
+  }
+  FileView {
+    id: phaseFile
+    path: root.ready ? root.runDir + "/phase.json" : ""
+    watchChanges: true; printErrors: false
+    onFileChanged: reload()
+    onLoaded: { var o = root.parseObj(text()); if (o === null) root.unreadable(); else { root.retries = 0; root.setPhase(o) } }
+    onLoadFailed: root.setPhase(null)
+  }
+  FileView {
+    id: replayFile
+    path: root.ready ? root.runDir + "/replay.json" : ""
+    watchChanges: true; printErrors: false
+    onFileChanged: reload()
+    onLoaded: { var o = root.parseObj(text()); if (o === null) root.unreadable(); else { root.retries = 0; root.setReplay(o) } }
+    onLoadFailed: root.setReplay(null)
+  }
+  FileView {
+    id: configFile
+    path: root.ready ? root.configPath : ""
+    watchChanges: true; printErrors: false
+    onFileChanged: reload()
+    onLoaded: { var c = root.parseObj(text()); if (c === null) root.unreadable(); else { root.retries = 0; root.applyConfig(c) } }
+    onLoadFailed: root.applyConfig({})       // no settings saved yet: nothing to mirror
+  }
+  Loader {
+    id: jobsLoader
+    active: root.ready
+    sourceComponent: Component {
+      FolderListModel {
+        folder: "file://" + root.runDir + "/jobs"
+        nameFilters: ["*.json"]
+        showDirs: false
+        sortField: FolderListModel.Name
+        onCountChanged: root.pickJob()
+        onStatusChanged: root.pickJob()
       }
     }
   }
+  FileView {
+    id: jobFile
+    path: ""
+    watchChanges: true; printErrors: false
+    onFileChanged: reload()
+    onLoaded: { var o = root.parseObj(text()); if (o !== null) root.setJob(o) }
+    onLoadFailed: root.setJob(null)
+  }
+  // is the process behind what the bar shows still there? (read, never started)
+  FileView {
+    id: recProc; path: ""; printErrors: false
+    onLoaded: { var a = root.procAlive(text()); if (a !== root.recorderAlive) { root.recorderAlive = a; root.derive() } }
+    onLoadFailed: if (path !== "" && root.recorderAlive) { root.recorderAlive = false; root.derive() }
+  }
+  FileView {
+    id: phProc; path: ""; printErrors: false
+    onLoaded: { var a = root.procAlive(text()); if (a !== root.phaseAlive) { root.phaseAlive = a; root.derive() } }
+    onLoadFailed: if (path !== "" && root.phaseAlive) { root.phaseAlive = false; root.derive() }
+  }
+  FileView {
+    id: rpProc; path: ""; printErrors: false
+    onLoaded: { var a = root.procAlive(text()); if (a !== root.replayAlive) { root.replayAlive = a; root.derive() } }
+    onLoadFailed: if (path !== "" && root.replayAlive) { root.replayAlive = false; root.derive() }
+  }
+  FileView {
+    id: jobProc; path: ""; printErrors: false
+    onLoaded: if (!root.procAlive(text())) root.jobDied()
+    onLoadFailed: if (path !== "") root.jobDied()
+  }
+  function jobDied() {
+    if (!root.jobName) return
+    root.deadJobs[root.jobName] = true        // an export that crashed left its file behind
+    pickJob()
+  }
+  Timer {
+    id: aliveCheck
+    interval: 3000
+    repeat: true
+    running: root.st !== null || root.ph !== null || root.rp !== null || root.jobInfo !== null
+    onTriggered: {
+      if (recProc.path) recProc.reload()
+      if (phProc.path) phProc.reload()
+      if (rpProc.path) rpProc.reload()
+      if (jobProc.path) jobProc.reload()
+    }
+  }
+  Timer { id: retry; interval: 80; repeat: false; onTriggered: root.reloadAll() }
+  // a Stop that did nothing (the command failed) must not leave "finishing" on the bar
+  Timer { id: stopGiveUp; interval: 6000; repeat: false; onTriggered: { root.stopRequested = false; root.derive() } }
 
-  // 1 s ticks for the timer are computed locally; the status poll only
-  // corrects drift and catches recordings started/stopped elsewhere.
+  // Once per shell load (start, restart, the reload after `omarchy plugin update`): Dolly
+  // makes sure the folders above exist and, after an update, refreshes what Set up wrote.
+  Process {
+    id: startProc
+    command: [root.dolly, "shell-start"]
+    onExited: { startGiveUp.stop(); root.ready = true; Qt.callLater(root.reloadAll) }
+  }
+  Timer { id: startGiveUp; interval: 5000; repeat: false; onTriggered: if (!root.ready) { root.ready = true; Qt.callLater(root.reloadAll) } }
+
+  // the timer text is computed locally from the start time in state.json
   Timer {
     id: tick
     interval: 250
     repeat: true
     running: root.recording && !root.paused
     onTriggered: root.elapsed = Date.now() / 1000 - root.startedAt
-  }
-  Timer {
-    id: pollFast
-    interval: 700
-    repeat: true
-    running: true
-    property int n: 0
-    onTriggered: {
-      root.refresh()
-      // poll quickly for ~8 s after a start request (countdown), and while
-      // finalizing / rendering, then settle
-      var busy = root.phase === "countdown" || root.phase === "finalizing" || root.jobProgress >= 0
-      if (++n > 12 && !root.recording && !busy) { n = 0; stop(); pollSlow.start() }
-    }
-    onRunningChanged: if (running) n = 0
-  }
-  Timer {
-    id: pollSlow
-    interval: root.recording ? 2000 : 5000
-    repeat: true
-    onTriggered: root.refresh()
   }
 
   // ---- sync marker overlay (see header)
@@ -306,7 +473,7 @@ BarWidget {
     function syncFlash(arg: string): string { return root.syncFlash(arg) }
     function syncArm(arg: string): string { return root.syncArm(arg) }
     function syncDisarm(): string { return root.syncDisarm() }
-    function refresh(): void { root.broadcast("refresh"); pollFast.restart() }
+    function refresh(): void { root.broadcast("refresh"); root.reloadAll() }
     function toggle(): void { root.toggle() }
     function open(): void { root.open() }
     function close(): void { root.close() }
@@ -330,7 +497,7 @@ BarWidget {
     // 󰑊 record (idle) / 󰑋 recording / 󰏤 paused; 󰑓 = instant replay buffer running
     text: root.phase === "countdown" ? ("󰑊 " + Math.max(1, root.countdownLeft))
         : root.recording ? ((root.paused ? "󰏤 " : "󰑋 ") + root.timerText + (root.muted ? " 󰍭" : ""))
-        : root.phase === "finalizing" ? "󰑊 …"
+        : (root.phase === "finalizing" || root.phase === "starting") ? "󰑊 …"
         : root.jobProgress >= 0 ? ("󰑊 " + Math.round(root.jobProgress * 100) + "%")
         : (root.replay ? "󰑊 󰑓" : "󰑊")
     active: (root.recording && !root.paused) || root.phase === "countdown"

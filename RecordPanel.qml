@@ -16,8 +16,9 @@ import qs.Ui
 //
 // Everything is themed from Commons.Color / Style (live on `omarchy theme set`),
 // strings come from i18n/<lang>.json through Commons.Translations. The recent list
-// shows the cached index at once (FileView) and refreshes it in the background
-// (`dolly library --json`), so opening the panel never waits on disk or ffmpeg.
+// shows the cached index at once (FileView); one `dolly panel --json` per open then
+// fills everything else (Settings, devices, cameras, Set up state, missing packages),
+// so opening the panel never waits on disk or ffmpeg and starts one command, not six.
 Panel {
   id: root
   moduleName: "io.github.jagritvats.dolly"
@@ -116,14 +117,7 @@ Panel {
   function open() { root.controller.show(); refreshAll() }
   function close() { root.controller.hide() }
   function toggle() { root.opened ? close() : open() }
-  function refreshAll() {
-    if (!configProc.running) configProc.running = true
-    if (!recentProc.running) recentProc.running = true
-    if (!devicesProc.running) devicesProc.running = true
-    if (!camerasProc.running) camerasProc.running = true
-    if (!depsProc.running) depsProc.running = true
-    if (!integrationProc.running) integrationProc.running = true
-  }
+  function refreshAll() { if (!panelProc.running) panelProc.running = true }
 
   // ---------------------------------------------------------------- data
   FileView {
@@ -137,70 +131,37 @@ Panel {
       try { root.recent = (JSON.parse(text()).items || []).slice(0, 5) } catch (e) {}
     }
   }
-  Process {
-    id: recentProc
-    command: [root.dolly, "library", "--json", "--recent", "5"]
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: { try { root.recent = (JSON.parse(text).items || []).slice(0, 5) } catch (e) {} }
-    }
-  }
-  Process {
-    id: configProc
-    command: [root.dolly, "config", "get"]
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: { try { root.cfg = JSON.parse(text) } catch (e) {} }
-    }
-  }
-  Process {
-    id: devicesProc
-    command: [root.dolly, "audio", "devices"]
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: { try { root.audioDevices = JSON.parse(text) } catch (e) {} }
-    }
-  }
-  Process {
-    id: camerasProc
-    command: [root.dolly, "camera", "devices"]
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: { try { root.cameras = JSON.parse(text) } catch (e) { root.cameras = [] } }
-    }
-  }
-  // hotkeys + menu rows (bin/dolly-setup): a marketplace install runs no setup
+  // hotkeys + menu entry (bin/dolly-setup): a marketplace install runs no setup
   property bool integrationKnown: false
   property bool setUp: true
   property var hotkeyConflicts: []
+  // packages Dolly still needs (fresh Omarchy: the Python packages; VMs: wf-recorder)
+  property var missingPackages: []
   Process {
-    id: integrationProc
-    command: [root.dolly, "integration", "--json"]
+    id: panelProc
+    command: [root.dolly, "panel", "--json"]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
-        try {
-          const st = JSON.parse(text)
-          root.setUp = !!st.set_up
-          root.hotkeyConflicts = (st.conflicts || []).map(c => c.combo.replace(/ /g, ""))
+        var d = null
+        try { d = JSON.parse(text) } catch (e) { root.integrationKnown = false; return }
+        if (!d) return
+        if (d.config) root.cfg = d.config
+        if (d.recent) root.recent = d.recent.slice(0, 5)
+        if (d.audio) root.audioDevices = d.audio
+        root.cameras = d.cameras || []
+        if (d.integration) {
+          root.setUp = !!d.integration.set_up
+          root.hotkeyConflicts = (d.integration.conflicts || []).map(c => c.combo.replace(/ /g, ""))
           root.integrationKnown = true
-        } catch (e) { root.integrationKnown = false }
+        } else root.integrationKnown = false
+        root.missingPackages = (d.deps && d.deps.packages) || []
       }
-    }
-  }
-  // packages Dolly still needs (fresh Omarchy: python-numpy/opencv/pillow; VMs: wf-recorder)
-  property var missingPackages: []
-  Process {
-    id: depsProc
-    command: [root.dolly, "deps", "--json"]
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: { try { root.missingPackages = JSON.parse(text).packages || [] } catch (e) { root.missingPackages = [] } }
     }
   }
   Process {
     id: actionProc
-    onExited: { root.renaming = ""; if (!recentProc.running) recentProc.running = true }
+    onExited: { root.renaming = ""; root.refreshAll() }
   }
   // level meters: cheap (parec at 16 kHz, 10 Hz peaks) and only while the panel is open
   Process {
@@ -410,7 +371,8 @@ Panel {
             Button { id: setupBtn; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
                      text: root.setUp ? tr.t("panel.setupFix") : tr.t("panel.setup"); iconText: "󰌌"
                      bordered: true; foreground: root.accent; fontFamily: root.ff
-                     onClicked: { root.close(); root.run(["setup"]) } }
+                     onClicked: { if (root.setUp) root.runThenRefresh(["integration", "apply"])
+                                  else { root.close(); root.run(["setup"]) } } }
           }
 
           Item {

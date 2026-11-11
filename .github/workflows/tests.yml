@@ -21,14 +21,14 @@ jobs:
         run: pipx run ruff==0.17.4 check dolly
 
   test:
-    # Arch, like Omarchy: the same python-opencv / numpy / ffmpeg users get
+    # Arch, like Omarchy: the same numpy / pillow / ffmpeg users get. No python-opencv: Dolly must not need it
     runs-on: ubuntu-latest
     container: archlinux:latest
     timeout-minutes: 30
     steps:
       - name: packages
         run: >
-          pacman -Syu --noconfirm --needed git make python python-numpy python-opencv
+          pacman -Syu --noconfirm --needed git make python python-numpy
           python-pillow python-pytest ffmpeg ttf-dejavu tesseract tesseract-data-eng nodejs
       - uses: actions/checkout@v4
       - name: run as a normal user (permission tests mean nothing as root)

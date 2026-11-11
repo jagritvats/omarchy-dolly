@@ -1,6 +1,7 @@
 """Walkthrough helpers for the Omarchy shell harness (TEST HARNESS ONLY).
 
-Drives /home/claude/work/shell-harness through harness/dctl (so Dolly's logger
+Drives the Omarchy shell harness (a separate checkout: $DOLLY_SHELL_HARNESS, default
+~/shell-harness) through harness/dctl (so Dolly's logger
 sees the clicks/keys as a labelled "harness" event source) and sets up labelled
 test feeds: a 660 Hz beep pattern as the microphone (a null sink + remap source
 named "Test feed: mic"), a chord as system audio, and ffmpeg's testsrc2 pattern
@@ -14,7 +15,7 @@ import subprocess
 import time
 from pathlib import Path
 
-H = Path("/home/claude/work/shell-harness")
+H = Path(os.environ.get("DOLLY_SHELL_HARNESS") or Path.home() / "shell-harness")
 REPO = Path(__file__).resolve().parents[1]
 DCTL = str(REPO / "harness" / "dctl")
 

@@ -325,7 +325,7 @@ def test_camera_edit_mode_records_aligned_and_composites(env):
     fr = np.array([tuple(map(float, l.split())) for l in (pdir / "raw.mkv.frames").read_text().splitlines()])
     expected = float(np.interp(cam_wall, fr[:, 1], fr[:, 0])) / FPS
     # 0.1 s: lavfi's wall-clock pts jitter on a loaded VM (seen: 80 ms on a 4 vCPU VirtualBox VM);
-    # real cameras are checked by hand within +-0.3 s (CLAUDE.md test 16)
+    # real cameras are checked by hand within +-0.3 s (AGENTS.md test 16)
     assert abs(off - expected) <= max(1.5 / FPS, 0.1), (off, expected, cam_wall, fr[:2], json.loads((pdir / 'capture.json').read_text()).get('webcam_clock'))
     out = Path(dolly(env, "export", str(pdir), "--quality", "draft", "-q").stdout.strip().splitlines()[-1])
     fr = subprocess.run(["ffmpeg", "-v", "error", "-ss", "1.5", "-i", str(out), "-frames:v", "1", "-f", "rawvideo",

@@ -1,5 +1,5 @@
 """Fresh-install paths (found on an Omarchy 4.0.4 VirtualBox VM, Nov 10):
-- `dolly doctor` must report missing python-numpy/opencv/pillow, not crash on them
+- `dolly doctor` must report missing python-numpy/pillow, not crash on them
 - gpu-screen-recorder that cannot capture on the GPU ("unknown gpu vendor: VMware")
   makes wf-recorder a missing package
 - recording with packages missing stops before the picker/DND and says what to
@@ -55,14 +55,15 @@ def run(env, *args, site=True):
 
 
 def test_doctor_reports_missing_python_packages_instead_of_crashing(env):
-    r = run(env, "doctor", "--json", site=False)       # -S: no site-packages, so no numpy/cv2/PIL
+    r = run(env, "doctor", "--json", site=False)       # -S: no site-packages, so no numpy/PIL
     assert "Traceback" not in r.stderr, r.stderr
     rep = json.loads(r.stdout)
     assert rep["ok"] is False
     pk = rep["missing_packages"]["packages"]
-    assert {"python-numpy", "python-opencv", "python-pillow"} <= set(pk)
+    assert {"python-numpy", "python-pillow"} <= set(pk) and "python-opencv" not in pk
     names = {c["name"]: c for c in rep["checks"]}
-    assert names["python: cv2"]["ok"] is False and "dolly deps --install" in names["python: cv2"]["detail"]
+    assert names["python: PIL"]["ok"] is False and "dolly deps --install" in names["python: PIL"]["detail"]
+    assert "python: cv2" not in names
     r = run(env, "doctor", site=False)
     assert "Missing packages:" in r.stdout and "dolly deps --install" in r.stdout
 

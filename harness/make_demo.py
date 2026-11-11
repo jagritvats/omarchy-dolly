@@ -253,7 +253,6 @@ async def capture(out: Path, fps: int, scale: int, s: Script, B: dict):
 
 def burn_cursor(out: Path, fps: int, scale: int, s: Script):
     """'Before' reference: raw capture with a plain cursor, no zoom/frame."""
-    import cv2
     from PIL import Image, ImageDraw
     sz = int(22 * scale)
     img = Image.new("RGBA", (sz, sz), (0, 0, 0, 0))

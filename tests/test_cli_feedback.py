@@ -59,7 +59,9 @@ def test_a_killed_recorder_still_gives_the_right_length(env):
     time.sleep(2.5)
     os.kill(json.loads((pdir / "capture.json").read_text())["recorder_pid"], signal.SIGKILL)
     for _ in range(80):
-        if (pdir / "events.json").exists() and status(env)["phase"] == "idle":
+        # the card comes first; the zoom plan is a short background job the bar shows: wait it out
+        if (pdir / "events.json").exists() and status(env)["phase"] == "idle" \
+                and not (pdir / "analysis.pending").exists() and status(env)["jobs"] == []:
             break
         time.sleep(0.25)
     s = status(env)

@@ -1,6 +1,6 @@
 """Frame-accurate CPU compositor.
 
-Pipeline per output frame (all CPU, numpy + OpenCV, no GPU required):
+Pipeline per output frame (all CPU, NumPy + Pillow, no GPU required):
 
     ffmpeg (decode raw.mp4 -> CFR bgr24 frames) --pipe--> compose() --pipe--> ffmpeg (libx264)
 
@@ -34,16 +34,15 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
-import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
+from . import imgops
 from . import project as projmod
 from .events import Timeline
 from .zoom import CameraGeometry, Segment, ZoomConfig, build_segments, camera_path
 from . import log as _dlog
 
-cv2.setNumThreads(max(1, cv2.getNumThreads()))
 STALL_S = float(os.environ.get("DOLLY_STALL_S", "90"))  # worker watchdog, see render()
 
 
@@ -174,12 +173,12 @@ def build_background(lay: Layout, style: dict, colors: dict | None = None,
             r = int(lay.radius_v * k)
         mask = np.zeros((OH, OW), np.float32)
         off = 0.012 * OH
-        cv2.rectangle(mask, (int(x0 + r), int(y0 + off)), (int(x1 - r), int(y1 + off)), 1.0, -1)
-        cv2.rectangle(mask, (int(x0), int(y0 + r + off)), (int(x1), int(y1 - r + off)), 1.0, -1)
+        imgops.fill_rect(mask, (int(x0 + r), int(y0 + off)), (int(x1 - r), int(y1 + off)), 1.0)
+        imgops.fill_rect(mask, (int(x0), int(y0 + r + off)), (int(x1), int(y1 - r + off)), 1.0)
         for cx, cy in ((x0 + r, y0 + r), (x1 - r, y0 + r), (x0 + r, y1 - r), (x1 - r, y1 - r)):
-            cv2.circle(mask, (int(cx), int(cy + off)), r, 1.0, -1)
-        wide = cv2.GaussianBlur(mask, (0, 0), 0.03 * OW)
-        tight = cv2.GaussianBlur(mask, (0, 0), 0.006 * OW)
+            imgops.circle(mask, (int(cx), int(cy + off)), r, 1.0)
+        wide = imgops.gaussian_blur(mask, 0.03 * OW)
+        tight = imgops.gaussian_blur(mask, 0.006 * OW)
         a = np.clip(sh * (0.55 * wide + 0.35 * tight), 0, 0.85)[..., None]
         dark = np.array(hex_to_bgr(colors.get("darker_background", "#0e0e14")), np.float32) * 0.5
         img = img * (1 - a) + dark * a
@@ -228,8 +227,8 @@ def cursor_sprite(height: int = 192):
     # inner black arrow: shrink polygon toward its centroid-ish by outline width
     inner = Image.new("L", (Wd, Hd), 0)
     ImageDraw.Draw(inner).polygon(poly, fill=255)
-    k = int(1.5 * s) | 1   # erode by the outline width (cv2: ~100x faster than PIL MinFilter)
-    inner = Image.fromarray(cv2.erode(np.asarray(inner), np.ones((k, k), np.uint8)))
+    k = int(1.5 * s) | 1   # shrink by the outline width (far faster than Pillow's MinFilter at this size)
+    inner = Image.fromarray(imgops.erode(np.asarray(inner), k))
     blk = Image.new("RGBA", (Wd, Hd), (18, 18, 22, 255))
     body.paste(blk, (0, 0), inner)
     base = Image.new("RGBA", (Wd, Hd), (0, 0, 0, 0))
@@ -301,11 +300,11 @@ def blend_premult(dst: np.ndarray, patch: np.ndarray, x0: int, y0: int):
     dst[ay0:ay1, ax0:ax1] = np.clip(roi + 0.5, 0, 255).astype(np.uint8)
 
 
-def warp_patch(src: np.ndarray, M: np.ndarray, x0: int, y0: int, w: int, h: int, interp=cv2.INTER_LINEAR):
+def warp_patch(src: np.ndarray, M: np.ndarray, x0: int, y0: int, w: int, h: int, interp=imgops.LINEAR):
     M2 = M.copy()
     M2[0, 2] -= x0
     M2[1, 2] -= y0
-    return cv2.warpAffine(src, M2, (w, h), flags=interp, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+    return imgops.warp(src, M2, (w, h), interp)
 
 
 # ------------------------------------------------------------------ keys
@@ -472,7 +471,8 @@ class Compositor:
         self._last_src, self._last_key, self._last_out = None, None, None
         self._webcam_on = False
         self.reused = 0
-        self._area_cache = (None, None, None)
+        self._bg_cache = (None, None)        # (camera, the background moved with it)
+        self._band_cache = (None, None)      # (camera, the rounded-corner masks placed for it)
         self._priv_cache = (None, None, None)
         self._cam_pos = None
         self._cam_last_t = None
@@ -672,10 +672,7 @@ class Compositor:
             out = self.bg.copy()
             x0, y0, x1, y1 = self.card
             M = np.float32([[k, 0, -vx0 * k], [0, k, -vy0 * k]])
-            interp = cv2.INTER_CUBIC if k > 1.05 else cv2.INTER_LINEAR
-            if k < 0.98:
-                interp = cv2.INTER_AREA
-            vid = warp_patch(frame, M, x0, y0, x1 - x0, y1 - y0, interp)
+            vid = warp_patch(frame, M, x0, y0, x1 - x0, y1 - y0, imgops.CUBIC if k > 1.05 else imgops.LINEAR)
             # crop wider/taller than the screen (letterbox): the card shows a dimmed
             # background around a rounded screen instead of black bars
             VX0, VY0 = -vx0 * k - x0, -vy0 * k - y0
@@ -692,8 +689,8 @@ class Compositor:
                 ix1, iy1 = int(math.ceil(min(VX1, cwid))), int(math.ceil(min(VY1, chgt)))
                 if ix1 > ix0 and iy1 > iy0:
                     vm[iy0:iy1, ix0:ix1] = rounded_mask(ix1 - ix0, iy1 - iy0, self.vmask_r * k * 2)
-                vid = cv2.blendLinear(vid, under, vm, 1.0 - vm)
-            out[y0:y1, x0:x1] = cv2.blendLinear(vid, out[y0:y1, x0:x1], self.card_mask, 1.0 - self.card_mask)
+                vid = imgops.blend(vid, under, vm)
+            out[y0:y1, x0:x1] = imgops.blend(vid, out[y0:y1, x0:x1], self.card_mask)
             view, ox, oy = out[y0:y1, x0:x1], x0, y0
         else:
             out = self._landscape(frame, z, k, vx0, vy0, ts)
@@ -741,7 +738,10 @@ class Compositor:
         if abs(z - 1) < 1e-4 and abs(Mb[0, 2]) < 1e-3 and abs(Mb[1, 2]) < 1e-3:
             out = self.bg.copy()
         else:
-            out = cv2.warpAffine(self.bg, Mb, (OW, OH), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+            cam = (float(Mb[0, 0]), float(Mb[0, 2]), float(Mb[1, 2]))
+            if self._bg_cache[0] != cam:         # a still camera: the background is moved once, not per frame
+                self._bg_cache = (cam, imgops.warp(self.bg, Mb, (OW, OH), imgops.LINEAR, border=imgops.REFLECT))
+            out = self._bg_cache[1].copy()
         if self.window_target and ts is not None:
             return self._window_card(out, frame, k, vx0, vy0, ts)
         X0, Y0 = -vx0 * k, -vy0 * k
@@ -749,20 +749,10 @@ class Compositor:
         bx0, by0 = max(0, int(math.floor(X0))), max(0, int(math.floor(Y0)))
         bx1, by1 = min(OW, int(math.ceil(X1))), min(OH, int(math.ceil(Y1)))
         if bx1 > bx0 and by1 > by0:
-            src = frame
-            if k < 0.98:  # area-prefilter when shrinking to avoid text aliasing
-                sw, sh = max(1, round(lay.W * k)), max(1, round(lay.H * k))
-                if self._area_cache[0] is frame and self._area_cache[1] == (sw, sh):
-                    src = self._area_cache[2]
-                else:
-                    src = cv2.resize(frame, (sw, sh), interpolation=cv2.INTER_AREA)
-                    self._area_cache = (frame, (sw, sh), src)
-                Mv = np.float32([[lay.W * k / sw, 0, X0], [0, lay.H * k / sh, Y0]])
-                interp = cv2.INTER_LINEAR
-            else:
-                Mv = np.float32([[k, 0, X0], [0, k, Y0]])
-                interp = cv2.INTER_CUBIC if k > 1.05 else cv2.INTER_LINEAR
-            vid = warp_patch(src, Mv, bx0, by0, bx1 - bx0, by1 - by0, interp)
+            # one resample straight from the recording, shrinking or not: bilinear widens its
+            # kernel when it shrinks, so every source pixel counts and small text does not shimmer
+            Mv = np.float32([[k, 0, X0], [0, k, Y0]])
+            vid = warp_patch(frame, Mv, bx0, by0, bx1 - bx0, by1 - by0, imgops.CUBIC if k > 1.05 else imgops.LINEAR)
             Mm = np.float32([[k, 0, X0], [0, k, Y0]])
             inset = lay.radius_v * k + 2
             ix0, iy0 = max(int(math.ceil(X0 + inset)), bx0), max(int(math.ceil(Y0 + inset)), by0)
@@ -773,13 +763,16 @@ class Compositor:
                 bands = [(bx0, by0, bx1, iy0), (bx0, iy1, bx1, by1), (bx0, iy0, ix0, iy1), (ix1, iy0, bx1, iy1)]
             else:
                 bands = [(bx0, by0, bx1, by1)]
-            for (a0, b0, a1, b1) in bands:
-                if a1 <= a0 or b1 <= b0:
+            cam = (float(k), float(X0), float(Y0))
+            if self._band_cache[0] != cam:       # a still camera: the corner masks are placed once
+                self._band_cache = (cam, [warp_patch(self.mask, Mm, a0, b0, a1 - a0, b1 - b0)
+                                          if a1 > a0 and b1 > b0 else None for (a0, b0, a1, b1) in bands])
+            for (a0, b0, a1, b1), m in zip(bands, self._band_cache[1]):
+                if m is None:
                     continue
-                m = warp_patch(self.mask, Mm, a0, b0, a1 - a0, b1 - b0)
                 v = vid[b0 - by0:b1 - by0, a0 - bx0:a1 - bx0]
                 o = region[b0 - by0:b1 - by0, a0 - bx0:a1 - bx0]
-                region[b0 - by0:b1 - by0, a0 - bx0:a1 - bx0] = cv2.blendLinear(v, o, m, 1.0 - m)
+                region[b0 - by0:b1 - by0, a0 - bx0:a1 - bx0] = imgops.blend(v, o, m)
         return out
 
     def _window_card(self, out, frame, k, vx0, vy0, ts):
@@ -795,18 +788,17 @@ class Compositor:
         # shadow: blurred dark rect a little below the card
         pad = int(0.03 * OH)
         sx0, sy0, sx1, sy1 = max(0, bx0 - pad), max(0, by0 - pad // 2), min(OW, bx1 + pad), min(OH, by1 + pad * 2)
-        sh = np.zeros((sy1 - sy0, sx1 - sx0), np.float32)
-        cv2.rectangle(sh, (bx0 - sx0, by0 - sy0 + pad // 3), (bx1 - sx0, by1 - sy0 + pad // 3), 1.0, -1)
-        sh = cv2.GaussianBlur(sh, (0, 0), max(1.0, pad / 2.2)) * 0.55
+        sh = imgops.soft_rect((sy1 - sy0, sx1 - sx0), (bx0 - sx0, by0 - sy0 + pad // 3),
+                          (bx1 - sx0, by1 - sy0 + pad // 3), max(1.0, pad / 2.2)) * 0.55
         roi = out[sy0:sy1, sx0:sx1].astype(np.float32)
         out[sy0:sy1, sx0:sx1] = (roi * (1 - sh[..., None])).astype(np.uint8)
-        interp = cv2.INTER_CUBIC if k > 1.05 else (cv2.INTER_AREA if k < 0.98 else cv2.INTER_LINEAR)
+        interp = imgops.CUBIC if k > 1.05 else imgops.LINEAR
         M = np.float32([[k, 0, -vx0 * k], [0, k, -vy0 * k]])
         vid = warp_patch(frame, M, bx0, by0, bx1 - bx0, by1 - by0, interp)
         m = np.zeros((by1 - by0, bx1 - bx0), np.float32)
         m[:] = rounded_mask(bx1 - bx0, by1 - by0, self.lay.radius_v * k)
         region = out[by0:by1, bx0:bx1]
-        out[by0:by1, bx0:bx1] = cv2.blendLinear(vid, region, m, 1.0 - m)
+        out[by0:by1, bx0:bx1] = imgops.blend(vid, region, m)
         return out
 
     def _spotlight(self, view, X, Y, z):
@@ -823,7 +815,7 @@ class Compositor:
         d2 = ((xs - X) ** 2 + (ys - Y) ** 2) / (r * r)
         lit = np.exp(-d2 * d2)  # flat-topped, soft edge
         fac = (1.0 - s * (1.0 - lit)).astype(np.float32)
-        fac = cv2.resize(fac, (w, h), interpolation=cv2.INTER_LINEAR)
+        fac = imgops.resize(fac, (w, h))
         view[:] = (view.astype(np.float32) * fac[..., None]).astype(np.uint8)
 
     def _ripple(self, out, X, Y, u, unit):
@@ -836,13 +828,12 @@ class Compositor:
         x0, y0 = int(X) - pad, int(Y) - pad
         size = 2 * pad
         patch = np.zeros((size, size, 4), np.float32)
-        sh = 4  # subpixel bits
-        cen = (int(round((X - x0) * (1 << sh))), int(round((Y - y0) * (1 << sh))))
+        cen = (X - x0, Y - y0)
         th = max(1, int(round(unit * 0.09)))
         ring = np.zeros((size, size), np.float32)
-        cv2.circle(ring, cen, int(round(r * (1 << sh))), 1.0, th, cv2.LINE_AA, sh)
+        imgops.circle(ring, cen, r, 1.0, thickness=th, smooth=True)
         fill = np.zeros((size, size), np.float32)
-        cv2.circle(fill, cen, int(round(r * (1 << sh))), 1.0, -1, cv2.LINE_AA, sh)
+        imgops.circle(fill, cen, r, 1.0, smooth=True)
         al = np.clip(ring * a + fill * a * 0.22, 0, 1)
         patch[..., 0] = patch[..., 1] = patch[..., 2] = al  # white, premultiplied
         patch[..., 3] = al
@@ -876,17 +867,16 @@ class Compositor:
         acc = None
         small = None
         if s < 0.7:
-            small = cv2.resize(prem, (max(1, round(prem.shape[1] * s)), max(1, round(prem.shape[0] * s))),
-                               interpolation=cv2.INTER_AREA)
+            small = imgops.resize(prem, (max(1, round(prem.shape[1] * s)), max(1, round(prem.shape[0] * s))))
         for (px, py, wgt) in samples:
             if small is not None:
                 sx = prem.shape[1] * s / small.shape[1]
                 sy = prem.shape[0] * s / small.shape[0]
                 M = np.float32([[sx, 0, px - hx * s - x0], [0, sy, py - hy * s - y0]])
-                p = cv2.warpAffine(small, M, (x1 - x0, y1 - y0), flags=cv2.INTER_LINEAR)
+                p = imgops.warp(small, M, (x1 - x0, y1 - y0))
             else:
                 M = np.float32([[s, 0, px - hx * s - x0], [0, s, py - hy * s - y0]])
-                p = cv2.warpAffine(prem, M, (x1 - x0, y1 - y0), flags=cv2.INTER_LINEAR)
+                p = imgops.warp(prem, M, (x1 - x0, y1 - y0))
             acc = p * wgt if acc is None else acc + p * wgt
         if alpha < 1:
             acc *= alpha
@@ -1070,7 +1060,7 @@ class Compositor:
         else:
             nh = int(cw / ta)
             crop = cam[(ch - nh) // 2:(ch - nh) // 2 + nh]
-        img = cv2.resize(crop, (w, h), interpolation=cv2.INTER_AREA if w < crop.shape[1] else cv2.INTER_LINEAR)
+        img = imgops.resize(crop, (w, h))
         m = rounded_mask(w, h, r)
         if wc.get("shadow", True) and u < 1:
             sh = np.zeros((OH, OW), np.float32)
@@ -1080,11 +1070,11 @@ class Compositor:
             sh[ys, xs] = sm[:sh[ys, xs].shape[0], :sh[ys, xs].shape[1]]
             pad = int(0.03 * min(OW, OH))
             bx0, by0, bx1, by1 = max(0, x0 - 2 * pad), max(0, y0 - pad), min(OW, x0 + w + 2 * pad), min(OH, y0 + h + 3 * pad)
-            patch = cv2.GaussianBlur(sh[by0:by1, bx0:bx1], (0, 0), max(1.0, 0.012 * min(OW, OH)))
+            patch = imgops.gaussian_blur(sh[by0:by1, bx0:bx1], max(1.0, 0.012 * min(OW, OH)))
             a = np.clip(patch * 0.45 * (1 - u), 0, 0.6)[..., None]
             out[by0:by1, bx0:bx1] = (out[by0:by1, bx0:bx1] * (1 - a)).astype(np.uint8)
         roi = out[y0:y0 + h, x0:x0 + w]
-        out[y0:y0 + h, x0:x0 + w] = cv2.blendLinear(img, roi, m, 1 - m)
+        out[y0:y0 + h, x0:x0 + w] = imgops.blend(img, roi, m)
         bwid = int(wc.get("border", 3) or 0)
         if bwid > 0 and u < 1:
             col = hex_to_bgr(self.colors.get("accent", "#ffffff")) if wc.get("border_color", "accent") == "accent" \
@@ -1420,7 +1410,7 @@ def export(project_dir: str | Path, out_path: str | Path | None = None, fmt: str
                     progress(counter.value, n_all, time.time() - t_begin)
                 g = n_intro + i
                 if frames_dir and frame_every and g % frame_every == 0:
-                    cv2.imwrite(str(frames_dir / f"frame_{g:05d}.png"), img)
+                    imgops.write_image(frames_dir / f"frame_{g:05d}.png", img)
                 counter.value += 1
             reused.value += comp.reused
         finally:
@@ -1454,8 +1444,7 @@ def export(project_dir: str | Path, out_path: str | Path | None = None, fmt: str
             fade = max(1, int(0.45 * fps))
             for i in range(n_intro):
                 u = (i - (n_intro - fade)) / fade
-                img = card if u <= 0 or first is None else \
-                    cv2.addWeighted(card, 1 - (u * u * (3 - 2 * u)), first, u * u * (3 - 2 * u), 0)
+                img = card if u <= 0 or first is None else imgops.mix(card, first, u * u * (3 - 2 * u))
                 enc.stdin.write(img.tobytes())
                 counter.value += 1
             enc.stdin.close()
@@ -1470,7 +1459,7 @@ def export(project_dir: str | Path, out_path: str | Path | None = None, fmt: str
         else:
             # Workers are FRESH processes (`python -m dolly.render_chunk job.json`), never a
             # fork: forking a process with live threads (the editor's HTTP threads, a
-            # logging lock, OpenCV/TBB pools) can copy a held lock into the child, which
+            # logging lock, a library's thread pool) can copy a held lock into the child, which
             # then waits on it forever (seen in the Omarchy shell harness: futex_do_wait,
             # "rendering 0/1789"). Each worker re-plans the same export deterministically
             # and renders its chunk; progress comes back as lines on stdout.
@@ -1526,7 +1515,7 @@ def export(project_dir: str | Path, out_path: str | Path | None = None, fmt: str
             for i in range(n_outro):
                 u = min(1.0, (i + 1) / fade)
                 e = u * u * (3 - 2 * u)
-                img = card if last is None else cv2.addWeighted(last, 1 - e, card, e, 0)
+                img = card if last is None else imgops.mix(last, card, e)
                 enc.stdin.write(img.tobytes())
                 counter.value += 1
             enc.stdin.close()
@@ -1676,7 +1665,6 @@ def _spawn_workers(job_spec: dict, chunks, work: Path):
 def _run_chunk(chunk, comp, tm, fps, proj, lay, ff, quality, gop, n_intro, frames_dir, frame_every,
                use_cam, webcam_path, cam_off, cam_scale, cam_w, cam_h, cam_vf):
     """Worker side: render frames [a, b) of the main part into chunk["out"]."""
-    cv2.setNumThreads(1)
     a, b, out_file = int(chunk["a"]), int(chunk["b"]), Path(chunk["out"])
     warm = 8
     ts0 = tm.to_source(max(0, a - warm) / fps)
@@ -1699,7 +1687,7 @@ def _run_chunk(chunk, comp, tm, fps, proj, lay, ff, quality, gop, n_intro, frame
             enc.stdin.write(img.tobytes())
             g = n_intro + i
             if frames_dir and frame_every and g % frame_every == 0:
-                cv2.imwrite(str(Path(frames_dir) / f"frame_{g:05d}.png"), img)
+                imgops.write_image(Path(frames_dir) / f"frame_{g:05d}.png", img)
             n += 1
             if n % 5 == 0:
                 print(f"frames {n}", flush=True)
@@ -1717,9 +1705,6 @@ def _run_chunk(chunk, comp, tm, fps, proj, lay, ff, quality, gop, n_intro, frame
 
 
 def _chunk_entry(fn, a, b, f):
-    # Workers are the parallelism: keep OpenCV single-threaded in them so a
-    # thread pool inherited across fork (TBB in Arch's opencv) is never used.
-    cv2.setNumThreads(1)
     try:
         fn(a, b, f)
     except BaseException as e:  # report and fail the worker
@@ -1745,7 +1730,7 @@ def render_still(project_dir, t: float, out_png, style_over=None, aspect=None) -
                           "-f", "rawvideo", "-pix_fmt", "bgr24", "-"], capture_output=True, timeout=60).stdout
     frame = np.frombuffer(raw, np.uint8).reshape(tl.h, tl.w, 3)
     img = comp.compose_at(t, frame)
-    cv2.imwrite(str(out_png), img)
+    imgops.write_image(out_png, img)
     return Path(out_png)
 
 

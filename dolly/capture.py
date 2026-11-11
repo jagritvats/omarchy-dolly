@@ -62,6 +62,29 @@ def notify(title, body="", *actions, urgency="normal", timeout=4000, image=None)
         print(f"{title}: {body}", file=sys.stderr)
 
 
+GONE_PATIENCE = 75                    # 0.02 s steps: how long a recorder without a monitor gets
+NUDGE_AT = (3, 25, 75, 150, 300)      # 0.02 s steps after SIGINT: 0.06 s, 0.5 s, 1.5 s, 3 s, 6 s
+
+
+def _nudge_screen(region=None):
+    """wf-recorder notices SIGINT only when its next frame arrives, and on a still screen
+    none does: it sat out the 10 s limit and was killed (seen once the bar button stopped
+    repainting every few seconds). Mapping and unmapping Dolly's transparent marker surface
+    repaints one corner of the screen, which is enough. It comes after the stop marker, so
+    it is outside the exported range, and it draws nothing.
+    `region` is the recorded area: the corner has to be on the monitor being recorded
+    (the first monitor's corner gives a recorder of the second one no frame)."""
+    if not _have("omarchy-shell"):
+        return
+    geo = json.dumps({"x": region[0], "y": region[1], "size": 40}) if region else "{}"
+    for call in (("syncArm", geo), ("syncDisarm",)):
+        try:
+            subprocess.run(["omarchy-shell", "io.github.jagritvats.dolly", *call], timeout=1.5,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except (OSError, subprocess.TimeoutExpired):
+            return
+
+
 def _dismiss_own_toasts() -> bool:
     """Dolly's own card from the last take stays for 10 s; a take started within that time
     must not open with it. Other apps' notifications are left alone (Do Not Disturb and
@@ -522,6 +545,7 @@ def start(a):
         notify(t("notify.alreadyRecording"), t("notify.alreadyRecordingBody"), urgency="normal", timeout=5000)
         raise SystemExit("dolly: already recording; use `dolly stop` (or the record hotkey / bar timer)")
     _recover_stale()
+    health.heal(key_repeat=False)            # whatever an earlier, killed recording left changed on the desktop
     # a fresh Omarchy lacks the python packages, and a VM can't use gpu-screen-recorder:
     # say what is missing, with an Install button, before any disk note, picker, countdown or DND
     if not os.environ.get("DOLLY_BACKEND") and not os.environ.get("DOLLY_SKIP_DEPS"):
@@ -582,8 +606,12 @@ def start(a):
         _notify_cannot_record(root, e.strerror or str(e))
         raise SystemExit(f"dolly: cannot record into {root}: {e.strerror or e}") from None
     raw = pdir / ("raw.mp4" if os.environ.get("DOLLY_CONTAINER") == "mp4" else "raw.mkv")
+    # from here until the state file exists the desktop is being changed for this take: say so,
+    # so nothing (the watcher of the previous take, `dolly recover`) mistakes it for leftovers
+    health.set_phase("starting")
     # quiet notifications while recording (Settings > Privacy; restored on stop)
     dnd_prev = health.dnd_begin() if getattr(a, "dnd", True) else None
+    awake = health.awake_begin()             # no screensaver (150 s) or lock (300 s) inside a take
     from . import solid
     solid.restore()                         # leftovers from a crash: never keep the user's windows changed
     solid_on = solid.wanted(getattr(a, "solid", None))
@@ -598,6 +626,7 @@ def start(a):
 
     def undo_setup():
         health.dnd_end(dnd_prev)
+        health.awake_end(awake)
         solid.restore()
         stop_bubble(bubble)
         health.set_phase("idle")
@@ -705,8 +734,9 @@ def start(a):
           "started": meta["started"], "webcam_pid": cam_proc.pid if cam_proc else None,
           "track_pids": [tr["pid"] for tr in live_tracks], "bubble_pid": bubble.pid if bubble else None,
           "region": region, "paused_total": 0.0, "paused_at": None, "dnd_prev": dnd_prev, "muted": False,
-          "preroll": bool(n_count)}
+          "preroll": bool(n_count), "awake": awake}
     fsutil.atomic_write_json(state_path(), st, durable=False)
+    health.watch_recorder(proc.pid)          # if the recorder (or Dolly) is killed, the desktop is still put back
     if n_count:
         def close_preview():
             nonlocal bubble
@@ -813,11 +843,12 @@ def _recover_stale():
         return
     state_path().unlink(missing_ok=True)
     from .guards import set_recording
-    from .health import dnd_end
+    from .health import awake_end, dnd_end
     set_recording(None)
     from .solid import restore as solid_restore
     solid_restore()
     dnd_end(st.get("dnd_prev"))
+    awake_end(st.get("awake"))
     pdir = Path(st.get("dir", ""))
     if pdir.is_dir():
         try:
@@ -857,11 +888,12 @@ def _clock(seconds: float) -> str:
     return f"{m}:{s:02d}"
 
 
-def _recording_details(pdir: Path) -> str:
-    """"1:23 · 41 MB" like Omarchy's "Screen recording saved" toast."""
+def _recording_details(pdir: Path, dur: float | None = None) -> str:
+    """"1:23 · 41 MB" like Omarchy's "Screen recording saved" toast. `dur`: the length when
+    the caller already knows it (saves reading the file again)."""
     try:
         raw = projmod.Project(pdir).raw
-        dur = video_info(raw).get("duration", 0)
+        dur = dur or video_info(raw).get("duration", 0)
         if not dur:                 # a file a killed recorder left without its length
             try:
                 dur = float(json.loads((pdir / "events.json").read_text())["video"]["duration"])
@@ -875,20 +907,28 @@ def _recording_details(pdir: Path) -> str:
         return pdir.name
 
 
-def _poster(pdir: Path) -> Path | None:
+def _poster(pdir: Path, duration: float | None = None) -> Path | None:
     try:
         from .library import poster
-        return poster(pdir)
+        return poster(pdir, duration=duration)
     except Exception:
         _dlog.swallowed()
         return None
 
 
-def stop(_a=None):
+def stop(_a=None, defer: bool | None = None):
     """Stop order matters: the logger first (it flashes the end sync marker while the
-    recorder still runs), then the recorder, then finalize."""
-    from . import health
+    recorder still runs), then the recorder, then finalize.
+
+    `defer` (the default, unless DOLLY_ANALYSIS=now): the "Demo recorded" card and the
+    editor come as soon as the file is safe; the zoom plan is worked out afterwards by a
+    background job (dolly.analysis). Callers that report or use the plan right away (the
+    JSON commands) pass defer=False."""
+    from . import analysis, health
     reason = getattr(_a, "reason", None) if _a is not None else None
+    if defer is None:
+        defer = os.environ.get("DOLLY_ANALYSIS", "later") != "now"
+    t_stop = time.monotonic()
     st = read_state() or (load_state_any() if reason else None)
     if not st:
         if reason:
@@ -910,6 +950,14 @@ def stop(_a=None):
             if not _alive(st["logger_pid"]):
                 break
             time.sleep(0.05)
+    import threading
+    early: dict = {}
+    scan = None
+    if not reason and elapsed(st) > 2 * 4.0 + 2.0:
+        # the first seconds of a take this long are safely on disk: scan them for the start
+        # marker now, while the recorder winds down (the wf-recorder tail alone is 1 s)
+        scan = threading.Thread(target=_scan_head_early, args=(pdir, early), daemon=True)
+        scan.start()
     if _alive(st["recorder_pid"]):
         if st.get("backend") == "wf" and not reason:
             # wf-recorder loses its last frames on SIGINT: without this tail the end sync
@@ -917,19 +965,23 @@ def stop(_a=None):
             # range ends at the marker, so the tail itself is not shown.
             time.sleep(float(os.environ.get("DOLLY_WF_STOP_TAIL", "1.0")))
         os.kill(st["recorder_pid"], signal.SIGINT)
-        for _ in range(100):
+        # a recorder whose monitor is gone will never see the frame it is waiting for (and
+        # there is no corner left to repaint): 1.5 s for it to finish by itself, not 10
+        for i in range(GONE_PATIENCE if reason == "monitor-removed" else 500):
             if not _alive(st["recorder_pid"]):
                 break
-            time.sleep(0.1)
+            if st.get("backend") == "wf" and i in NUDGE_AT:
+                _nudge_screen(st.get("region"))
+            time.sleep(0.02)
         else:
             os.kill(st["recorder_pid"], signal.SIGKILL)
     side = [p for p in [st.get("webcam_pid"), *(st.get("track_pids") or [])] if p and _alive(p)]
     for p in side:
         os.kill(p, signal.SIGINT)                 # ffmpeg finalises camera / audio files on SIGINT
-    for _ in range(50):
+    for _ in range(250):
         if not any(_alive(p) for p in side):
             break
-        time.sleep(0.1)
+        time.sleep(0.02)
     for p in side:
         if _alive(p):
             os.kill(p, signal.SIGKILL)
@@ -938,11 +990,13 @@ def stop(_a=None):
     if _alive(st.get("logger_pid", 0)):
         os.kill(st["logger_pid"], signal.SIGKILL)
     state_path().unlink(missing_ok=True)
+    t_recorder = time.monotonic()
     from .guards import set_recording
     set_recording(None)
     from .solid import restore as solid_restore
     solid_restore()
     health.dnd_end(st.get("dnd_prev"))
+    health.awake_end(st.get("awake"))
     meta = json.loads((pdir / "capture.json").read_text())
     meta["stopped"] = stopped_at
     if reason:
@@ -959,24 +1013,27 @@ def stop(_a=None):
             _repair_raw(pdir)
         except Exception as ex:
             (pdir / "recorder.log").open("a").write(f"video repair failed: {ex}\n")
+    posters: list = []
+
+    def start_poster(info):                  # the card's picture, made while the markers are looked for
+        th = threading.Thread(target=_poster, args=(pdir, info.get("duration")), daemon=True)
+        posters.append(th)
+        th.start()
+    if scan is not None:
+        scan.join(timeout=20)
     try:
-        finalize(pdir)
+        doc = finalize(pdir, plan=not defer, on_video=start_poster, head=early.get("head"))
     except Exception as e:  # keep the raw files; tell the user
         health.set_phase("idle")
         notify(t("notify.analysisFailed"), t("notify.analysisFailedBody", str(e)[:160], pdir),
                urgency="critical", timeout=10000)
         raise
     health.set_phase("idle")
-    try:                                     # Library: poster + index for the panel's Recent list
-        from . import library
-        library.poster(pdir)
-        library.auto_cleanup()
-        library.index(refresh=True)
-    except Exception as ex:
-        (pdir / "recorder.log").open("a").write(f"library index: {ex}\n")
-    shell_refresh()
+    for th in posters:
+        th.join(timeout=10)
+    t_safe = time.monotonic()
     dolly = str(Path(__file__).resolve().parents[1] / "bin" / "dolly")
-    info = _recording_details(pdir)
+    info = _recording_details(pdir, (doc.get("video") or {}).get("duration"))
     title = t("notify.recorded") if not reason or reason == "stopped-outside" else t("notify.stoppedReason", reason_text(reason))
     body = info if not reason or reason == "stopped-outside" else t("notify.savedUpToThere", info)
     if reason == "stopped-outside":
@@ -989,6 +1046,23 @@ def stop(_a=None):
         # the editor opens without taking focus: you keep typing where you were
         subprocess.Popen([dolly, "edit", str(pdir)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                          start_new_session=True, env=dict(os.environ, DOLLY_KEEP_FOCUS="1"))
+    t_card = time.monotonic()
+    if analysis.pending(pdir) is not None:
+        analysis.spawn(pdir)                 # the zoom plan: a background job the bar shows
+    try:                                     # Library: index for the panel's Recent list
+        from . import library
+        library.poster(pdir)
+        library.auto_cleanup()
+        library.index(refresh=True)
+    except Exception as ex:
+        (pdir / "recorder.log").open("a").write(f"library index: {ex}\n")
+    shell_refresh()
+    try:
+        (pdir / "recorder.log").open("a").write(
+            "stop: recorder and logger down after %.2f s, file safe after %.2f s, card after %.2f s%s\n"
+            % (t_recorder - t_stop, t_safe - t_stop, t_card - t_stop, " (zoom plan follows)" if defer else ""))
+    except OSError:
+        pass
     print(pdir)
 
 
@@ -1013,6 +1087,7 @@ def cancel(_a=None):
     from .solid import restore as solid_restore
     solid_restore()
     health.dnd_end(st.get("dnd_prev"))
+    health.awake_end(st.get("awake"))
     shutil.rmtree(st["dir"], ignore_errors=True)
     health.set_phase("idle")
     print("recording discarded")
@@ -1288,6 +1363,9 @@ def recover_all(_a=None) -> list[Path]:
     if not read_state():
         from .solid import restore as solid_restore
         solid_restore()                      # windows forced solid by a recording that crashed
+        from . import health
+        for what in health.heal():           # Do Not Disturb, Stay Awake, key repeat, the input bridge
+            print(what)
     out = []
     root = projmod.videos_root()
     if not root.is_dir():
@@ -1304,6 +1382,16 @@ def recover_all(_a=None) -> list[Path]:
                 print(f"recovered {d}")
             except Exception as e:
                 print(f"could not recover {d}: {e}", file=sys.stderr)
+    from . import analysis
+    for d in analysis.unfinished(root):      # the card was sent, then a crash or logout killed the plan
+        if d == live:
+            continue
+        try:
+            analysis.analyse(d)
+            out.append(d)
+            print(f"finished the analysis of {d}")
+        except Exception as e:
+            print(f"could not finish the analysis of {d}: {e}", file=sys.stderr)
     return out
 
 
@@ -1391,18 +1479,49 @@ def _from_go(segs: list, go_t: float | None) -> list:
     return out
 
 
-def finalize(pdir: Path, aoi: bool = True):
-    """events.raw.jsonl + raw video -> events.json (video px, seconds) + auto segments.
+def _scan_head_early(pdir: Path, out: dict):
+    """While the recorder is still shutting down: look for the start marker in the first
+    seconds of the file (they have been on disk since the take began). Stop is that much
+    shorter. Anything that goes wrong here only means finalize does it itself."""
+    try:
+        from . import sync as syncmod
+        from .render import ffmpeg_bin
+        meta = json.loads((pdir / "capture.json").read_text())
+        raw = projmod.Project(pdir).raw
+        info = video_info(raw)               # the size is known while the file grows; the length is not
+        rw = meta["region"][2]
+        ew = ((meta.get("target_info") or {}).get("exact") or (rw, 0))[0]
+        if info["w"] and ew:
+            out["head"] = syncmod.scan_head(raw, info["w"] / ew, ffmpeg_bin())
+    except Exception:
+        _dlog.swallowed()
+
+
+def finalize(pdir: Path, aoi: bool = True, plan: bool = True, on_video=None, head: dict | None = None):
+    """events.raw.jsonl + raw video -> events.json (video px, seconds) + project.json,
+    then the zoom plan.
+
+    The first half is quick and does not grow with the length of the take: the sync
+    markers are looked for in the head and the tail of the file only. The plan (screen
+    activity analysis, auto segments, idle speed-ups) is dolly.analysis: done here when
+    `plan` is true, otherwise left pending for the caller to start after the "Demo
+    recorded" card. `on_video(info)` is called as soon as the video's size and length
+    are known; `head` is an earlier sync.scan_head() of this file.
 
     Time base: sync markers (see dolly/sync.py) when present, else the logger
     start (expect 0-150 ms skew; style.sync_offset fixes it by hand)."""
+    from . import analysis
     from . import sync as syncmod
     from .events import Timeline
-    from .zoom import ZoomConfig, build_segments
 
     meta = json.loads((pdir / "capture.json").read_text())
     raw = projmod.Project(pdir).raw
     info = video_info(raw)
+    if on_video:
+        try:
+            on_video(info)
+        except Exception:
+            _dlog.swallowed()
     rx, ry, rw, rh = meta["region"]
     # logical -> video px from the real video size over the exact logical size of
     # the target (fractional scales, gsr -s caps, even-dimension rounding)
@@ -1431,7 +1550,15 @@ def finalize(pdir: Path, aoi: bool = True):
     if log_marks:
         try:
             from .render import ffmpeg_bin
-            runs = syncmod.detect_markers(raw, sx, info["fps"] or 60, ffmpeg_bin())
+            if clock_a is None:
+                # no clock to say where the start marker should be: read the whole file, as before
+                runs = syncmod.detect_markers(raw, sx, info["fps"] or 60, ffmpeg_bin())
+            else:
+                runs = syncmod.detect_markers_bounded(
+                    raw, sx, info["fps"] or 60, ffmpeg_bin(), want_stop=len(log_marks) >= 2,
+                    head_until=clock_a + log_marks[0], head=head,
+                    stop_at=clock_a + log_marks[-1], duration=info["duration"],
+                    log=lambda m: (pdir / "recorder.log").open("a").write(m + "\n"))
             fit = syncmod.fit(log_marks, runs, info["fps"] or 60, clock_a)
         except Exception as ex:  # never lose a recording over sync
             fit = syncmod.SyncFit(method=f"failed: {ex}"[:80])
@@ -1538,18 +1665,11 @@ def finalize(pdir: Path, aoi: bool = True):
         except Exception as ex:  # never lose a recording over settings
             (pdir / "recorder.log").open("a").write(f"settings not applied: {ex}\n")
     tl = Timeline.from_dict(doc)
-    cfg = ZoomConfig.from_dict(data.get("zoom_config"))
     if click_source == "none":
-        cfg.use_dwell = True
         data["zoom_config"] = {**data.get("zoom_config", {}), "use_dwell": True}
-    track = None
-    if aoi and cfg.use_aoi:
-        try:
-            from . import aoi as aoimod
-            track = aoimod.build_aoi(tl, aoimod.cached_activity(pdir, tl))
-        except Exception as ex:
-            (pdir / "recorder.log").open("a").write(f"aoi analysis failed: {ex}\n")
-    data["segments"] = [s.to_dict() for s in _from_go(build_segments(tl, cfg, track), go_t)]
+    # no plan yet: null means "plan it" to the renderer and the editor; dolly.analysis fills it
+    # in (below when `plan`, otherwise after the card) and until then the marker file says so
+    data["segments"] = None
     trim = list(syncmod.marker_trim(runs, info["fps"] or 60, duration) or (0.0, duration))
     if go_t is not None and go_t < duration:
         trim[0] = round(max(trim[0], go_t), 4)       # the countdown is in the file, not in the clip
@@ -1572,12 +1692,6 @@ def finalize(pdir: Path, aoi: bool = True):
         data["trim"] = trim
     if doc["capture"]["cursor_baked"]:
         data["style"]["cursor"]["enabled"] = False
-    if new_project and data["style"].get("speed", {}).get("enabled") and data.get("speed") is None:
-        try:                                    # Settings > Camera > Speed up idle time
-            from .timemap import SpeedConfig, detect_speedups
-            data["speed"] = detect_speedups(tl, aoimod_activity(pdir, tl), SpeedConfig.from_dict(data.get("speed_config")))
-        except Exception as ex:
-            (pdir / "recorder.log").open("a").write(f"idle speed-up failed: {ex}\n")
     if new_project and data["style"].get("privacy", {}).get("auto", True):
         # Settings > Privacy > automatic blur: secret-bearing windows and notification toasts
         # become ordinary boxes in the editor's privacy lane (computed once; removing one is final)
@@ -1589,9 +1703,12 @@ def finalize(pdir: Path, aoi: bool = True):
         except Exception as ex:
             (pdir / "recorder.log").open("a").write(f"automatic privacy blur failed: {ex}\n")
     proj.save(data)
+    analysis.set_pending(pdir, new_project, aoi)
     try:
         from .guards import set_last
         set_last(pdir)
     except OSError:
         pass
+    if plan:
+        analysis.analyse(pdir, sync=True)
     return doc

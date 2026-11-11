@@ -22,7 +22,6 @@ import sys
 import time
 from pathlib import Path
 
-import cv2
 import numpy as np
 
 HERE = Path(__file__).resolve().parent
@@ -31,7 +30,9 @@ sys.path.insert(0, str(HERE.parent))
 
 import metrics as M  # noqa: E402
 import scenarios as SC  # noqa: E402
+from dolly import imgops  # noqa: E402
 from dolly import project as projmod  # noqa: E402
+from scene import blit_text  # noqa: E402
 from dolly.render import export, ffmpeg_bin  # noqa: E402
 
 ASPECTS = ("16:9", "9:16", "1:1")
@@ -106,15 +107,15 @@ def still(comp, raw: Path, t: float, w: int, h: int):
 
 def label(img, text, sub=""):
     img = img.copy()
-    cv2.rectangle(img, (0, 0), (img.shape[1], 34 if not sub else 58), (20, 16, 16), -1)
-    cv2.putText(img, text, (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.62, (245, 245, 250), 1, cv2.LINE_AA)
+    imgops.fill_rect(img, (0, 0), (img.shape[1], 34 if not sub else 58), (20, 16, 16))
+    blit_text(img, 10, 8, text, 15, (245, 245, 250))
     if sub:
-        cv2.putText(img, sub, (10, 48), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 190, 210), 1, cv2.LINE_AA)
+        blit_text(img, 10, 35, sub, 12, (180, 190, 210))
     return img
 
 
 def fit_h(img, h):
-    return cv2.resize(img, (int(img.shape[1] * h / img.shape[0]), h), interpolation=cv2.INTER_AREA)
+    return imgops.resize(img, (int(img.shape[1] * h / img.shape[0]), h))
 
 
 def contact_sheet(projects: list[Path], out_png: Path, results: dict):
@@ -138,14 +139,13 @@ def contact_sheet(projects: list[Path], out_png: Path, results: dict):
         head = np.full((H, 250, 3), (28, 22, 22), np.uint8)
         y = 40
         for line in [pdir.name] + _desc(pdir.name):
-            cv2.putText(head, line, (12, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6 if y == 40 else 0.45,
-                        (245, 245, 250) if y == 40 else (190, 196, 214), 1, cv2.LINE_AA)
+            blit_text(head, 12, y - 15, line, 15 if y == 40 else 11, (245, 245, 250) if y == 40 else (190, 196, 214))
             y += 30 if y == 40 else 22
         row = np.concatenate([head] + [np.pad(x, ((0, 0), (0, 6), (0, 0)), constant_values=12) for x in tiles], 1)
         rows.append(row)
     wmax = max(r.shape[1] for r in rows)
     rows = [np.pad(r, ((0, 8), (0, wmax - r.shape[1]), (0, 0)), constant_values=12) for r in rows]
-    cv2.imwrite(str(out_png), np.concatenate(rows, 0))
+    imgops.write_image(out_png, np.concatenate(rows, 0))
 
 
 def _desc(name):

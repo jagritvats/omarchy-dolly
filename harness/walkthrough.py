@@ -25,7 +25,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import wt  # noqa: E402
 
-OUT = Path(sys.argv[1] if len(sys.argv) > 1 else "/home/claude/work/dolly-demo/walkthrough")
+OUT = Path(sys.argv[1] if len(sys.argv) > 1 else Path.home() / "dolly-demo" / "walkthrough")
 SHOTS = OUT / "screenshots"
 OUTER = OUT / "outer-project" / time.strftime("%Y-%m-%d_%H-%M-%S")
 CHAPTERS: list[tuple[float, str]] = []

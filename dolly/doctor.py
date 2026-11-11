@@ -89,7 +89,7 @@ def check(as_json=False) -> dict:
 
     # --- python
     add("Python >= 3.10", sys.version_info >= (3, 10), platform.python_version())
-    for mod, pkg in (("numpy", "python-numpy"), ("cv2", "python-opencv"), ("PIL", "python-pillow")):
+    for mod, pkg in (("numpy", "python-numpy"), ("PIL", "python-pillow")):
         try:
             m = importlib.import_module(mod)
             add(f"python: {mod}", True, getattr(m, "__version__", ""))
@@ -210,6 +210,12 @@ def check(as_json=False) -> dict:
     except Exception:
         pass
     add("no interrupted recordings", st is None, st or "", "warn")
+    try:                                     # Do Not Disturb, Stay Awake, solid windows, key repeat
+        from . import health as _health
+        left = _health.leftovers()
+    except Exception:
+        left = []
+    add("desktop left as found", not left, ("; ".join(left) + ": run `dolly recover`") if left else "", "warn")
     gpu = detect_gpu()
     rep["gpu"] = gpu
     # --- choose capture path
@@ -249,8 +255,8 @@ def check(as_json=False) -> dict:
         inp = "none: no click source - auto-zoom uses cursor dwell detection (add yourself to the 'input' group or fix hyprctl eval)"
     rep["paths"]["clicks_keys"] = inp
     rep["paths"]["cursor"] = "Hyprland IPC socket j/cursorpos polled at 125 Hz" if hypr else "unavailable outside Hyprland"
-    from .workers import default_workers      # no numpy/OpenCV needed: doctor must work without them
-    rep["paths"]["render"] = (f"CPU (numpy + OpenCV) - no GPU needed; libx264 -preset veryfast; "
+    from .workers import default_workers      # no NumPy or Pillow needed: doctor must work without them
+    rep["paths"]["render"] = (f"CPU (NumPy + Pillow) - no GPU needed; libx264 -preset veryfast; "
                               f"{default_workers(10 ** 6, 60)} parallel workers (DOLLY_WORKERS); unchanged frames reused; "
                               "`dolly export --quality draft` for a fast half-size preview")
     rep["paths"]["sync"] = "on-screen marker at start/stop (bar widget overlay) -> offset + drift fit; fallback: logger start"

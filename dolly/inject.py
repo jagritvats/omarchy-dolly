@@ -247,11 +247,32 @@ class Desktop:
         return w.get("id")
 
     def empty_workspace(self) -> int | None:
-        used = {w.get("id") for w in (hypr_json("workspaces") or []) if w.get("windows")}
-        return next((i for i in range(1, 11) if i not in used), None)
+        """An empty workspace on the monitor in use: one that does not exist yet (Hyprland
+        opens it on the focused monitor) or an empty one that is already there. Never one
+        that lives on, or is bound to, another monitor: going there would move the take to
+        a monitor you are not looking at."""
+        mons = hypr_json("monitors") or []
+        here = next((m.get("name") for m in mons if m.get("focused")), None)
+        taken = set()
+        for w in hypr_json("workspaces") or []:
+            if w.get("windows") or (here and w.get("monitor") not in (None, "", here)):
+                taken.add(w.get("id"))
+        for r in hypr_json("workspacerules") or []:
+            mon = r.get("monitor")
+            if here and mon and mon != here and str(r.get("workspaceString", "")).isdigit():
+                taken.add(int(r["workspaceString"]))
+        return next((i for i in range(1, 11) if i not in taken), None)
 
     def go_workspace(self, wid: int) -> bool:
         return _dispatch(f'hl.dsp.focus({{ workspace = "{int(wid)}" }})')
+
+    def monitor(self) -> str | None:
+        """The focused monitor's name."""
+        mons = hypr_json("monitors") or []
+        return next((m.get("name") for m in mons if m.get("focused")), None)
+
+    def go_monitor(self, name: str) -> bool:
+        return _dispatch(f"hl.dsp.focus({{ monitor = {json.dumps(str(name))} }})")
 
     def focused(self) -> str | None:
         return (hypr_json("activewindow") or {}).get("address")

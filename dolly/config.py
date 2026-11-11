@@ -92,8 +92,13 @@ SCHEMA: list[dict] = [
     {"key": "storage.keep_raw", "type": "bool", "default": True},
     {"key": "storage.cleanup_days", "type": "int", "default": 0, "min": 0, "max": 365},
 ]
+# ---- Shortcuts: the hotkeys Set up writes (dolly/integration.py). "" = switched off.
+from .integration import SHORTCUTS as _SHORTCUTS  # noqa: E402
+
+SCHEMA += [{"key": f"shortcuts.{_s['id']}", "type": "shortcut", "default": _s["default"], "label": _s["label"]}
+           for _s in _SHORTCUTS]
 BY_KEY = {s["key"]: s for s in SCHEMA}
-GROUPS = ["capture", "audio", "camera", "look", "zoom", "privacy", "export", "sharing", "storage"]
+GROUPS = ["capture", "shortcuts", "audio", "camera", "look", "zoom", "privacy", "export", "sharing", "storage"]
 
 SIZE_FRAC = {"S": 0.16, "M": 0.22, "L": 0.30}
 
@@ -150,6 +155,12 @@ def coerce(key: str, value):
             if not (len(v) == 7 and v[0] == "#" and all(c in "0123456789abcdefABCDEF" for c in v[1:])):
                 raise ValueError
             return v.lower()
+        if t == "shortcut":
+            from . import integration
+            try:
+                return integration.normalize_combo(value)
+            except integration.ShortcutError as e:
+                raise ConfigError(f"invalid value for {key}: {e}") from None
         if t == "image":
             v = str(value).strip()
             if not v:
@@ -265,9 +276,21 @@ def set_many(updates: dict, sync_bar: bool = True) -> dict:
         if cfg[g][k] != new:
             changed[key] = new
         cfg[g][k] = new
+    keys_changed = any(k.startswith("shortcuts.") for k in changed)
+    if keys_changed:
+        from . import integration
+        dup = integration.duplicates(cfg["shortcuts"])
+        if dup:
+            combo, first, second = dup[0]
+            raise ConfigError(f"{combo} is used twice ({first} and {second}); give each shortcut its own keys")
     out = save(cfg)
     if sync_bar and changed:
         push_bar({bk: changed[ck] for bk, ck in BAR_KEYS.items() if ck in changed})
+    if keys_changed:
+        try:                       # the hotkeys in ~/.config/hypr/bindings.lua follow, if Set up wrote them
+            integration.apply_binds_if_set_up()
+        except Exception:
+            pass
     return out
 
 

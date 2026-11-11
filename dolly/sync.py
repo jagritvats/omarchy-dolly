@@ -20,6 +20,7 @@ marker frame minus half a frame, so the residual error is <= 0.5 frame.
 """
 from __future__ import annotations
 
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -93,6 +94,126 @@ def detect_markers(raw: Path, scale: float, fps: float, ffmpeg: str = "ffmpeg", 
         p0 = pts[0]
         return [(pts[a] - p0, pts[b] - p0) for a, b in runs]
     return [(a / fps, b / fps) for a, b in runs]
+
+
+# ---- bounded scan: the start marker is flashed when the logger starts and the stop marker
+# just before the recorder is told to stop, so only the head and the tail of the file can
+# hold them. Reading the whole file made Stop take 0.115 s per second recorded.
+HEAD_WINDOW = 4.0            # seconds from the first frame (grown to cover the expected start marker)
+HEAD_WINDOW_MAX = 12.0
+TAIL_WINDOW = 4.0            # last seconds of the file (the wf-recorder stop tail is 1 s)
+TAIL_WINDOW_MAX = 20.0       # ... grown when the clock says the stop marker is further from the end
+_PTS = re.compile(r"pts_time:\s*(-?[0-9.]+)")
+
+
+def _probe_window(raw: Path, size: int, ffmpeg: str, head: float | None = None, tail: float | None = None,
+                  timeout: float = 120.0):
+    """Decode one window of the marker corner: (frames N x PROBE x PROBE x 3, [pts]) with the
+    presentation time of every decoded frame in the file's own timeline (showinfo), so frame
+    i and time i always belong together. `head`: the first seconds; `tail`: the last seconds."""
+    cmd = [ffmpeg, "-hide_banner", "-nostats", "-v", "info", "-copyts"]
+    if tail is not None:
+        cmd += ["-sseof", f"-{tail:.3f}"]
+    if head is not None:
+        cmd += ["-t", f"{head:.3f}"]        # an input option: nothing past the window is decoded
+    cmd += ["-i", str(raw), "-map", "0:v:0", "-fps_mode", "passthrough",
+            "-vf", f"crop={size}:{size}:0:0,scale={PROBE}:{PROBE}:flags=area,showinfo",
+            "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]
+    r = subprocess.run(cmd, capture_output=True, timeout=timeout)
+    n = len(r.stdout) // (PROBE * PROBE * 3)
+    frames = np.frombuffer(r.stdout[: n * PROBE * PROBE * 3], np.uint8).reshape(n, PROBE, PROBE, 3)
+    pts = [float(m.group(1)) for line in r.stderr.decode("utf-8", "replace").splitlines()
+           if "showinfo" in line and (m := _PTS.search(line))]
+    # showinfo can name one more frame than was written (the one that ended the window)
+    return frames, (pts[:n] if n and len(pts) >= n else [])
+
+
+def _runs_of(frames) -> list[tuple[int, int]]:
+    runs, cur = [], None
+    for i, f in enumerate(frames):
+        if is_marker(f):
+            cur = [i, i] if cur is None else [cur[0], i]
+        elif cur is not None:
+            runs.append(tuple(cur))
+            cur = None
+    if cur is not None:
+        runs.append(tuple(cur))
+    return runs
+
+
+def scan_head(raw: Path, scale: float, ffmpeg: str = "ffmpeg", seconds: float = HEAD_WINDOW) -> dict | None:
+    """Marker runs in the first `seconds` of the file: {"p0", "end", "runs"} (video seconds from
+    the first frame; "end" = how far this window reached). None when it could not be read.
+    Safe on a file that is still being written, as long as its first seconds are on disk."""
+    size = max(4, int(round(MARKER_LOGICAL * scale)))
+    try:
+        frames, pts = _probe_window(raw, size, ffmpeg, head=seconds)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if not len(frames) or len(pts) != len(frames):
+        return None
+    p0 = pts[0]
+    return {"p0": p0, "end": pts[-1] - p0, "runs": [(pts[a] - p0, pts[b] - p0) for a, b in _runs_of(frames)]}
+
+
+def scan_tail(raw: Path, scale: float, ffmpeg: str = "ffmpeg", seconds: float = TAIL_WINDOW) -> dict | None:
+    """Marker runs in the last `seconds` of the file: {"runs"} in the file's own timeline
+    (subtract the head's "p0" for video seconds). None when it could not be read."""
+    size = max(4, int(round(MARKER_LOGICAL * scale)))
+    try:
+        frames, pts = _probe_window(raw, size, ffmpeg, tail=seconds)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if not len(frames) or len(pts) != len(frames):
+        return None
+    return {"runs": [(pts[a], pts[b]) for a, b in _runs_of(frames)]}
+
+
+def detect_markers_bounded(raw: Path, scale: float, fps: float, ffmpeg: str = "ffmpeg", *, want_stop: bool = True,
+                           head_until: float | None = None, head: dict | None = None,
+                           stop_at: float | None = None, duration: float | None = None,
+                           log=None) -> list[tuple[float, float]]:
+    """The marker runs, reading only the head and the tail of the file. Same result as
+    detect_markers() for a start marker in the head window and a stop marker in the tail
+    window. `head_until`: where the start marker is expected (clock estimate); `head`: a
+    scan_head() result made earlier (while the recorder was still shutting down);
+    `stop_at` and `duration`: where the stop marker is expected and how long the file is,
+    so the tail window reaches back far enough when the recorder was slow to stop.
+    Falls back to the full scan when a window cannot be read, and for short files (the
+    two windows would cover them anyway)."""
+    from concurrent.futures import ThreadPoolExecutor
+    say = log or (lambda _m: None)
+    seconds = HEAD_WINDOW if head_until is None else min(HEAD_WINDOW_MAX, max(HEAD_WINDOW, head_until + 2.0))
+    if head is not None and head_until is not None and head.get("end", 0.0) < min(head_until + 0.75, seconds - 0.25):
+        head = None                        # the early scan stopped before the expected marker
+    with ThreadPoolExecutor(max_workers=2) as pool:        # two ffmpeg processes side by side
+        f_head = pool.submit(scan_head, raw, scale, ffmpeg, seconds) if head is None else None
+        tail_s = TAIL_WINDOW
+        if stop_at is not None and duration:
+            tail_s = min(TAIL_WINDOW_MAX, max(TAIL_WINDOW, duration - stop_at + 2.0))
+        f_tail = pool.submit(scan_tail, raw, scale, ffmpeg, tail_s) if want_stop else None
+        head = f_head.result() if f_head else head
+        tail = f_tail.result() if f_tail else None
+    if head is None:
+        say("sync: the head of the video could not be scanned; reading the whole file")
+        return detect_markers(raw, scale, fps, ffmpeg)
+    runs = list(head["runs"])
+    if not want_stop:
+        return runs
+    if tail is None:
+        say("sync: the tail of the video could not be scanned; reading the whole file")
+        return detect_markers(raw, scale, fps, ffmpeg)
+    for run in ((a - head["p0"], b - head["p0"]) for a, b in tail["runs"]):
+        if not any(abs(run[0] - r[0]) < 0.5 / max(fps, 1.0) for r in runs):      # the windows overlap in a short file
+            runs.append(run)
+    runs.sort()
+    merged: list[tuple[float, float]] = []
+    for a, b in runs:                      # one run seen by both windows, split at the seam
+        if merged and a - merged[-1][1] <= 1.5 / max(fps, 1.0):
+            merged[-1] = (merged[-1][0], max(merged[-1][1], b))
+        else:
+            merged.append((a, b))
+    return merged
 
 
 def frame_times(raw: Path, ffmpeg: str = "ffmpeg") -> list[float] | None:

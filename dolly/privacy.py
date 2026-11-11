@@ -20,8 +20,9 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-import cv2
 import numpy as np
+
+from . import imgops
 
 # ------------------------------------------------------------------ apply
 def apply_boxes(frame: np.ndarray, boxes: list[dict], t: float) -> np.ndarray:
@@ -38,14 +39,14 @@ def apply_boxes(frame: np.ndarray, boxes: list[dict], t: float) -> np.ndarray:
         roi = out[y0:y1, x0:x1]
         if b.get("mode", "blur") == "pixelate":
             cell = max(6, int(min(x1 - x0, y1 - y0) / 6))
-            small = cv2.resize(roi, (max(1, (x1 - x0) // cell), max(1, (y1 - y0) // cell)), interpolation=cv2.INTER_AREA)
-            out[y0:y1, x0:x1] = cv2.resize(small, (x1 - x0, y1 - y0), interpolation=cv2.INTER_NEAREST)
+            small = imgops.resize(roi, (max(1, (x1 - x0) // cell), max(1, (y1 - y0) // cell)))
+            out[y0:y1, x0:x1] = imgops.resize(small, (x1 - x0, y1 - y0), imgops.NEAREST)
         else:
             # downscale-blur-upscale: strong, cheap, irreversible blur
             f = 8
-            small = cv2.resize(roi, (max(1, (x1 - x0) // f), max(1, (y1 - y0) // f)), interpolation=cv2.INTER_AREA)
-            small = cv2.GaussianBlur(small, (0, 0), 2.5)
-            out[y0:y1, x0:x1] = cv2.resize(small, (x1 - x0, y1 - y0), interpolation=cv2.INTER_CUBIC)
+            small = imgops.resize(roi, (max(1, (x1 - x0) // f), max(1, (y1 - y0) // f)))
+            small = imgops.gaussian_blur(small, 2.5)
+            out[y0:y1, x0:x1] = imgops.resize(small, (x1 - x0, y1 - y0), imgops.CUBIC)
     return out
 
 
@@ -118,12 +119,12 @@ def ocr_words(img: np.ndarray) -> list[dict]:
     exe = shutil.which("tesseract")
     if not exe:
         raise RuntimeError("tesseract not installed (sudo pacman -S tesseract tesseract-data-eng)")
-    gray = img if img.ndim == 2 else cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    gray = img if img.ndim == 2 else imgops.gray(img)
     outs = []
     # two passes: as-is and inverted (tesseract reads dark-on-light best; terminals are light-on-dark)
     for variant in (gray, 255 - gray):
         with tempfile.NamedTemporaryFile(suffix=".png") as f:
-            cv2.imwrite(f.name, variant)
+            imgops.write_image(f.name, variant)
             outs.append(subprocess.run([exe, f.name, "-", "--psm", "11", "tsv"], capture_output=True, text=True,
                                        timeout=120).stdout)
     words = []

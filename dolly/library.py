@@ -63,8 +63,9 @@ def _sig(d: Path) -> str:
     return "|".join(parts)
 
 
-def poster(pdir: Path, refresh: bool = False) -> Path | None:
-    """thumb.jpg: a 320 px frame a third in (max 2 s), from the raw video or the newest export."""
+def poster(pdir: Path, refresh: bool = False, duration: float | None = None) -> Path | None:
+    """thumb.jpg: a 320 px frame a third in (max 2 s), from the raw video or the newest export.
+    `duration`: the length when the caller knows it before events.json is written."""
     pdir = Path(pdir)
     out = pdir / "thumb.jpg"
     if out.exists() and not refresh:
@@ -79,9 +80,8 @@ def poster(pdir: Path, refresh: bool = False) -> Path | None:
         from .render import ffmpeg_bin
         dur = 3.0
         try:
-            ev = fsutil.read_json(pdir / "events.json")
-            dur = float(ev["video"]["duration"])
-        except (OSError, ValueError, KeyError):
+            dur = float(duration) if duration else float(fsutil.read_json(pdir / "events.json")["video"]["duration"])
+        except (OSError, ValueError, KeyError, TypeError):
             pass
         t = max(0.0, min(2.0, dur / 3))
         tmp = out.with_suffix(".tmp.jpg")

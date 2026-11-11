@@ -12,7 +12,7 @@ def test_stop_json_during_countdown_reports_cancelled(monkeypatch, capfd, tmp_pa
     monkeypatch.setattr(headless, "adopt_session_env", lambda *a, **k: {})
     monkeypatch.setattr(capture, "read_state", lambda: {"dir": str(gone), "preroll": True})
     monkeypatch.setattr(capture, "_counting_down", lambda st: True)
-    monkeypatch.setattr(capture, "stop", lambda a=None: stopped.append(a))
+    monkeypatch.setattr(capture, "stop", lambda a=None, defer=None: stopped.append(a))
     headless.stop_json(types.SimpleNamespace(json=True, reason=None))
     out = json.loads(capfd.readouterr().out)
     assert stopped and out == {"ok": True, "recording": False, "cancelled": True,

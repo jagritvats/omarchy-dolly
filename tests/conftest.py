@@ -52,6 +52,25 @@ SHIMS = {
 }
 
 
+NO_CV2 = Path(__file__).resolve().parent / "no_cv2"
+
+
+def _hide_opencv():
+    """Dolly must run on a machine without OpenCV (it needed python-opencv until 0.7.0).
+    Unless DOLLY_TEST_NO_CV2=0, `import cv2` fails in this process and in every Python the
+    tests start with this environment, even when OpenCV happens to be installed."""
+    if os.environ.get("DOLLY_TEST_NO_CV2", "1") != "1":
+        return
+    import sys
+    sys.modules.pop("cv2", None)
+    sys.path.insert(0, str(NO_CV2))
+    rest = [p for p in os.environ.get("PYTHONPATH", "").split(os.pathsep) if p and p != str(NO_CV2)]
+    os.environ["PYTHONPATH"] = os.pathsep.join([str(NO_CV2), *rest])
+
+
+_hide_opencv()
+
+
 def pytest_configure(config):
     if os.environ.get("DOLLY_TEST_ISOLATED") == "1":
         return

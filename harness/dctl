@@ -16,7 +16,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-CTL = os.environ.get("HARNESS_CTL", "/home/claude/work/shell-harness/harness/ctl")
+CTL = os.environ.get("HARNESS_CTL") or os.path.join(
+    os.environ.get("DOLLY_SHELL_HARNESS", os.path.expanduser("~/shell-harness")), "harness", "ctl")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from dolly.keymap import MODS, NAMES  # noqa: E402
 

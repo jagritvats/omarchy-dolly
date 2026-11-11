@@ -6,183 +6,45 @@
 #   bin/dolly-setup --undo     remove what this script added
 #
 # What it does (each step prints what it touched):
-#   1. Adds "Record demo" / "Stop demo recording" / "Open last recording" rows to
+#   1. Adds one "Demo" entry (everything else inside it) to
 #      ~/.config/omarchy/extensions/omarchy-menu.jsonc under Trigger > Capture
 #      (between "// >>> dolly" / "// <<< dolly" markers; your other lines are kept).
 #   2. Adds keybinds to ~/.config/hypr/bindings.lua between the same markers
-#      (each skipped if already bound): SUPER+ALT+R record/stop, SUPER+ALT+P
-#      pause, SUPER+ALT+M zoom-here marker, SUPER+ALT+SHIFT+R save replay,
-#      SUPER+ALT+N mute mic, SUPER+ALT+L recordings library; plus a window rule
-#      for the live camera bubble.
-#   3. Checks the packages Dolly needs (python-numpy/opencv/pillow, wf-recorder
+#      (each skipped if already bound): by default SUPER+ALT+R record/stop,
+#      SUPER+ALT+P pause, SUPER+ALT+M zoom-here marker, SUPER+ALT+SHIFT+R save
+#      replay, SUPER+ALT+N mute mic, SUPER+ALT+L recordings library (change them or
+#      switch them off in Settings > Shortcuts); plus a window rule for the live
+#      camera bubble.
+#   3. Checks the packages Dolly needs (python-numpy and python-pillow, wf-recorder
 #      where gpu-screen-recorder cannot capture) and offers to install them with
 #      omarchy-pkg-add, or a private pip venv for the python ones. Asks only when
 #      run in a terminal; otherwise prints the command.
 #   4. Makes sure the record button is on the bar (omarchy bar put, where it exists).
 # It also links ~/.local/bin/dolly to this plugin's launcher, so `dolly` works in a
 # terminal, a script or a coding agent's shell (never replaces something that is not ours).
+# Steps 1, 2 and the link are done by `dolly integration apply` (dolly/integration.py):
+# no password, safe to repeat, and Dolly repeats them by itself after an update.
 set -euo pipefail
 # keep __pycache__ out of the plugin folder (Omarchy reloads the plugin when it changes)
 export PYTHONPYCACHEPREFIX="${PYTHONPYCACHEPREFIX:-${XDG_CACHE_HOME:-$HOME/.cache}/dolly/pycache}"
 ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 DOLLY="$ROOT/bin/dolly"
-MENU="$HOME/.config/omarchy/extensions/omarchy-menu.jsonc"
-BIND="$HOME/.config/hypr/bindings.lua"
 UNDO=false
 [[ ${1:-} == --undo ]] && UNDO=true
 
-strip_block() { # file
-  [[ -f $1 ]] || return 0
-  python3 - "$1" <<'PY'
-import re, sys
-p = sys.argv[1]
-s = open(p).read()
-s2 = re.sub(r"\n?[ \t]*(//|--) >>> dolly.*?(//|--) <<< dolly[^\n]*\n?", "\n", s, flags=re.S)
-if s2 != s:
-    open(p, "w").write(s2)
-PY
-}
-
-# ---- 1. menu
-mkdir -p "$(dirname "$MENU")"
-[[ -f $MENU ]] || printf '{\n}\n' >"$MENU"
-cp "$MENU" "$MENU.dolly-bak"
-strip_block "$MENU"
-if ! $UNDO; then
-  GUARDS=$(PYTHONPATH="$ROOT" python3 -m dolly.guards)
-  python3 - "$MENU" "$DOLLY" "$GUARDS" <<'PY'
-import sys, json
-p, dolly = sys.argv[1], sys.argv[2]
-G = json.loads(sys.argv[3])   # pure shell file tests: menu guards must not start Python
-s = open(p).read().rstrip()
-q = json.dumps
-rows = [
-  ("trigger.capture.dolly-stop", {"icon": "󰓛", "label": "Stop demo recording", "when": G["recording"], "action": f"{dolly} stop"}),
-  ("trigger.capture.dolly-record", {"icon": "󰑊", "label": "Record demo", "description": "Dolly: polished recording with auto-zoom", "when": G["not_recording"]}),
-  ("trigger.capture.dolly-record.window", {"icon": "󰖯", "label": "Window", "action": f"{dolly} record --mode window"}),
-  ("trigger.capture.dolly-record.region", {"icon": "󰆞", "label": "Region", "action": f"{dolly} record --mode region"}),
-  ("trigger.capture.dolly-record.screen", {"icon": "󰍹", "label": "Screen", "action": f"{dolly} record --mode screen"}),
-  ("trigger.capture.dolly-record.screen-mic", {"icon": "󰍬", "label": "Screen + microphone", "action": f"{dolly} record --mode screen --audio mic"}),
-  ("trigger.capture.dolly-last", {"icon": "󰕧", "label": "Open last recording", "description": "Dolly editor", "when": G["last"], "action": f"{dolly} edit"}),
-  ("trigger.capture.dolly-library", {"icon": "󰕧", "label": "Dolly recordings", "description": "Library: find, rename, share, clean up", "action": f"{dolly} library --open"}),
-  ("trigger.capture.dolly-settings", {"icon": "󰒓", "label": "Dolly settings", "action": f"{dolly} settings"}),
-  ("trigger.capture.dolly-mute", {"icon": "󰍭", "label": "Mute / unmute microphone", "when": G["recording"], "action": f"{dolly} mute"}),
-  ("trigger.capture.dolly-replay-on", {"icon": "󰑓", "label": "Instant replay on", "description": "keep the last 60 s in memory", "when": G["not_replay"], "action": f"{dolly} replay start"}),
-  ("trigger.capture.dolly-replay-save", {"icon": "󰑓", "label": "Save instant replay (30 s)", "when": G["replay"], "action": f"{dolly} replay save --last 30"}),
-  ("trigger.capture.dolly-replay-off", {"icon": "󰑓", "label": "Instant replay off", "when": G["replay"], "action": f"{dolly} replay stop"}),
-  ("trigger.share.dolly", {"icon": "󰒖", "label": "Last demo recording", "description": "Dolly share presets", "when": G["last"]}),
-  ("trigger.share.dolly.github", {"icon": "󰊤", "label": "GitHub (copy, <= 10 MB)", "action": f"{dolly} share export github --copy"}),
-  ("trigger.share.dolly.discord", {"icon": "󰙯", "label": "Discord (copy, <= 20 MB)", "action": f"{dolly} share export discord --copy"}),
-  ("trigger.share.dolly.slack", {"icon": "󰒱", "label": "Slack (copy)", "action": f"{dolly} share export slack --copy"}),
-  ("trigger.share.dolly.shorts", {"icon": "󰄄", "label": "Vertical 9:16 (copy)", "action": f"{dolly} share export shorts --copy"}),
-  ("trigger.share.dolly.link", {"icon": "󰌷", "label": "GitHub size + get a link", "when": G["share_ready"], "action": f"{dolly} share export github --upload"}),
-]
-# whole-line comments only (Omarchy's JSONC parser strips only full-line //)
-# a row whose plugin was removed (`omarchy plugin remove` runs nothing) must not show up
-present = f"[ -x {q(dolly)[1:-1]} ]"
-rows = [(k, {**v, "when": f"{present} && {v['when']}" if v.get("when") else present}) for k, v in rows]
-block = "  // >>> dolly (managed by dolly-setup; remove with dolly-setup --undo)\n"
-block += "".join(f"  {q(k)}: {json.dumps(v, ensure_ascii=False)},\n" for k, v in rows)
-block += "  // <<< dolly\n"
-assert s.endswith("}"), "unexpected menu file format"
-body = s[:-1].rstrip()
-if body and not body.endswith("{") and not body.endswith(","):
-    # previous last entry lacks a trailing comma
-    lines = body.split("\n")
-    for i in range(len(lines) - 1, -1, -1):
-        t = lines[i].strip()
-        if t and not t.startswith("//"):
-            if not t.endswith(",") and not t.endswith("{"):
-                lines[i] = lines[i] + ","
-            break
-    body = "\n".join(lines)
-open(p, "w").write(body + "\n" + block + "}\n")
-PY
-  echo "menu: added Dolly rows to $MENU (Trigger > Capture)"
-else
-  echo "menu: removed Dolly rows from $MENU"
-fi
-
-# ---- 2. keybinds (skips any combo already bound, e.g. Omarchy uses Super+Ctrl+R for reminders)
-bind_free() { # "MODS" "KEY"
-  command -v hyprctl >/dev/null || return 0
-  hyprctl binds -j 2>/dev/null | python3 -c '
-import json, sys
-want_mods, key = sys.argv[1], sys.argv[2].lower()
-bits = {"SHIFT": 1, "CTRL": 4, "ALT": 8, "SUPER": 64}
-mask = sum(bits[m] for m in want_mods.split())
-try:
-    binds = json.load(sys.stdin)
-except ValueError:
-    sys.exit(0)
-for b in binds:
-    if b.get("modmask") == mask and str(b.get("key", "")).lower() == key and "dolly" not in str(b.get("arg", "")) + str(b.get("description", "")).lower():
-        sys.exit(1)
-' "$1" "$2"
-}
-if [[ -f $BIND ]]; then
-  cp "$BIND" "$BIND.dolly-bak"
-  strip_block "$BIND"
-  if ! $UNDO; then
-    {
-      echo "-- >>> dolly (managed by dolly-setup)"
-      # only while the plugin is installed: a removed plugin leaves no live hotkeys behind
-      echo "local dolly_present = io.open(\"$DOLLY\", \"r\")"
-      echo "if dolly_present then dolly_present:close()"
-      while IFS='|' read -r mods key desc cmd; do
-        if bind_free "$mods" "$key"; then
-          echo "  o.bind(\"${mods// / + } + $key\", \"$desc\", \"$DOLLY $cmd\")"
-          echo "keybind: ${mods// /+}+$key -> $desc" >&2
-        else
-          echo "keybind: ${mods// /+}+$key is already bound, skipped ($desc)" >&2
-        fi
-      done <<LIST
-SUPER ALT|R|Dolly: record / stop demo|toggle
-SUPER ALT|P|Dolly: pause / resume recording|pause
-SUPER ALT|M|Dolly: zoom here (while recording)|mark
-SUPER ALT SHIFT|R|Dolly: save instant replay|replay save --last 30
-SUPER ALT|N|Dolly: mute / unmute microphone|mute
-SUPER ALT|L|Dolly: recordings library|library --open
-LIST
-      # the live camera bubble (Dolly's own app id): float, pin, never take focus
-      echo '  o.window({ class = "^DollyCam-(S|M|L)$" }, { float = true, pin = true, no_initial_focus = true, no_dim = true })'
-      echo "keybind: window rule for the live camera bubble (DollyCam)" >&2
-      echo "end"
-      echo "-- <<< dolly"
-    } >>"$BIND"
-  else
-    echo "keybind: removed from $BIND"
-  fi
-  command -v hyprctl >/dev/null && hyprctl reload >/dev/null 2>&1 || true
-else
-  echo "keybind: $BIND not found; skipped (bind '$DOLLY toggle' yourself)"
-fi
-# ---- 2b. `dolly` as a command, for terminals, scripts and coding agents: a link in
-# ~/.local/bin (on PATH in Omarchy). Never replaces a file or a link that is not Dolly's.
-LINK="$HOME/.local/bin/dolly"
-if [[ -L $LINK ]]; then LINKTO="$(readlink "$LINK")"; else LINKTO=""; fi
+# ---- 1 + 2: the menu entry, the hotkeys, the `dolly` command (user files only, no password)
 if $UNDO; then
-  if [[ $LINKTO == "$DOLLY" ]]; then
-    rm -f "$LINK"
-    echo "command: removed $LINK"
-  fi
-elif [[ $LINKTO == "$DOLLY" ]]; then
-  echo "command: dolly is on your PATH ($LINK)"
-elif [[ -e $LINK || -L $LINK ]] && [[ $LINKTO != */plugins/*dolly*/bin/dolly ]]; then
-  echo "command: $LINK exists and is not Dolly's; left alone (use $DOLLY)"
-elif mkdir -p "$(dirname "$LINK")" && ln -sfn "$DOLLY" "$LINK"; then
-  echo "command: dolly is on your PATH ($LINK)"
-else
-  echo "command: could not link $LINK (use $DOLLY)"
+  PYTHONPATH="$ROOT" python3 -m dolly.integration undo
+  exit 0
 fi
-$UNDO && exit 0
+PYTHONPATH="$ROOT" python3 -m dolly.integration apply
 
-# ---- 3. packages Dolly needs (python-numpy/opencv/pillow; wf-recorder when
+# ---- 3. packages Dolly needs (python-numpy and python-pillow; wf-recorder when
 # gpu-screen-recorder cannot capture here, as in VMs). Asks only when someone can
 # answer: with stdin or stdout not a terminal (piped, scripted) it prints the command.
 MISSING="$("$DOLLY" deps --json 2>/dev/null | python3 -c 'import json,sys
 try: print(" ".join(json.load(sys.stdin)["packages"]))
-except Exception: print("python-numpy python-opencv python-pillow")' || true)"
+except Exception: print("python-numpy python-pillow")' || true)"
 if [[ -z $MISSING ]]; then
   echo "packages: everything Dolly needs is installed"
 else
@@ -198,7 +60,7 @@ else
       [yY]*) $INSTALL ;;
       [vV]*)
         VENV="${XDG_DATA_HOME:-$HOME/.local/share}/dolly/venv"
-        python3 -m venv "$VENV" && "$VENV/bin/pip" install -q numpy opencv-python-headless pillow
+        python3 -m venv "$VENV" && "$VENV/bin/pip" install -q numpy pillow
         echo "python: venv ready ($VENV); bin/dolly uses it automatically" ;;
       *) echo "packages: skipped; later run: $DOLLY deps --install" ;;
     esac

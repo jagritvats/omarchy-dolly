@@ -60,7 +60,7 @@ def test_session_is_found_without_environment(tmp_path):
 def test_error_codes():
     assert H.classify("dolly: already recording; use `dolly stop`") == "already-recording"
     assert H.classify("dolly: gpu-screen-recorder (pid 4) is already recording; stop it first") == "other-recorder"
-    assert H.classify("dolly: missing packages: python-opencv (dolly deps --install)") == "missing-packages"
+    assert H.classify("dolly: missing packages: python-pillow (dolly deps --install)") == "missing-packages"
     assert H.classify("dolly: cannot record into /x: read-only") == "folder-not-writable"
     assert H.classify("Only 0.1 GB free in /x (ext4): about 1 min") == "disk-full"
 

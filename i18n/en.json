@@ -104,10 +104,10 @@
   "panel.autoZoom": "Zoom in on the action",
   "panel.needs": "Needs %1",
   "panel.install": "Install",
-  "panel.setupHint": "Finish setup: hotkeys (Super+Alt+R to record) and menu rows",
-  "panel.setupHintPackages": "Finish setup: hotkeys, menu rows and %1",
+  "panel.setupHint": "Finish setup: hotkeys (Super+Alt+R to record) and the menu entry",
+  "panel.setupHintPackages": "Finish setup: hotkeys, the menu entry and %1",
   "panel.setup": "Set up",
-  "panel.hotkeyConflict": "Hotkey also used by Omarchy: %1",
+  "panel.hotkeyConflict": "Hotkey also used elsewhere: %1. Fix gives it up; choose other keys in Settings › Shortcuts",
   "panel.setupFix": "Fix",
   "panel.start": "Start recording",
   "panel.recent": "RECENT",
@@ -153,5 +153,8 @@
   "notify.alreadyRecordingBody": "Press Super+Alt+R or click the timer in the bar to stop it.",
   "notify.cannotRecordHere": "Dolly can't record to this folder",
   "notify.cannotRecordHereBody": "%1 is not writable (%2). Choose another folder in Settings > Storage.",
+  "notify.updated": "Dolly %1",
+  "notify.updatedRestart": "The bar button and panel update when the shell restarts.",
+  "notify.restartShell": "Restart shell",
   "notify.errorTitle": "Dolly ran into a problem"
 }

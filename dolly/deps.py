@@ -1,7 +1,7 @@
 """What Dolly still needs on this machine, and installing it the way Omarchy does.
 
 Omarchy plugins have no install hooks, and `omarchy plugin add` only clones and
-enables. A fresh Omarchy lacks python-numpy/opencv/pillow, and in a VM
+enables. A fresh Omarchy lacks python-numpy and python-pillow, and in a VM
 gpu-screen-recorder cannot capture ("unknown gpu vendor"), so wf-recorder is
 needed. `missing()` names the Arch packages; `install()` opens a floating terminal
 running `omarchy-pkg-add` (Omarchy's own helper: installs only what is missing,
@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 from . import fsutil
 
-PY_PACKAGES = (("numpy", "python-numpy"), ("cv2", "python-opencv"), ("PIL", "python-pillow"))
+PY_PACKAGES = (("numpy", "python-numpy"), ("PIL", "python-pillow"))
 # gpu-screen-recorder messages that mean "this GPU cannot capture at all" (any encoder)
 GSR_FATAL = ("unknown gpu vendor", "failed to load opengl", "failed to get egl display",
              "no gpu found", "failed to find a gpu")

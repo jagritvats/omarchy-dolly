@@ -130,8 +130,12 @@ def _target(a) -> dict:
         c = next((x for x in capture.hypr_json("clients") or [] if x.get("address") == c["address"]), c)
         (x, y), (w, h) = c.get("at", (0, 0)), c.get("size", (0, 0))
         a.mode, a.pick, a.window_address = "window", f"{x},{y} {w}x{h}", c["address"]
-        return {"kind": "window", "address": c["address"], "class": c.get("class"),
-                "title": str(c.get("title", ""))[:120]}
+        d = {"kind": "window", "address": c["address"], "class": c.get("class"),
+             "title": str(c.get("title", ""))[:120]}
+        note = off_monitor_note(c, mons)
+        if note:
+            d["note"] = note
+        return d
     if a.monitor:
         if not any(m.get("name") == a.monitor and not m.get("disabled") for m in mons):
             raise HeadlessError("monitor-not-found", f"no monitor named {a.monitor!r}",
@@ -143,7 +147,26 @@ def _target(a) -> dict:
         tg = resolve_pick(a.pick, mons)
     except SpanError as e:
         raise HeadlessError("bad-region", str(e)) from None
-    return {"kind": "region", "rect": tg.region, "monitor": tg.monitor}
+    d = {"kind": "region", "rect": tg.region, "monitor": tg.monitor}
+    if tg.note:
+        d["note"] = tg.note
+    return d
+
+
+def off_monitor_note(client: dict, mons: list) -> str:
+    """One recording is one monitor: say so when part of the window is somewhere else."""
+    from .monitors import logical_rect
+    m = next((m for m in mons if m.get("id") == client.get("monitor")), None)
+    if not m:
+        return ""
+    mx, my, mw, mh = logical_rect(m)
+    (x, y), (w, h) = client.get("at", (0, 0)), client.get("size", (0, 0))
+    if w <= 0 or h <= 0:
+        return ""
+    ix = max(0.0, min(x + w, mx + mw) - max(x, mx)) * max(0.0, min(y + h, my + mh) - max(y, my))
+    if ix >= 0.995 * w * h:
+        return ""
+    return f"part of the window is outside {m.get('name')}; only the part on that monitor is recorded"
 
 
 # ------------------------------------------------------------------ results
@@ -165,6 +188,8 @@ def summary(pdir: Path, target: dict | None = None) -> dict:
         warnings.append("no sync marker or clock estimate: events are timed from the logger start")
     if meta.get("stop_reason"):
         warnings.append(f"stopped early: {meta['stop_reason']}")
+    if (target or {}).get("note"):
+        warnings.append(target["note"])
     return {"ok": True, "recording": False, "dir": str(pdir), "raw": str(raw) if raw else None,
             "events": str(pdir / "events.json"), "project": str(pdir / "project.json"),
             "duration": round(float(v.get("duration") or 0), 3), "trim": proj.get("trim"),
@@ -224,7 +249,7 @@ def _record(a) -> dict:
             for s, h in old.items():
                 signal.signal(s, h)
         if capture.read_state():
-            capture.stop(None)                       # finalizes; the editor stays closed in --json
+            capture.stop(None, defer=False)          # finalizes, plan included; the editor stays closed in --json
         else:
             _wait_finalized(pdir)                    # a watchdog or the hotkey stopped it first
         return summary(pdir, target)
@@ -266,7 +291,7 @@ def stop_json(a) -> None:
     counting = capture._counting_down(st)        # stopping a countdown cancels: there is no take to describe
     try:
         with contextlib.redirect_stdout(io.StringIO()):
-            capture.stop(a)
+            capture.stop(a, defer=False)             # the answer reports the plan: wait for it
     except SystemExit as e:
         if e.code not in (0, None):
             msg = e.code if isinstance(e.code, str) else "nothing was recorded; see recorder.log in the folder"
@@ -283,6 +308,8 @@ def _wait_finalized(pdir: Path, timeout: float = 900.0):
     t_end = time.monotonic() + timeout
     while time.monotonic() < t_end:
         if (pdir / "events.json").exists() and health.get_phase().get("phase", "idle") == "idle":
+            from . import analysis
+            analysis.ensure(pdir)                    # whoever stopped it left the plan for later
             return
         if not pdir.exists():
             raise HeadlessError("discarded", "the recording was cancelled")
@@ -331,7 +358,7 @@ def export_json(run, a) -> None:
         _emit({"ok": True, "output": str(out), "bytes": out.stat().st_size,
                "duration": round(float((info.get("format") or {}).get("duration") or 0), 3),
                "width": w, "height": h, "aspect": getattr(a, "aspect", None) or _aspect(w, h),
-               "format": out.suffix.lstrip("."), "engine": getattr(a, "engine", None) or "opencv"})
+               "format": out.suffix.lstrip("."), "engine": getattr(a, "engine", None) or "compositor"})
     except SystemExit as e:
         msg = e.code if isinstance(e.code, str) else "export failed"
         raise fail("export-failed", msg.removeprefix("dolly: ")) from None

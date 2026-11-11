@@ -79,6 +79,59 @@ class Editor:
         self.page_seen = 0.0             # last long-poll from the page: is a window showing us?
         self.nav_seq = 0
         self.nav_cv = threading.Condition()
+        self._plan_wait = False          # the page was given a take whose zoom plan is still coming
+        self._preview = None             # (folder, thread) while the preview proxy is being encoded
+
+    def start_preview(self) -> None:
+        """Encode the browser-friendly preview of the open take in the background. The
+        window opens and shows the take's timeline at once; the page loads the video when
+        /api/plan says the preview is ready. (It used to be encoded before the window opened:
+        a wait that grew with the length of the take.)"""
+        if not self.proj:
+            return
+        d = self.proj.dir
+        prev, raw = d / "preview.mp4", self.proj.raw
+        try:
+            if prev.exists() and prev.stat().st_mtime >= raw.stat().st_mtime:
+                self._preview = None
+                return
+        except OSError:
+            return
+        th = threading.Thread(target=ensure_preview, args=(d,), daemon=True)
+        self._preview = (d, th)
+        th.start()
+
+    def preview_pending(self) -> bool:
+        p = self._preview
+        return bool(p and self.proj and p[0] == self.proj.dir and p[1].is_alive())
+
+    def plan_pending(self) -> bool:
+        """The open take's zoom plan is still being worked out (dolly.analysis). A job that
+        died (crash, logout) is started again here: opening the take heals it."""
+        from .. import analysis
+        info = analysis.pending(self.proj.dir) if self.proj else None
+        if info is None:
+            return False
+        now = time.time()
+        # Stop starts the job itself; give it (and one we started) a moment to take the lock
+        if now - float(info.get("since") or 0) > 15 and now - getattr(self, "_plan_spawned", 0.0) > 15                 and not analysis.running(self.proj.dir):
+            self._plan_spawned = now
+            analysis.spawn(self.proj.dir)
+        return True
+
+    def plan_payload(self) -> dict:
+        """What the page asks for while it waits: the plan once it is there."""
+        preview = "pending" if self.preview_pending() else "ready"
+        if self.plan_pending():
+            return {"analysis": "pending", "preview": preview}
+        data = self.proj.load()
+        tl = self.timeline(data["style"])
+        zcfg = ZoomConfig.from_dict(data.get("zoom_config"))
+        segs = data["segments"]
+        if segs is None:
+            segs = [s.to_dict() for s in _plan(tl, zcfg, self.aoi(tl, zcfg))]
+        self._plan_wait = False          # from here on the page's segments and speed are saved again
+        return {"analysis": "ready", "preview": preview, "segments": segs, "speed": data.get("speed") or []}
 
     def navigate(self, view: str, pdir: Path | None = None) -> dict:
         """Show another view / recording in the existing window (bumps the sequence the
@@ -115,9 +168,10 @@ class Editor:
             raise ValueError("not a finalized recording in the library")
         if not projmod.Project(d).raw.exists():
             raise ValueError("the raw video of this recording was cleaned up; its exports are still in the library")
-        ensure_preview(d)
         self.proj = projmod.Project(d)
         self._aoi = None
+        self._plan_wait = False
+        self.start_preview()
         self.view = "edit"
         library.index(refresh=False, posters=False)
         return {"ok": True, "dir": str(d)}
@@ -140,6 +194,9 @@ class Editor:
             out["share_targets"], out["share_error"] = [], str(e)
         out["share_path"] = str(scfg.config_path())
         out["hotkeys"] = hotkeys()
+        from .. import integration
+        out["shortcuts"] = integration.shortcut_view()
+        out["set_up"] = integration.status(check_live=False)["set_up"]
         out["mic_devices"] = mic_devices()
         out["videos_root"] = str(projmod.videos_root())
         out["theme"] = projmod.theme_snapshot()
@@ -157,10 +214,16 @@ class Editor:
         tl = self.timeline(data["style"])
         zcfg = ZoomConfig.from_dict(data.get("zoom_config"))
         segs = data["segments"]
-        if segs is None:
+        waiting = self.plan_pending()
+        self._plan_wait = waiting
+        if waiting:
+            segs = []                    # shown at once; /api/plan delivers the zooms when they are ready
+        elif segs is None:
             segs = [s.to_dict() for s in _plan(tl, zcfg, self.aoi(tl, zcfg))]
         colors = projmod.theme_colors()
         return {
+            "analysis": "pending" if waiting else "ready",
+            "preview": "pending" if self.preview_pending() else "ready",
             "name": self.proj.name, "dir": str(self.proj.dir),
             "video": {"w": tl.w, "h": tl.h, "fps": tl.fps, "duration": tl.duration},
             "capture": tl.capture,
@@ -199,9 +262,12 @@ class Editor:
                 data["segments"] = body["segments"]
         tl = self.timeline(data["style"])
         zcfg = ZoomConfig.from_dict(data.get("zoom_config"))
-        aoi = self.aoi(tl, zcfg)
-        segs = [Segment.from_dict(s) for s in data["segments"]] if data["segments"] is not None \
-            else _plan(tl, zcfg, aoi)
+        if self.plan_pending():
+            aoi, segs = None, []         # an un-zoomed preview until the plan arrives
+        else:
+            aoi = self.aoi(tl, zcfg)
+            segs = [Segment.from_dict(s) for s in data["segments"]] if data["segments"] is not None \
+                else _plan(tl, zcfg, aoi)
         from ..render import Compositor
         comp = Compositor(tl, projmod.deep_merge(data["style"], {"output": {"fps": fps}}), segs, zcfg, 0.0,
                           tl.duration, aspect=aspect or "16:9", aoi=aoi)
@@ -236,6 +302,15 @@ class Editor:
         return self._aoi[1]
 
     def save(self, body: dict):
+        from .. import analysis
+        if self._plan_wait:
+            # the page still holds "no zooms yet": its segments and speed must not replace
+            # the plan that is on its way (it asks /api/plan, then they are saved again)
+            body = {k: v for k, v in body.items() if k not in ("segments", "speed")}
+        with analysis.project_lock(self.proj.dir):
+            self._save(body)
+
+    def _save(self, body: dict):
         data = self.proj.load()
         for k in ("segments", "style", "trim", "zoom_config", "speed", "privacy"):
             if k in body:
@@ -259,6 +334,8 @@ class Editor:
         """Re-plan the automatic zooms. body.zoom_config: options for this recording;
         body.keep_manual: zooms the user added or edited stay (auto ones overlapping them go)."""
         body = body or {}
+        from .. import analysis
+        analysis.ensure(self.proj.dir)       # re-planning builds on the first plan's analysis
         data = self.proj.load()
         zc = dict(data.get("zoom_config") or {})
         for k, v in (body.get("zoom_config") or {}).items():
@@ -321,6 +398,8 @@ class Editor:
         from ..privacy import scan_secrets
 
         def fn(progress):
+            from .. import analysis
+            analysis.ensure(self.proj.dir)       # one writer of project.json at a time
             tl = self.timeline()
             boxes = scan_secrets(self.proj.raw, tl.duration, progress=lambda i, n: progress(i, int(tl.duration) + 1))
             data = self.proj.load()
@@ -339,6 +418,8 @@ class Editor:
 
     def speed_detect(self) -> list:
         from ..timemap import SpeedConfig, cached_activity, detect_speedups
+        from .. import analysis
+        analysis.ensure(self.proj.dir)
         data = self.proj.load()
         segs = detect_speedups(self.timeline(), cached_activity(self.proj.dir),
                                SpeedConfig.from_dict(data.get("speed_config")))
@@ -361,6 +442,8 @@ class Editor:
 
         def run():
             try:
+                from .. import analysis
+                analysis.ensure(self.proj.dir)       # never export a take whose zoom plan is not there yet
                 out = export(self.proj.dir, None, fmt, body.get("quality"),
                              progress=lambda i, n, el: self.job.update(done=i, total=n, fps=i / el if el else 0),
                              style_over=over, aspect=body.get("aspect") or None, notify=True)
@@ -524,6 +607,8 @@ def make_handler(ed: Editor):
                     from .. import health
                     return self._json({"theme": projmod.theme_snapshot(),
                                        "phase": health.get_phase().get("phase", "idle"), "jobs": health.jobs()})
+                if u.path == "/api/plan":
+                    return self._json(ed.plan_payload())
                 if u.path == "/api/path":
                     return self._json(ed.path_payload(float(q.get("fps", ["30"])[0]), aspect=q.get("aspect", ["16:9"])[0]))
                 if u.path == "/api/share/presets":
@@ -799,9 +884,15 @@ def ensure_preview(pdir: Path):
     if prev.exists() and prev.stat().st_mtime >= raw.stat().st_mtime:
         return
     scale = "scale='min(1920,iw)':-2"
-    subprocess.run([ffmpeg_bin(), "-v", "error", "-y", "-i", str(raw), "-vf", scale, "-c:v", "libx264",
-                    "-preset", "veryfast", "-crf", "20", "-g", "15", "-pix_fmt", "yuv420p", "-an",
-                    "-movflags", "+faststart", str(prev)], check=False)
+    part = pdir / f"preview.{os.getpid()}.part.mp4"       # renamed when complete: never half a preview
+    try:
+        r = subprocess.run([ffmpeg_bin(), "-v", "error", "-y", "-i", str(raw), "-vf", scale, "-c:v", "libx264",
+                            "-preset", "veryfast", "-crf", "20", "-g", "15", "-pix_fmt", "yuv420p", "-an",
+                            "-movflags", "+faststart", str(part)], check=False)
+        if r.returncode == 0 and part.exists() and part.stat().st_size > 0:
+            part.replace(prev)
+    finally:
+        part.unlink(missing_ok=True)
 
 
 def _registry_file() -> Path:
@@ -893,9 +984,8 @@ def serve(pdir: Path | None, port: int = 0, open_browser: bool = True, view: str
                 else:                              # after a recording: visible, but no focus taken
                     raise_window(wins[0]["address"])
             return
-    if pdir:
-        ensure_preview(pdir)
     ed = Editor(pdir, view=view)
+    ed.start_preview()                     # in the background: the window does not wait for it
     httpd = ThreadingHTTPServer(("127.0.0.1", port), make_handler(ed))
     url = f"http://127.0.0.1:{httpd.server_address[1]}/?t={ed.token}#{ed.view}"
     reg = _registry_file()
