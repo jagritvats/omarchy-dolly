@@ -433,7 +433,13 @@ def cmd_demo(a):
 def apply_record_defaults(a):
     """Flags win; anything not given comes from Settings (config.json)."""
     from .config import record_defaults
+    from .logger import on_stage
     d = record_defaults()
+    if on_stage():
+        # A take on the hidden stage records the stage's screen and nothing else unless the
+        # command asks: the microphone and the camera are the person's own, in the room, and
+        # "what Settings say for my recordings" is not a yes to an agent's take.
+        d = dict(d, audio="none", camera="off")
     a.mode = a.mode or d["mode"]
     a.countdown = d["countdown"] if a.countdown is None else a.countdown
     a.fps = a.fps or d["fps"]
@@ -556,16 +562,24 @@ def _main(argv=None):
     r.add_argument("--json", action="store_true",
                    help="exactly one JSON object on stdout, errors included; implies --no-editor")
     r.add_argument("--pick", help=argparse.SUPPRESS)   # internal (dolly run): "X,Y WxH" instead of the picker
+    r.add_argument("--stage", action="store_true",
+                   help="beta: record on the hidden stage (a second, invisible desktop; dolly stage --help)")
+    r.add_argument("--stage-size", metavar="WxH", help="size of a stage this command starts (default 1920x1080)")
     rn = sub.add_parser("run", help="perform a storyboard of steps and record it (docs/storyboard.md)")
     rn.add_argument("file", nargs="?", help="storyboard (.toml or .json); - reads stdin")
     rn.add_argument("--dry-run", action="store_true", help="print the timed plan; touch nothing")
     rn.add_argument("--check", action="store_true", help="validate, and say what this machine can perform")
     rn.add_argument("--json", action="store_true", help="machine-readable result on stdout")
     rn.add_argument("--no-export", action="store_true", help="record and analyse only")
-    rn.add_argument("--keep-open", action="store_true", help="skip [[cleanup]] and stay on the stage")
+    rn.add_argument("--keep-open", action="store_true", help="skip [[cleanup]] and stay where the take ended")
+    rn.add_argument("--stage", action="store_true",
+                    help="beta: perform and record it on the hidden stage, while you keep working (dolly stage --help)")
+    rn.add_argument("--stage-size", metavar="WxH", help="size of a stage this command starts, e.g. 1080x1920")
     for name in ("stop", "toggle", "cancel"):
         x = sub.add_parser(name)
         x.add_argument("--reason", help=argparse.SUPPRESS)   # watchdog: why the recording ended
+        if name in ("stop", "cancel"):
+            x.add_argument("--stage", action="store_true", help="the recording on the hidden stage")
         if name == "stop":
             x.add_argument("--json", action="store_true", help="describe the finished recording as JSON")
         if name == "toggle":
@@ -574,6 +588,45 @@ def _main(argv=None):
     sub.add_parser("recover", help="finalize recordings interrupted by a crash, logout or power loss")
     st = sub.add_parser("status")
     st.add_argument("--json", action="store_true")
+    st.add_argument("--stage", action="store_true", help="the recording on the hidden stage")
+    sg = sub.add_parser("stage", help="beta: a hidden second desktop for takes while you keep working")
+    sgs = sg.add_subparsers(dest="stage_cmd", required=True,
+                            metavar="start|stop|status|shot|exec|type|key|click|move")
+    x = sgs.add_parser("start", help="start the stage (invisible, with its own pointer and keyboard)")
+    x.add_argument("--size", metavar="WxH", help="default 1920x1080; 1080x1920 for vertical demos")
+    x.add_argument("--background", choices=["wallpaper", "colour", "color"],
+                   help="behind the windows: your desktop picture, or the theme's colour (default: Settings)")
+    x.add_argument("--json", action="store_true")
+    x = sgs.add_parser("type", help="type text into the stage's focused window: dolly stage type 'ls -la' --enter")
+    x.add_argument("text")
+    x.add_argument("--enter", action="store_true", help="press Enter after it")
+    x.add_argument("--speed", type=float, metavar="CPS",
+                   help="characters a second (default 11, a person's pace; 0 = at once)")
+    x.add_argument("--json", action="store_true")
+    x = sgs.add_parser("key", help="press keys or chords on the stage: dolly stage key ctrl+l enter")
+    x.add_argument("keys", nargs="+", metavar="KEY")
+    x.add_argument("--json", action="store_true")
+    x = sgs.add_parser("click", help="click on the stage: dolly stage click 640 360 (no point: where the pointer is)")
+    x.add_argument("x", nargs="?", type=float)
+    x.add_argument("y", nargs="?", type=float)
+    x.add_argument("--button", choices=["left", "right", "middle"], default="left")
+    x.add_argument("--instant", action="store_true", help="jump there instead of travelling")
+    x.add_argument("--json", action="store_true")
+    x = sgs.add_parser("move", help="move the stage's pointer: dolly stage move 640 360")
+    x.add_argument("x", type=float)
+    x.add_argument("y", type=float)
+    x.add_argument("--instant", action="store_true", help="jump there instead of travelling")
+    x.add_argument("--json", action="store_true")
+    x = sgs.add_parser("stop", help="stop it and remove everything it left")
+    x.add_argument("--json", action="store_true")
+    x = sgs.add_parser("status", help="is one running, what is on it")
+    x.add_argument("--json", action="store_true")
+    x = sgs.add_parser("shot", help="a screenshot of the stage (PNG), to look at it")
+    x.add_argument("file", nargs="?")
+    x.add_argument("--json", action="store_true")
+    x = sgs.add_parser("exec", help="start a program on the stage: dolly stage exec -- foot")
+    x.add_argument("command", nargs=argparse.REMAINDER)
+    x.add_argument("--json", action="store_true")
 
     f = sub.add_parser("finalize")
     f.add_argument("dir")
@@ -654,6 +707,8 @@ def _main(argv=None):
     cs.add_parser("bar"); cs.add_parser("path"); cs.add_parser("schema")
     doc = sub.add_parser("doctor", help="check what Dolly needs on this machine")
     doc.add_argument("--json", action="store_true")
+    doc.add_argument("--stage", action="store_true",
+                     help="beta: check the hidden stage (starts one, draws a frame, stops it)")
     doc.add_argument("--report", action="store_true",
                      help="write a text file to attach to a bug report (no video, no typed keys)")
     it = sub.add_parser("integration", help="the menu entry and hotkeys Dolly added; hotkey conflicts")
@@ -681,6 +736,31 @@ def _main(argv=None):
     lg.add_argument("--replay", type=int, default=0)
 
     a = ap.parse_args(argv)
+    if a.cmd == "stage":
+        from . import stage as stagemod
+        raise SystemExit(stagemod.cli(a))
+    session = None
+    if getattr(a, "stage", False) and a.cmd in ("record", "run", "stop", "cancel", "status"):
+        # the hidden stage: this command, and everything it starts, works there (dolly/stage.py)
+        from . import stage as stagemod
+        try:
+            if a.cmd == "record" or (a.cmd == "run" and a.file and not (a.dry_run or a.check)):
+                session = stagemod.Session(getattr(a, "stage_size", None))
+            elif a.cmd != "run":
+                stagemod.enter()
+        except stagemod.StageError as e:
+            if getattr(a, "json", False):
+                print(json.dumps({"ok": False, "error": "stage", "message": str(e)}))
+                raise SystemExit(1) from None
+            raise SystemExit(f"dolly: {e}") from None
+    try:
+        _run_command(a)
+    finally:
+        if session:
+            session.end()
+
+
+def _run_command(a):
     if a.cmd == "record":
         from . import headless
         if headless.wanted(a):
@@ -786,9 +866,18 @@ def _main(argv=None):
             sys.exit(1)
         print(p)
     elif a.cmd == "doctor":
+        if getattr(a, "stage", False):
+            from . import stage as stagemod
+            res = stagemod.selftest()
+            if a.json:
+                print(json.dumps(res))
+            else:
+                print("hidden stage (beta): what works here")
+                print("\n".join(stagemod.selftest_lines(res)))
+            sys.exit(0 if res["ok"] else 1)
         if a.report:
             from . import report
-            path = report.write()
+            path = report.write(stage_test=True)     # the hidden stage's self test is part of it
             print(f"{path}\nAttach this file to your bug report: it has Dolly's checks, versions, settings and "
                   "logs; no video, no typed keys.")
             return

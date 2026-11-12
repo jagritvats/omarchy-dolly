@@ -107,11 +107,14 @@ _PTS = re.compile(r"pts_time:\s*(-?[0-9.]+)")
 
 
 def _probe_window(raw: Path, size: int, ffmpeg: str, head: float | None = None, tail: float | None = None,
-                  timeout: float = 120.0):
+                  timeout: float = 120.0, span: tuple[float, float] | None = None):
     """Decode one window of the marker corner: (frames N x PROBE x PROBE x 3, [pts]) with the
     presentation time of every decoded frame in the file's own timeline (showinfo), so frame
-    i and time i always belong together. `head`: the first seconds; `tail`: the last seconds."""
+    i and time i always belong together. `head`: the first seconds; `tail`: the last seconds;
+    `span`: (from, seconds) anywhere in the file."""
     cmd = [ffmpeg, "-hide_banner", "-nostats", "-v", "info", "-copyts"]
+    if span is not None:
+        cmd += ["-ss", f"{max(0.0, span[0]):.3f}", "-t", f"{max(0.1, span[1]):.3f}"]
     if tail is not None:
         cmd += ["-sseof", f"-{tail:.3f}"]
     if head is not None:
@@ -214,6 +217,209 @@ def detect_markers_bounded(raw: Path, scale: float, fps: float, ffmpeg: str = "f
         else:
             merged.append((a, b))
     return merged
+
+
+# ---- the hidden stage's marker: the pointer in the corner (dolly/stage.py pointer_mark).
+# No shell lives on a stage to flash the square, but the stage's pointer is Dolly's own and is
+# drawn into the video: it jumps to the top-left corner, is shown there a moment and goes back
+# (the start mark), or stays there until the recorder has gone (the stop mark).
+#
+# While it is shown the pointer is not still: it moves a pixel aside and back so the stage
+# keeps repainting, and its picture can change under it (11 Nov: near a window's corner
+# Hyprland showed the resize pointer, whose white part is cut off one pixel further out; half
+# the frames of a mark differed from the empty corner by 58 grey levels and half by 10, and
+# every mark was read 0.2 to 0.3 s late). So "the pointer is there" means: the corner differs
+# from how it looked just before by more than noise, and "it has gone" means: the corner has
+# looked as before for POINTER_GONE_S, not for one frame.
+POINTER_MARK_MIN_S = 0.05
+POINTER_MARK_MAX_S = 1.6     # 0.3 s on screen; on a busy machine the frame that shows it gone can come late
+POINTER_STAY_MAX_S = 20.0    # a stop mark stays to the end of what is read: the file's end, or this long after it
+POINTER_GONE_S = 0.1         # the corner as before for this long: the pointer has left
+POINTER_CALM_S = 0.1         # ... and it looked the same for this long before the pointer came
+POINTER_AFTER_S = 0.2        # the stage repaints this long around a mark (stage.pointer_mark): not in the default range
+POINTER_CELLS = 2            # the outermost PROBE cells: the gap around the windows, where only the pointer draws
+_ON, _NOISE = 8.0, 3.0       # grey levels: the pointer arriving; what an encoder alone can change
+
+
+def _corner(frames):
+    g = frames.astype(np.float32).mean(axis=3)[:, :POINTER_CELLS, :POINTER_CELLS]
+    return g.reshape(len(g), -1)
+
+
+def _arrivals(flat, pts):
+    """Frames at which something came into a corner that had been calm: [(i, step)]."""
+    step = np.abs(flat[1:] - flat[:-1]).max(axis=1)
+    out = []
+    for i in (np.nonzero(step >= _ON)[0] + 1).tolist():
+        j = i - 1
+        while j > 0 and pts[i - 1] - pts[j - 1] <= POINTER_CALM_S:
+            j -= 1
+        if float(np.abs(flat[j:i] - flat[i - 1]).max()) < _NOISE:
+            out.append((i, float(step[i - 1])))
+    return out
+
+
+def _visit(flat, pts, i: int, step: float):
+    """From an arrival at frame i: (last frame with the pointer, first frame of the corner as
+    before or None when it never is again, whether the pointer was there most of the time)."""
+    here = np.abs(flat[i:] - flat[i - 1]).max(axis=1) >= max(_NOISE, step * 0.12)
+    n, last, away = len(flat), i, None
+    for k in range(i + 1, n):
+        if here[k - i]:
+            last, away = k, None
+        else:
+            away = k if away is None else away
+            if pts[k] - pts[away] >= POINTER_GONE_S:
+                break
+    back = last + 1 if last + 1 < n else None
+    seen = here[: last - i + 1]
+    return last, back, bool(seen.mean() >= 0.5)
+
+
+def pointer_runs(frames, pts) -> list[tuple[float, float]]:
+    """Stretches where the pointer came into the corner, was shown a moment and left:
+    [(t_first, t_last)] in the times given. A change that stays (a window opening), a change
+    deeper inside the corner (text) or a single odd frame is not one."""
+    if len(frames) < 3 or len(pts) != len(frames):
+        return []
+    flat = _corner(frames)
+    runs, after = [], 0
+    for i, step in _arrivals(flat, pts):
+        if i <= after:
+            continue
+        last, back, mostly = _visit(flat, pts, i, step)
+        if back is None or not mostly:
+            continue
+        if POINTER_MARK_MIN_S <= pts[back] - pts[i] <= POINTER_MARK_MAX_S:
+            runs.append((pts[i], pts[last]))
+            after = back
+    return runs
+
+
+def pointer_open_runs(frames, pts) -> list[tuple[float, float]]:
+    """Moments at which the pointer came into the corner and never left again, up to the
+    last frame: [(t_on, t_last_frame)]. The stop mark is one: the pointer stays until the
+    recorder has gone."""
+    if len(frames) < 3 or len(pts) != len(frames):
+        return []
+    flat = _corner(frames)
+    out = []
+    for i, step in _arrivals(flat, pts):
+        if not (0.1 <= pts[-1] - pts[i] <= POINTER_STAY_MAX_S):
+            continue
+        last, back, mostly = _visit(flat, pts, i, step)
+        # still there at the end: the last frames show it, or it was last seen a moment ago
+        if mostly and (back is None or pts[-1] - pts[back] < POINTER_GONE_S):
+            out.append((pts[i], pts[-1]))
+    return out
+
+
+def pointer_open_run(frames, pts) -> tuple[float, float] | None:
+    """The first of pointer_open_runs(): the pointer came into the corner and the file ends
+    with it still there. (t_on, t_last_frame) or None."""
+    runs = pointer_open_runs(frames, pts)
+    return runs[0] if runs else None
+
+
+def _nearest(runs, t: float | None, tol: float):
+    if t is None or not runs:
+        return None
+    best = min(runs, key=lambda r: abs(r[0] - t))
+    return best if abs(best[0] - t) <= tol else None
+
+
+def detect_pointer_marks(raw: Path, scale: float, fps: float, ffmpeg: str, log_marks: list[float],
+                         clock_a: float | None, duration: float | None, log=None) -> dict:
+    """{"start": (t0, t1) | None, "stop": (t0, t1) | None} in video seconds: where the stage's
+    pointer marks are in the file. Only the head and the tail are read. The clock says
+    roughly where to look. On a stage it can only be wrong one way: the recorder's first
+    frame waits for the first change on screen, so the file can begin later than the clock
+    assumes and the mark then sits EARLIER in it (11 Nov, a still stage: 0.57 s, where the
+    clock said 2.52 s). So the start mark is the pointer's first visit up to 1.6 s after
+    the estimate, however early; the stop is looked for where the start says it must be."""
+    say = log or (lambda _m: None)
+    out = {"start": None, "stop": None}
+    if not log_marks:
+        return out
+    size = max(4, int(round(MARKER_LOGICAL * scale)))
+    exp = (clock_a or 0.0) + log_marks[0]
+    try:
+        frames, pts = _probe_window(raw, size, ffmpeg, head=min(HEAD_WINDOW_MAX, max(HEAD_WINDOW, exp + 2.5)))
+    except (OSError, subprocess.SubprocessError):
+        return out
+    if not len(frames) or len(pts) != len(frames):
+        say("sync: the head of the stage take could not be read")
+        return out
+    p0 = pts[0]
+    head_runs = [(a - p0, b - p0) for a, b in pointer_runs(frames, pts)]
+    early = [r for r in head_runs if r[0] <= exp + 1.6]
+    out["start"] = _nearest(early, exp, 1.6) or (early[0] if early else None)
+    if not out["start"]:
+        say(f"sync: no start mark near {exp:.2f} s (candidates: {[round(r[0], 2) for r in head_runs][:8]}, "
+            f"{len(frames)} frames read)")
+    if len(log_marks) < 2:
+        return out
+    off = out["start"][0] - 0.5 / max(fps, 1.0) - log_marks[0] if out["start"] else clock_a
+    exp_stop = off + log_marks[-1] if off is not None else None
+    try:
+        if exp_stop is not None and duration and duration - exp_stop > TAIL_WINDOW_MAX - 2.5:
+            # the file runs on long after the stop mark (the stop waited for a recorder that was
+            # far behind): read around where the mark must be, not the whole end of the file
+            frames, pts = _probe_window(raw, size, ffmpeg, span=(p0 + exp_stop - 3.0, POINTER_STAY_MAX_S))
+        else:
+            tail = TAIL_WINDOW
+            if exp_stop is not None and duration:
+                tail = min(TAIL_WINDOW_MAX, max(TAIL_WINDOW, duration - exp_stop + 2.5))
+            frames, pts = _probe_window(raw, size, ffmpeg, tail=tail)
+    except (OSError, subprocess.SubprocessError):
+        return out
+    if len(frames) and len(pts) == len(frames):
+        # the stop mark stays in the corner until the file ends; a take made before it did
+        # (and one whose recorder outlived the mark) shows the pointer leaving again
+        after = out["start"][1] if out["start"] else -1.0
+        stays = [(a - p0, b - p0) for a, b in pointer_open_runs(frames, pts) if a - p0 > after]
+        # (while the pointer waits in the corner it moves a pixel to and fro: at a low frame
+        # rate two such frames look like a short visit of their own, so a visit inside a stay
+        # is not a mark)
+        visits = [(a - p0, b - p0) for a, b in pointer_runs(frames, pts)
+                  if a - p0 > after and not any(s[0] <= a - p0 for s in stays)]
+        tol = 0.6 if out["start"] else 1.6
+        stop = _nearest(stays, exp_stop, tol) or _nearest(visits, exp_stop, tol)
+        if stop:
+            out["stop"] = stop
+        else:
+            say(f"sync: no stop mark near {exp_stop if exp_stop is None else round(exp_stop, 2)} s (stays from "
+                f"{[round(r[0], 2) for r in stays][:6]}, visits at {[round(r[0], 2) for r in visits][:6]}, "
+                f"{len(frames)} frames read)")
+    return out
+
+
+def fit_pointer(log_marks: list[float], found: dict, fps: float, clock_a: float | None = None) -> SyncFit:
+    """The time fit from the stage's pointer marks (each known to be the start or the stop)."""
+    start, stop = found.get("start"), found.get("stop")
+    half = 0.5 / max(fps, 1.0)
+    if start and stop and len(log_marks) >= 2:
+        f = fit([log_marks[0], log_marks[-1]], [start, stop], fps, None)
+        if f.method == "markers2":
+            return f
+    if start and log_marks:
+        return SyncFit(start[0] - half - log_marks[0], 1.0, [start[0] - half], [log_marks[0]], "markers1")
+    if stop and len(log_marks) >= 2:
+        return SyncFit(stop[0] - half - log_marks[-1], 1.0, [stop[0] - half], [log_marks[-1]], "markers1")
+    if clock_a is not None:
+        return SyncFit(clock_a, 1.0, [], list(log_marks), "clock")
+    return SyncFit(method="none", markers_video=[], markers_log=list(log_marks))
+
+
+def pointer_trim(found: dict, fps: float, duration: float) -> tuple[float, float] | None:
+    """Default export range that leaves the pointer marks (and the pointer's way back) out."""
+    start, stop = found.get("start"), found.get("stop")
+    if not start and not stop:
+        return None
+    f = max(fps, 1.0)
+    t0 = start[1] + 2.0 / f + POINTER_AFTER_S if start else 0.0
+    t1 = stop[0] - 1.0 / f - POINTER_AFTER_S if stop else duration
+    return (round(t0, 4), round(t1, 4)) if t1 > t0 else None
 
 
 def frame_times(raw: Path, ffmpeg: str = "ffmpeg") -> list[float] | None:

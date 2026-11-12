@@ -98,7 +98,46 @@ def _last_recording() -> list[str]:
     return out
 
 
-def build() -> str:
+def _stage(selftest: bool = False) -> list[str]:
+    """The hidden stage: its self test (`dolly doctor --stage`, step by step), what it is set
+    to, what is running or left behind, and the end of its compositor's log. The self test
+    starts a stage for a few seconds unless one is running: only `dolly doctor --report`
+    asks for it, and DOLLY_REPORT_STAGE=0 leaves it out there too."""
+    from . import stage
+    out: list[str] = []
+    if not selftest or os.environ.get("DOLLY_REPORT_STAGE", "1") == "0":
+        out.append("self test: not run (dolly doctor --stage runs it)")
+    else:
+        res = stage.selftest()
+        out += ["self test (dolly doctor --stage):"] + stage.selftest_lines(res)
+    out.append("settings: " + json.dumps(stage.settings()))
+    st = stage.status()
+    keep = ("running", "size", "minutes_left", "memory_mb", "sound", "look", "background", "background_note",
+            "recording", "leftovers")
+    out.append("status: " + json.dumps({k: st.get(k) for k in keep if k in st}))
+    src = stage.wallpaper_source()
+    out.append("desktop picture: " + (src.name if src else "none found"))
+    out.append("sessions: " + json.dumps([{"sig": i["sig"][-10:], "alive": i["alive"], "stage": i["stage"], "wl": i["wl"]}
+                                          for i in stage.instances()]))
+    out += ["-- stage.log (what the stage's compositor said; its starts, warnings and errors) --",
+            _stage_log(stage.base_dir() / "stage.log")]
+    return out
+
+
+def _stage_log(p: Path, n: int = 40) -> str:
+    """The stage compositor's log without its welcome picture: the lines Dolly wrote at each
+    start, and what Hyprland marked as a warning or an error."""
+    try:
+        lines = p.read_text(errors="replace").splitlines()
+    except OSError:
+        return "(none)"
+    keep = [re.sub(r"\x1b\[[0-9;]*m", "", l).rstrip() for l in lines
+            if l.startswith("===") or re.search(r"\b(ERR|ERROR|CRIT|CRITICAL|WARN|WARNING)\b|rror:|failed|cannot|could not", l)
+            and "start-hyprland" not in l]          # (said at every start of a second Hyprland: expected)
+    return "\n".join(l[:300] for l in keep[-n:]) or "(nothing but start-up lines)"
+
+
+def build(stage_test: bool = False) -> str:
     from . import doctor, log
     parts: list[str] = [f"Dolly report  {time.strftime('%Y-%m-%d %H:%M:%S %z')}"]
     try:
@@ -133,14 +172,18 @@ def build() -> str:
         section("latest recording", _last_recording())
     except Exception as e:
         section("latest recording", f"failed: {e!r}")
+    try:
+        section("hidden stage (beta)", _stage(stage_test))
+    except Exception as e:
+        section("hidden stage (beta)", f"failed: {e!r}")
     state = log.state_dir()
     section("last error", _tail(state / "last-error.log", 80))
     section("dolly.log (tail)", _tail(state / "dolly.log"))
     return redact("\n".join(parts)) + "\n"
 
 
-def write(dest: Path | None = None) -> Path:
-    text = build()
+def write(dest: Path | None = None, stage_test: bool = False) -> Path:
+    text = build(stage_test)
     name = f"dolly-report-{time.strftime('%Y%m%d-%H%M%S')}.txt"
     for folder in ([dest] if dest else []) + [Path.cwd(), Path.home()]:
         try:

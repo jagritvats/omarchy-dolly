@@ -227,6 +227,42 @@ dolly export "$DIR" --json --width 1280
 - Code: `dolly/headless.py` (targets, JSON, `--for`), tests in `tests/test_headless.py`.
   `capture.start`/`stop` are unchanged; headless only names the target and waits.
 
+## Hidden stage (0.9.9 beta: `dolly/stage.py`)
+
+A second Hyprland inside the session, with its window output off and a headless output
+`STAGE` of its own. `stage.enter()` points a process at it (`DOLLY_STAGE=1`,
+`WAYLAND_DISPLAY`, `HYPRLAND_INSTANCE_SIGNATURE`); from then on `logger.on_stage()` is
+true and:
+- `logger.runtime_dir()` is `$XDG_RUNTIME_DIR/dolly/stage/rt` (state per desktop: the bar
+  watches the real desktop's folder only);
+- `capture.notify`, the shell calls, Do Not Disturb and Stay Awake do nothing; the
+  recorder is always wf-recorder, wrapped in a memory-limited scope;
+- the sync marker is the stage's pointer in the top-left corner (`stage.pointer_mark`,
+  `sync.detect_pointer_marks`, `fit_pointer`, `pointer_trim`). The start mark is shown
+  0.3 s and goes back; the stop mark stays (`stay=True`) and `stage.pointer_home()` takes
+  the pointer back after the recorder has gone. `capture.stop` leaves the stage still
+  until the recorder is idle (`stage.recorder_drained`, `drain_limit`): wf-recorder drops
+  its unencoded frames at the stop signal;
+- keys: Hyprland reports a typing tool's keys as codes that say nothing (`wtype` brings
+  its own keymap), so on a stage the bridge's keys are logged without a name
+  (`keymap.UNNAMED`) unless a `dolly stage type|key` holds them (`inject.Feed.hold`) and
+  reports them by name through `script-input.jsonl`, which a stage take always follows;
+- a stage take records no microphone and no camera unless asked
+  (`cli.apply_record_defaults`); "system audio" is the stage's sink
+  (`stage.system_audio_device`), which the stage's programs get through `PULSE_SINK` and
+  `PIPEWIRE_NODE`;
+- the desktop picture is a generated Quickshell program on the stage's background layer
+  (`stage.wallpaper_start`), the theme colour when anything about it fails;
+- `inject.Desktop.launch` runs commands through `stage.wrap_command` (no `uwsm-app`
+  scope, a private browser profile).
+`headless.adopt_session_env` never returns a stage (`stage.real_session`). Cleanup:
+`stage.stop`, `stage.sweep` (dead stage, failed start, killed stage), the owner watcher
+(`python -m dolly.stage reap PID`). `stage.selftest()` is `dolly doctor --stage`: every
+step reported on its own. Tests: `tests/test_stage.py` (fakes of Hyprland, hyprctl,
+systemd-run, pactl, grim, wf-recorder, wtype, quickshell). Timing check on a real take:
+`python3 harness/stage_timing.py <take>`. For someone with real hardware:
+`docs/stage-testing.md`. Only ever run in a VirtualBox VM.
+
 ## Privacy by default (0.6 prototype: `dolly/sensitive.py`, `privacy.auto_boxes`)
 
 - At finalize, every password manager, keyring or authentication prompt window

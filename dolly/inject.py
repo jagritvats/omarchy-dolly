@@ -28,7 +28,7 @@ import time
 from pathlib import Path
 
 from . import hypr, keymap
-from .logger import hypr_json, hypr_request, runtime_dir
+from .logger import hypr_json, hypr_request, on_stage, runtime_dir
 from .storyboard import KEYS, travel_seconds
 
 FEED_NAME = "script-input.jsonl"
@@ -53,12 +53,19 @@ def char_code(ch: str) -> tuple[int, bool]:
 
 
 class Feed:
-    """Lines for the event logger (it follows this file while DOLLY_EVENTS_FROM_SCRIPT=1)."""
+    """Lines for the event logger. It follows this file while DOLLY_EVENTS_FROM_SCRIPT=1
+    (`dolly run`), and for every take on the hidden stage (`dolly stage type|key|click`)."""
 
     def __init__(self, path: Path | None = None):
         self.path = Path(path) if path else runtime_dir() / FEED_NAME
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.f = open(self.path, "a", buffering=1)
+
+    def hold(self, seconds: float):
+        """"The key codes Hyprland reports for the next `seconds` are mine: I report them by
+        name." On a stage the logger also hears Hyprland; without this it would log each key
+        a second time, as one it cannot name. A later call replaces an earlier one."""
+        self.f.write(json.dumps({"type": "hold", "until": round(time.monotonic() + max(0.0, seconds), 3)}) + "\n")
 
     def key(self, code: int, down: bool):
         self.f.write(json.dumps({"type": "key", "code": code + 8, "down": down}) + "\n")
@@ -84,16 +91,27 @@ class Feed:
             pass
 
 
-def _dispatch(lua: str) -> bool:
-    """One Hyprland dispatcher; the socket is used directly (pointer travel sends ~60 a second)."""
-    out = hypr_request("/dispatch " + lua, timeout=1.0)
+LAST_ANSWER = ""        # what Hyprland said to the last dispatcher that was not accepted
+
+
+def _dispatch(lua: str, timeout: float = 1.0) -> bool:
+    """One Hyprland dispatcher; the socket is used directly (pointer travel sends ~60 a second).
+    `timeout`: how long to wait for the answer before asking again through hyprctl. A click
+    waits longer: on a busy machine Hyprland can take over a second, and asking twice clicks twice."""
+    global LAST_ANSWER
+    out = hypr_request("/dispatch " + lua, timeout=timeout)
     if out is not None and out.strip() == "ok":
         return True
+    first = f"no answer within {timeout:g} s" if out is None else out.strip()[:120]
     try:
         r = subprocess.run(["hyprctl", "dispatch", lua], capture_output=True, text=True, timeout=2)
-    except (OSError, subprocess.TimeoutExpired):
+    except (OSError, subprocess.TimeoutExpired) as e:
+        LAST_ANSWER = f"{first}; then {type(e).__name__}"
         return False
-    return r.returncode == 0 and r.stdout.strip() == "ok"
+    if r.returncode == 0 and r.stdout.strip() == "ok":
+        return True
+    LAST_ANSWER = f"{first}; then {(r.stdout + r.stderr).strip()[:120] or 'nothing'}"
+    return False
 
 
 def capabilities() -> dict:
@@ -112,7 +130,8 @@ def capabilities() -> dict:
 
 
 class Desktop:
-    """Performs steps on the real desktop. Tests replace this with a fake of the same shape."""
+    """Performs steps on the desktop the environment names: the real one, or the hidden stage
+    after `stage.enter()`. Tests replace this with a fake of the same shape."""
 
     def hold_key_repeat(self) -> bool:
         from . import hypr
@@ -192,8 +211,8 @@ class Desktop:
         if self.feed:
             self.feed.click(x, y, button)
         key, to = f"mouse:{_BUTTON[button]}", f"address:{win['address']}"
-        if not _dispatch(f'hl.dsp.send_shortcut({{ mods = "", key = "{key}", window = "{to}" }})'):
-            raise RuntimeError("Hyprland refused the click")
+        if not _dispatch(f'hl.dsp.send_shortcut({{ mods = "", key = "{key}", window = "{to}" }})', timeout=4.0):
+            raise RuntimeError(f"Hyprland refused the click ({LAST_ANSWER})")
 
     # ---------------------------------------------------------- windows
     def clients(self) -> list[dict]:
@@ -218,6 +237,11 @@ class Desktop:
         """Start a program through Hyprland (as a keybinding would). "terminal" = the user's terminal."""
         if command == "terminal":
             command = terminal_command()
+        if on_stage():
+            # on the hidden stage: inside the stage's memory limit (no scope of its own), and a
+            # browser with a profile of its own (the user's would open the window on the real desktop)
+            from . import stage
+            command = stage.wrap_command(command)
         if cwd:
             command = f"cd {shlex.quote(os.path.expanduser(cwd))} && exec {command}"
         if not _dispatch(f"hl.dsp.exec_cmd({json.dumps(command)})"):

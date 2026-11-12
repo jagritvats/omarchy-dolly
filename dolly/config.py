@@ -91,6 +91,12 @@ SCHEMA: list[dict] = [
     {"key": "storage.folder", "type": "str", "default": "", "max_len": 400},
     {"key": "storage.keep_raw", "type": "bool", "default": True},
     {"key": "storage.cleanup_days", "type": "int", "default": 0, "min": 0, "max": 365},
+    # ---- Hidden stage (beta): a second, invisible desktop for takes (dolly/stage.py)
+    {"key": "stage.size", "type": "str", "default": "1920x1080", "max_len": 11},
+    {"key": "stage.max_minutes", "type": "int", "default": 30, "min": 1, "max": 720},
+    {"key": "stage.memory_mb", "type": "int", "default": 1500, "min": 300, "max": 16000},
+    {"key": "stage.recorder_memory_mb", "type": "int", "default": 1500, "min": 300, "max": 16000},
+    {"key": "stage.background", "type": "enum", "default": "wallpaper", "options": ["wallpaper", "color"]},
 ]
 # ---- Shortcuts: the hotkeys Set up writes (dolly/integration.py). "" = switched off.
 from .integration import SHORTCUTS as _SHORTCUTS  # noqa: E402
@@ -98,7 +104,7 @@ from .integration import SHORTCUTS as _SHORTCUTS  # noqa: E402
 SCHEMA += [{"key": f"shortcuts.{_s['id']}", "type": "shortcut", "default": _s["default"], "label": _s["label"]}
            for _s in _SHORTCUTS]
 BY_KEY = {s["key"]: s for s in SCHEMA}
-GROUPS = ["capture", "shortcuts", "audio", "camera", "look", "zoom", "privacy", "export", "sharing", "storage"]
+GROUPS = ["capture", "shortcuts", "audio", "camera", "look", "zoom", "privacy", "export", "sharing", "storage", "stage"]
 
 SIZE_FRAC = {"S": 0.16, "M": 0.22, "L": 0.30}
 

@@ -10,15 +10,18 @@
 --   * non-consuming, mod-agnostic mouse binds see every button press
 --     (the click still reaches the app)
 --   * the `input.keyboard.key` event sees every key (keycode, time, state)
--- Each observation is appended as one JSON line to
--- $XDG_RUNTIME_DIR/dolly/input.jsonl, which the Dolly logger tails and
--- timestamps on arrival.
+-- Each observation is appended as one JSON line to input.jsonl in the folder of
+-- the take in progress, which the Dolly logger tails and timestamps on arrival.
+-- The logger names that folder in `dolly_input_dir` before loading this file
+-- (default: $XDG_RUNTIME_DIR/dolly). The hidden stage has a folder of its own:
+-- what is typed on a stage must never land in a take on the real desktop.
 -- Nothing is written anywhere when no recording is active.
 
 if dolly_input_stop then pcall(dolly_input_stop) end
 
 local runtime = os.getenv("XDG_RUNTIME_DIR") or "/tmp"
-local path = runtime .. "/dolly/input.jsonl"
+local dir = (type(dolly_input_dir) == "string" and dolly_input_dir ~= "") and dolly_input_dir or (runtime .. "/dolly")
+local path = dir .. "/input.jsonl"
 local f = io.open(path, "a")
 if not f then return end
 f:setvbuf("line")
@@ -39,7 +42,7 @@ for code, name in pairs(buttons) do
 end
 
 -- key capture is skipped when the recorder created the "nokeys" marker
-local nk = io.open(runtime .. "/dolly/nokeys", "r")
+local nk = io.open(dir .. "/nokeys", "r")
 local KEY_ON = nk == nil
 if nk then nk:close() end
 local sub = nil

@@ -128,10 +128,17 @@ def minutes_text(m: float) -> str:
     return f"{m / 60:.1f} h"
 
 
+def _on_stage() -> bool:
+    from .logger import on_stage
+    return on_stage()
+
+
 # ------------------------------------------------------------------ DND
 def _shell(*args, timeout=1.5) -> str | None:
-    """omarchy-shell <target> <method> [args] (ShellIpc targets, e.g. notifications)."""
-    if not shutil.which("omarchy-shell"):
+    """omarchy-shell <target> <method> [args] (ShellIpc targets, e.g. notifications).
+    None on the hidden stage: the shell belongs to the real desktop, which a stage take
+    must leave exactly as it is (no Do Not Disturb, no cards taken down)."""
+    if _on_stage() or not shutil.which("omarchy-shell"):
         return None
     try:
         r = subprocess.run(["omarchy-shell", *args], capture_output=True, text=True, timeout=timeout)
@@ -254,8 +261,8 @@ def stay_awake_file() -> Path:
 def awake_begin() -> str | None:
     """Keep the machine awake for a take. Returns Dolly's owner line, or None when nothing
     was changed (already awake: the user's or an update's marker is not Dolly's to touch)."""
-    if os.environ.get("DOLLY_STAY_AWAKE", "1") == "0":
-        return None
+    if os.environ.get("DOLLY_STAY_AWAKE", "1") == "0" or _on_stage():
+        return None                          # a stage take does not touch the real desktop's idle setting
     f = stay_awake_file()
     token = f"{AWAKE_PREFIX}{os.getpid()}:{int(time.time())}"
     try:
@@ -323,6 +330,14 @@ def leftovers() -> list[str]:
     if _recording_live():
         return []
     out = []
+    if _on_stage():                          # on a stage only key repeat is ever changed
+        try:
+            from . import hypr
+            if hypr._repeat_file().exists():
+                out.append("key repeat is still switched off on the stage from a scripted take that ended")
+        except Exception:
+            _dlog.swallowed()
+        return out
     led = ledger()
     if led.get("dnd_prev") is False and dnd_state() is True:
         out.append("Do Not Disturb is still on from a recording that ended")
@@ -350,6 +365,10 @@ def heal(key_repeat: bool = True) -> list[str]:
     if _recording_live():
         return []
     done = []
+    if _on_stage():
+        # Do Not Disturb, Stay Awake and solid windows belong to the real desktop: a take on
+        # the stage never changed them, and must not "heal" what a take over there holds
+        return _heal_stage(key_repeat)
     led = ledger()
     if led.get("dnd_prev") is False:
         if dnd_state() is True:
@@ -382,6 +401,32 @@ def heal(key_repeat: bool = True) -> list[str]:
             _dlog.swallowed()
     if done:
         _dlog.get().info("desktop healed: %s", "; ".join(done))
+    return done
+
+
+def _heal_stage(key_repeat: bool) -> list[str]:
+    done = []
+    try:
+        from . import solid
+        if solid._load() and solid.restore():
+            done.append("let the stage's windows be translucent again")
+    except Exception:
+        _dlog.swallowed()
+    if key_repeat:
+        try:
+            from . import hypr
+            if hypr._repeat_file().exists() and hypr.restore_key_repeat():
+                done.append("switched key repeat back on, on the stage")
+        except Exception:
+            _dlog.swallowed()
+    if shutil.which("hyprctl") and os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"):
+        try:
+            subprocess.run(["hyprctl", "eval", "if dolly_input_stop then dolly_input_stop() end"],
+                           capture_output=True, timeout=2)
+        except Exception:
+            _dlog.swallowed()
+    if done:
+        _dlog.get().info("stage healed: %s", "; ".join(done))
     return done
 
 
@@ -501,6 +546,8 @@ _alive = pid_alive
 
 
 def _refresh():
+    if _on_stage():
+        return                               # the bar button shows the real desktop's recordings only
     if shutil.which("omarchy-shell"):
         subprocess.Popen(["omarchy-shell", "-q", "io.github.jagritvats.dolly", "refresh"],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -573,9 +620,12 @@ def recorder_pids(proc_root: str | None = None) -> list[int]:
 
 
 def own_recorder_pids() -> set[int]:
-    """Recorders Dolly started (recording and instant replay)."""
+    """Recorders Dolly started (recording and instant replay), on the real desktop and on
+    the hidden stage: neither is "another recorder" to the other."""
     own = set()
-    for f in (runtime_dir() / "state.json", runtime_dir() / "replay.json"):
+    base = Path(os.environ.get("XDG_RUNTIME_DIR") or os.path.expanduser("~/.local/state")) / "dolly"
+    dirs = {runtime_dir(), base, base / "stage" / "rt"}
+    for f in [d / n for d in dirs for n in ("state.json", "replay.json")]:
         try:
             p = json.loads(f.read_text()).get("recorder_pid")
             if p:
@@ -612,9 +662,28 @@ def other_recorder() -> str | None:
     except (OSError, ValueError):
         pass
     for p in recorder_pids():
-        if p not in own and pid_alive(p):
+        if p not in own and pid_alive(p) and not _records_the_other_desktop(p):
             return f"{_proc_exe(p)} (pid {p})"
     return None
+
+
+def _records_the_other_desktop(pid: int) -> bool:
+    """Is this recorder on the hidden stage while we are on the desktop, or the reverse?
+    A take's recorder is only in its state file once the take has started, half a second
+    after the recorder itself: a take on the other desktop that began in that half second
+    was refused as "wf-recorder is already recording" (11 Nov, one start in ten). Which
+    screen a recorder is on is in its environment from its first moment."""
+    try:
+        from . import stage
+        theirs = stage._environ_of(pid).get("WAYLAND_DISPLAY")
+        mine = os.environ.get("WAYLAND_DISPLAY")
+        if not theirs or not mine or theirs == mine:
+            return False
+        stages = {i["wl"] for i in stage.instances() if i["stage"] and i["wl"]}
+        return theirs in stages or mine in stages
+    except Exception:
+        _dlog.swallowed()
+        return False
 
 
 def recorder_exit_kind(pdir) -> str:

@@ -19,3 +19,9 @@ NAMES[87], NAMES[88] = "F11", "F12"
 
 def label(code: int) -> str | None:
     return NAMES.get(code)
+
+
+# A key that was pressed but cannot be named: on the hidden stage every key comes from a
+# typing tool with a keymap of its own, and Hyprland reports only the code (dolly/logger.py,
+# on_unnamed_key). It counts as typing; it is never shown as a keycap.
+UNNAMED = "?"

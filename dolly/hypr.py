@@ -118,8 +118,11 @@ def set_key_repeat_delay(ms: int) -> bool:
 
 
 def _repeat_file():
+    """Where the delay to put back is kept. One note per desktop: the hidden stage has its own
+    Hyprland, and its note must never be "restored" onto the real one (or the reverse)."""
     from .log import state_dir
-    return state_dir() / "key-repeat"
+    from .logger import on_stage
+    return state_dir() / ("key-repeat-stage" if on_stage() else "key-repeat")
 
 
 def restore_key_repeat() -> bool:

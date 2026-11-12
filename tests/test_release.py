@@ -12,13 +12,14 @@ def test_manifest_has_what_omarchy_and_the_marketplace_need():
     for key in ("schemaVersion", "id", "name", "version", "author", "description", "kinds", "entryPoints"):
         assert MANIFEST.get(key), key
     assert not MANIFEST["id"].startswith("omarchy."), "reserved namespace"
-    assert re.fullmatch(r"\d+\.\d+\.\d+", MANIFEST["version"]), MANIFEST["version"]
+    # a test build may carry a pre-release suffix (0.9.9-beta.1); Omarchy's validator accepts it
+    assert re.fullmatch(r"\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?", MANIFEST["version"]), MANIFEST["version"]
     for kind, entry in MANIFEST["entryPoints"].items():
         assert (ROOT / entry).is_file(), f"{kind} -> {entry}"
 
 
 def test_changelog_starts_with_the_manifest_version():
-    first = re.search(r"^## (\d+\.\d+\.\d+)", (ROOT / "CHANGELOG.md").read_text(), re.M)
+    first = re.search(r"^## (\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?)", (ROOT / "CHANGELOG.md").read_text(), re.M)
     assert first and first.group(1) == MANIFEST["version"], "add a CHANGELOG entry for this version"
 
 

@@ -118,7 +118,7 @@ Omarchy, cannot use a virtual GPU). `ffmpeg` ships with Omarchy.
 | Menu (Super+Space, after **Set up**) | Trigger → Capture → **Demo**: record a window, a region or the screen · open last · recordings · share last recording · instant replay · settings. While a take is running the entry is **Stop demo** |
 | Editor | opens after you stop, without taking focus. Library · Editor · Settings. Timeline lanes for zoom, speed and privacy; 16:9 / 9:16 / 1:1 preview; In/Out trim; camera bubble shape, size and position (drag it); camera-only ranges; per-track volume and mute; blur boxes; Scrub secrets; captions; title card; **Share** (Ctrl+E) |
 | Settings | the editor's Settings view (also `dolly settings`): Capture, Audio, Camera, Look, Auto-zoom, Privacy, Export, Sharing, Storage. Stored in `~/.config/dolly/config.json`; the bar widget's own options stay in sync |
-| CLI | `dolly record [--mode screen|window|region] [--audio none|mic|system|both] [--camera off|edit|live] · stop · pause · mute · mark · replay · edit · library [--open] · settings · config get/set · export [--aspect 16:9|9:16|1:1|4:5] [--quality draft|fast|high|best] [--gif] · share … · run demo.toml [--dry-run] [--json] · recover · deps · setup · update · integration · doctor` |
+| CLI | `dolly record [--mode screen|window|region] [--audio none|mic|system|both] [--camera off|edit|live] · stop · pause · mute · mark · replay · edit · library [--open] · settings · config get/set · export [--aspect 16:9|9:16|1:1|4:5] [--quality draft|fast|high|best] [--gif] · share … · run demo.toml [--dry-run] [--json] [--stage] · stage start|stop|status|shot|exec|type|key|click|move (beta) · recover · deps · setup · update · integration · doctor` |
 
 ### Scripted demos
 
@@ -242,6 +242,103 @@ dolly export "$DIR" --json --width 1280
   `folder-not-writable`, `disk-full`, `no-compositor`, `export-failed`.
 - Automatic zooms, cursor smoothing and the automatic privacy blurs apply as in a normal
   recording; `dolly edit DIR` opens it in the editor later.
+
+## Hidden stage (beta)
+
+A second, invisible desktop that Dolly can record on while you keep working. The stage
+has its own pointer, its own keyboard focus and its own windows; nothing of it shows on
+your screen, and nothing you do reaches it.
+
+```bash
+dolly run demo.toml --stage                   # perform and record a storyboard on the stage
+dolly run demo.toml --stage --stage-size 1080x1920    # a vertical stage for 9:16 demos
+dolly record --stage --for 20 --json          # record the stage for 20 seconds
+
+dolly stage start [--size 1920x1080] [--background wallpaper|colour]
+dolly stage exec -- chromium https://example.com      # start a program on it
+dolly stage type 'ls -la' --enter             # type into its focused window
+dolly stage key ctrl+l                        # a key or a chord
+dolly stage click 640 360                     # move its pointer there and click
+dolly stage move 200 120
+dolly stage shot stage.png                    # look at what is on it
+dolly stage status
+dolly stage stop
+```
+
+`--stage` starts a stage when none is running and stops it afterwards. A stage you
+started with `dolly stage start` stays until `dolly stage stop`. Every `dolly stage`
+command takes `--json`.
+
+What a stage take leaves alone: your windows, pointer and focus, the bar button (it only
+shows recordings of your desktop), notifications (no cards are sent for a stage take),
+Do Not Disturb, Stay Awake and key repeat. You can record your own desktop while a stage
+take runs, and the reverse.
+
+What it is: a second Hyprland started inside your session, with the look of your Omarchy
+(gaps, borders, colours, fonts, input settings) and your desktop picture, but no bar and
+no dock; its only screen is one that exists on no monitor. It runs under a memory limit
+(1500 MB) and stops by itself after 30 minutes; both are settings (Settings > Hidden
+stage).
+
+**Driving a stage by hand.** An agent that records with `dolly record --stage` and types
+by itself should type with `dolly stage type` and `dolly stage key`, and click with
+`dolly stage click`, not with `wtype`. They type and click on the stage and tell the
+take what they did, by name, so the take shows the right keycaps and follows the typing.
+A typing tool brings a keymap of its own and Hyprland reports its keys as codes that say
+nothing about the key (the letters of "ls" arrive as "Escape" and "1"). A key typed with
+another tool is therefore logged as a key without a name: the typing is still followed,
+and no wrong key is ever shown.
+
+**The background** is your current Omarchy desktop picture, cut to fill the stage
+(1080x1920 too). It is drawn once by Quickshell, which ships with Omarchy; no package is
+added. When the picture cannot be found or drawn, the stage shows your theme's colour and
+`dolly stage start` says why. Settings > Hidden stage > Behind the windows chooses the
+picture or the colour; `--background` chooses for one stage.
+
+**Sound, microphone, camera.** Programs on the stage play into a private output, not
+your speakers. `--audio system` on a stage take records that output: what the stage's
+programs play, and nothing of what your desktop plays. The microphone and the camera are
+your own, in the room. A stage take records neither unless the command asks
+(`--audio mic`, `--audio both`, `--camera edit|live`), whatever Settings say for your own
+recordings; asked for, the microphone track is your real default microphone and the
+camera is your real camera.
+
+**Is it working here?** `dolly doctor --stage` uses a stage the way a take does and says,
+step by step, what worked: start, a drawn frame, a second of recording, the sync mark in
+that recording, where the stage's sound goes, stop. `dolly doctor --report` puts the same
+into the file for a bug report.
+
+This is a beta. **It has only ever been run in a VirtualBox VM** (software rendering, no
+GPU, no camera). If you have a machine with a real GPU, `docs/stage-testing.md` is a
+ten-minute checklist of what to run and what to send back. Known limits:
+
+- It is recorded with `wf-recorder` (CPU encoding, about half of one CPU core in the VM
+  at 1080p60), and the pointer is part of the picture.
+- The desktop picture costs one small program for as long as the stage runs: no CPU
+  while nothing changes, and memory for one picture. A video background shows its first
+  frame.
+- Browsers started on the stage get a profile folder of their own
+  (`~/.cache/dolly/stage-profiles`), otherwise the window would open in your running
+  browser. Other programs that keep a single running copy may still open on your desktop.
+- A program that names its own sound output plays there, not on the stage's.
+- Timing comes from the stage's pointer: it is shown in the top-left corner for a moment
+  at the start of a take, and again at the end, where it stays until the recorder has
+  stopped (both outside the exported range).
+- Stopping a stage take waits for its recorder. wf-recorder drops the frames it has not
+  encoded yet when it is told to stop, so the stage is left still until the recorder has
+  finished them: a second or two in the VM. It also writes 60 frames for every second in
+  which nothing changed, and only when the next change comes; in the VM that takes about
+  as long as the still stretch itself, so stopping a take on a stage where nothing moved
+  for ten seconds takes ten seconds more (`--fps 30` halves it). A machine that encodes
+  video quickly should not notice; nobody has measured one yet.
+- On a machine that is far too busy the recorder falls behind for good (seen once, with
+  three compilers on the VM's four cores): the end of the take, with its stop mark, never
+  reaches the file. The take's result then warns that only one of the two sync marks was
+  found.
+- On a stage nothing is resized by dragging a window's border (the resize pointer would
+  spoil the sync mark).
+- X11 programs do not run on a stage. One stage at a time. What happens to a stage when
+  your session locks or sleeps is not known yet.
 
 ## Virtual machines
 

@@ -1,5 +1,88 @@
 # Changelog
 
+## 0.9.9-beta.1 (2026-11-11)
+
+A test build for one feature. Not a release: it lives on its own branch until the hidden
+stage has been tried on real hardware. Everything below has only been run in a
+VirtualBox VM (software rendering, no GPU, no camera). `docs/stage-testing.md` is a
+ten-minute checklist for someone with a real machine.
+
+Hidden stage (beta)
+- `dolly run demo.toml --stage` and `dolly record --stage` perform and record on a
+  second, invisible desktop with its own pointer and keyboard, while you keep working on
+  yours. `--stage-size 1080x1920` gives a vertical stage.
+- `dolly stage start | stop | status | shot | exec` to keep a stage running, and
+  `dolly stage type | key | click | move` to drive it by hand: they type and click on the
+  stage and tell a take what they did, by name, so a take recorded with
+  `dolly record --stage` shows the right keycaps and follows the typing. A key typed
+  with another tool (wtype) is logged as a key without a name, never under a wrong one.
+- The stage shows your Omarchy desktop picture, cut to fill it (a vertical stage too) and
+  drawn once by Quickshell; no package is added. Your theme's colour when the picture
+  cannot be found or drawn. Settings > Hidden stage > Behind the windows, or
+  `dolly stage start --background wallpaper|colour`.
+- A stage take leaves your desktop alone: no window, no notification card, no change to
+  the bar button, Do Not Disturb, Stay Awake or key repeat. Its state is kept apart, so a
+  recording of your own desktop and a stage take can run at the same time.
+- Sound: programs on the stage play into a private output, also those that speak
+  PipeWire directly (mpv). `--audio system` on a stage take records that output and
+  nothing of what your desktop plays. A stage take records no microphone and no camera
+  unless the command asks, whatever Settings say. `--camera live` shows the bubble on
+  the stage.
+- The stage runs under a memory limit and stops by itself after 30 minutes; its recorder
+  has a memory limit of its own. Whatever a crashed or killed stage leaves behind is
+  removed by `dolly stage stop` and by the next start.
+- Timing on the stage comes from its own pointer, shown in the top-left corner at the
+  start of a take and again at the end, where it stays until the recorder has stopped.
+  Both marks were found in five of five takes recorded while a second take ran on the
+  desktop; a typed key and its picture are within a frame or two of each other.
+- `dolly doctor --stage` uses a stage the way a take does and reports each step: start,
+  a drawn frame, a second of recording, the sync mark in it, where the stage's sound
+  goes, stop. `dolly doctor --report` has the same in a stage section.
+- Browsers on the stage get a profile folder of their own.
+- Dolly never picks a stage by accident: with no session named in the environment it
+  uses your desktop's.
+
+Found while testing two takes at once, and fixed
+- Two takes started in the same second shared one folder, and both recorders wrote into
+  one `raw.mkv`. A take's folder is now made, never adopted; the later take gets `-2`.
+- The stop mark of a stage take was lost on a busy machine: wf-recorder drops the frames
+  it has not encoded yet when it is told to stop. The stage is now left still until the
+  recorder has finished them (seen from its use of the processor), then it is stopped.
+- Near a window's corner the stage's pointer turned into the resize pointer, which made
+  half the frames of a sync mark look empty and every mark 0.2 to 0.3 s late. A stage
+  never shows the resize pointer now, the mark sits where the arrow shows best, and it is
+  read as "there" until the corner has looked as before for a tenth of a second.
+- A stage with nothing moving on it began its take two seconds late (the recorder was
+  waiting for a first frame) and its start mark was then not where the clock said.
+- A take on the desktop that began within half a second of one on the stage (or the
+  reverse) was refused as "wf-recorder is already recording": the other take's recorder
+  was running and not yet in its state file. Seen once in ten such starts.
+- A stage stops only programs of its own session's runtime folder. A socket's name says
+  little (anyone's second compositor is "wayland-2"): the stage's own tests stopped the
+  recorder of a stage that was really running.
+- The stop mark is looked for where it must be, however long the file runs on after it
+  (the stop can wait many seconds for a recorder that is behind).
+
+Known limits of this build
+- The stage's recorder writes 60 frames for every second, also when nothing changes, and
+  catches up on a still stretch only when the next change comes. In the VM that takes
+  about as long as the stretch itself, so stopping a take on a stage where nothing moved
+  for ten seconds takes ten seconds more. `--fps 30` halves it; a machine that encodes
+  video quickly should not notice.
+- On a machine that is far too busy the recorder falls behind for good. Seen once, with
+  three compilers running on the VM's four cores: a 23 second storyboard took 76 seconds,
+  the file ended with a picture from a few seconds before the end of the take, and the
+  stop mark was not in it. Such a take now says so: its result warns that only one of
+  the two sync marks was found.
+- A program that names its own sound output plays there, not on the stage's.
+- X11 programs do not run on a stage. One stage at a time.
+
+Also in this build
+- The click and key bridge writes into the folder of the take in progress, so input on a
+  stage can never land in a recording of your desktop.
+- A click that Hyprland does not acknowledge says what Hyprland answered, and waits
+  longer before asking again.
+
 ## 0.7.0 (2026-11-11)
 
 Faster, lighter and closer to Omarchy. Tested on Omarchy 4.5 in VirtualBox (wf-recorder,

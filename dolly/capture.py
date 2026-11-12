@@ -30,7 +30,7 @@ from pathlib import Path
 
 from . import project as projmod
 from .i18n import t
-from .logger import hypr_json, runtime_dir
+from .logger import hypr_json, on_stage, runtime_dir
 from . import fsutil
 from . import log as _dlog
 
@@ -44,7 +44,12 @@ def _have(cmd):
 
 def notify(title, body="", *actions, urgency="normal", timeout=4000, image=None):
     """omarchy-notification-send (glyph, urgency, actions, preview image) like
-    Omarchy's own recorder; notify-send elsewhere. Strings come from dolly.i18n."""
+    Omarchy's own recorder; notify-send elsewhere. Strings come from dolly.i18n.
+    Nothing is shown for a take on the hidden stage: cards go over D-Bus, which both
+    desktops share, so they would land on the real one. The log keeps the words."""
+    if on_stage():
+        _dlog.get().info("stage (no card): %s%s", title, f": {body}" if body else "")
+        return
     if _have("omarchy-notification-send"):
         cmd = ["omarchy-notification-send", "--app-name", "Dolly", "-g", "󰑊", "-u", urgency, "-t", str(timeout)]
         if image and Path(image).exists():
@@ -71,9 +76,17 @@ def _nudge_screen(region=None):
     none does: it sat out the 10 s limit and was killed (seen once the bar button stopped
     repainting every few seconds). Mapping and unmapping Dolly's transparent marker surface
     repaints one corner of the screen, which is enough. It comes after the stop marker, so
-    it is outside the exported range, and it draws nothing.
+    it is outside the exported range, and it draws nothing. On the hidden stage there is no
+    shell: the stage's own pointer moves one pixel aside and back.
     `region` is the recorded area: the corner has to be on the monitor being recorded
     (the first monitor's corner gives a recorder of the second one no frame)."""
+    if on_stage():
+        try:
+            from . import stage
+            stage.nudge()
+        except Exception:
+            _dlog.swallowed()
+        return
     if not _have("omarchy-shell"):
         return
     geo = json.dumps({"x": region[0], "y": region[1], "size": 40}) if region else "{}"
@@ -85,11 +98,22 @@ def _nudge_screen(region=None):
             return
 
 
+def _stage_pointer_home():
+    """On the hidden stage the stop mark leaves the pointer in the corner until the recorder
+    has gone: take it back to where the take left it."""
+    if on_stage():
+        try:
+            from . import stage
+            stage.pointer_home()
+        except Exception:
+            _dlog.swallowed()
+
+
 def _dismiss_own_toasts() -> bool:
     """Dolly's own card from the last take stays for 10 s; a take started within that time
     must not open with it. Other apps' notifications are left alone (Do Not Disturb and
     the automatic privacy blur deal with those). True when the shell says a card went."""
-    if not _have("omarchy-shell"):
+    if on_stage() or not _have("omarchy-shell"):
         return False
     try:
         r = subprocess.run(["omarchy-shell", "notifications", "dismiss", t("notify.recorded")], timeout=1.5,
@@ -101,7 +125,7 @@ def _dismiss_own_toasts() -> bool:
 
 def _dismiss_toast(summary: str | None):
     """Take one of Dolly's own cards off the screen (by its title)."""
-    if not summary or not _have("omarchy-shell"):
+    if not summary or on_stage() or not _have("omarchy-shell"):
         return
     try:
         subprocess.run(["omarchy-shell", "-q", "notifications", "dismiss", summary], timeout=1.5,
@@ -213,7 +237,7 @@ def _notify_missing(need: dict):
 
 
 def shell_refresh():
-    if _have("omarchy-shell"):
+    if _have("omarchy-shell") and not on_stage():
         subprocess.Popen(["omarchy-shell", "-q", "io.github.jagritvats.dolly", "refresh"],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
@@ -384,6 +408,8 @@ def countdown(n: int, alive=None, last_call=None, last_call_s: float = 0.5):
 
 # ---------------------------------------------------------------- backends
 def backend_order(pref: str) -> list[str]:
+    if on_stage():
+        return ["wf"]               # the GPU recorder cannot see an output that exists on no graphics card
     forced = os.environ.get("DOLLY_BACKEND", pref)
     if forced and forced != "auto":
         return ["wf" if forced == "wf-recorder" else forced]
@@ -420,6 +446,7 @@ def _recorder_up(proc, raw: Path, log_path: Path, log_from: int, backend: str, l
     `limit` here before the event logger was even started). Once it has connected and
     picked its region it is listening; the bar changing a moment later gives it a frame."""
     t0 = time.monotonic()
+    repaint_at = 0.1
     while True:
         if proc.poll() is not None:
             return False
@@ -429,6 +456,11 @@ def _recorder_up(proc, raw: Path, log_path: Path, log_from: int, backend: str, l
         except OSError:
             pass
         el = time.monotonic() - t0
+        if backend == "wf" and on_stage() and el >= repaint_at:
+            # a stage with nothing moving on it never sends that first frame: the take began
+            # two seconds late, and its clock was off by as much
+            _nudge_screen()
+            repaint_at = el + 0.15
         if backend == "wf" and el >= 0.15:
             try:
                 with open(log_path, "rb") as f:
@@ -463,7 +495,7 @@ def _end_process(pid, sig, wait: float):
 
 def _toast_count() -> int:
     """Notification cards on screen right now (the shell's own count); 0 when unknown."""
-    if not _have("omarchy-shell"):
+    if on_stage() or not _have("omarchy-shell"):
         return 0
     try:
         r = subprocess.run(["omarchy-shell", "notifications", "count"], capture_output=True, text=True, timeout=1.5)
@@ -535,6 +567,23 @@ def _notification_layers() -> list:
     return out
 
 
+def new_take_folder(root: Path, stamp: str | None = None) -> Path:
+    """Make the folder of a new take: the time it starts, to the second. A take's folder is
+    its own. Two takes can start in the same second (one on the hidden stage, one on the
+    desktop: on 11 Nov both recorders wrote into one raw.mkv), so the folder is made, never
+    adopted; the later take gets "-2"."""
+    stamp = stamp or time.strftime("%Y-%m-%d_%H-%M-%S")
+    root.mkdir(parents=True, exist_ok=True)
+    for n in range(1, 100):
+        pdir = root / (stamp if n == 1 else f"{stamp}-{n}")
+        try:
+            pdir.mkdir()
+            return pdir
+        except FileExistsError:
+            continue
+    raise FileExistsError(f"{root / stamp}: too many takes started in one second")
+
+
 def start(a):
     """Pick -> countdown -> recorder -> logger. Raw video goes to raw.mkv: Matroska stays
     playable when the recorder is killed (crash, power loss), unlike an MP4 without
@@ -574,7 +623,8 @@ def start(a):
         _notify_disk(a, plan)
     try:
         from . import hypr
-        hypr.marker_no_anim()      # a fading sync marker costs the first seconds of a still take
+        if not on_stage():
+            hypr.marker_no_anim()  # a fading sync marker costs the first seconds of a still take
     except Exception:              # never refuse a recording over this
         pass
     toasts_before = _toasts_at_start()     # cards whose pixels can outlast the shell's count
@@ -598,9 +648,8 @@ def start(a):
             target_addr = win.get("address")
             tgt = monitor_target(mon)      # record the monitor, follow the window
     region, scale, monitor = tgt.region, tgt.scale, tgt.monitor
-    pdir = root / time.strftime("%Y-%m-%d_%H-%M-%S")
     try:
-        pdir.mkdir(parents=True, exist_ok=True)
+        pdir = new_take_folder(root)
     except OSError as e:                     # the folder changed under us since the check above
         health.set_phase("idle")
         _notify_cannot_record(root, e.strerror or str(e))
@@ -642,9 +691,13 @@ def start(a):
     clock_wall, clock_mono = time.time(), time.monotonic()
     tracks, warn = [], []
     try:
+        system_dev = getattr(a, "system_device", None) or audiomod.DEFAULT
+        if on_stage():
+            from . import stage as stagemod      # "system audio" of a stage take is the stage's own output
+            system_dev = stagemod.system_audio_device() or system_dev
         tracks = audiomod.start_tracks(pdir, audiomod.resolve(getattr(a, "audio", "none") or "none",
                                                               getattr(a, "mic_device", None) or audiomod.DEFAULT,
-                                                              getattr(a, "system_device", None) or audiomod.DEFAULT), log)
+                                                              system_dev), log)
     except ValueError as ex:
         warn.append(str(ex))
     for tr in tracks:
@@ -653,6 +706,9 @@ def start(a):
     chosen, proc = None, None
     for backend in backend_order(a.backend):
         cmd = recorder_cmd(backend, tgt, raw, a.fps, [])
+        if on_stage():
+            from . import stage as stagemod
+            cmd = stagemod.recorder_cmd(cmd)        # a memory limit: nothing on a stage may take the session down
         log.write(f"\n=== {time.strftime('%F %T')} backend={backend}\n$ {' '.join(cmd)}\n")
         log.flush()
         try:
@@ -724,6 +780,8 @@ def start(a):
             "terminals": TERMINALS, "solid_windows": solid_on, "ttff_ms": round(ttff * 1000), "hotkey_to_first_frame_ms":
             round((time.time() - t_invoke) * 1000), "countdown": n_count,
             "webcam": bool(cam_proc), "webcam_launch_mono": cam_launch}
+    if on_stage():
+        meta["stage"] = True                        # timed by the pointer mark, no cards, no shell
     fsutil.atomic_write_json(pdir / "capture.json", meta, indent=2)
     lg_cmd = [sys.executable, "-m", "dolly.cli", "log-events", str(pdir)] + (["--no-keys"] if a.no_keys else [])
     env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1]))
@@ -800,19 +858,30 @@ def start_bubble(dev, region, live: bool, countdown: bool = True):
     if not _have("mpv") or (not live and not countdown):
         return None
     c = load()["camera"]
+    cmd = cammod.bubble_cmd(dev or c["device"] or None, c["size"], c["mirror"], c["shape"])
+    tries = 40
+    if on_stage():
+        # On the hidden stage mpv's GPU output cannot hand its pictures to the second
+        # compositor (VirtualBox, 11 Nov: "invalid arguments for wl_surface.attach", and no
+        # window). Plain shared-memory pictures always can; a 280 px bubble costs little.
+        cmd.append("--vo=wlshm")
+        tries = 120
     try:
-        p = subprocess.Popen(cammod.bubble_cmd(dev or c["device"] or None, c["size"], c["mirror"], c["shape"]),
-                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                              start_new_session=True, env=health.software_gl_env())
     except OSError:
         return None
     accent = projmod.theme_colors().get("accent", "#7aa2f7")
-    for _ in range(40):                      # wait for the window to map, then place it
+    for _ in range(tries):                   # wait for the window to map, then place it
         if p.poll() is not None:
             return None
         if cammod.place_bubble(region, c["size"], c["corner"], c["shape"], accent, c["border"], c["shadow"]):
             break
         time.sleep(0.05)
+    else:
+        if on_stage():                       # never placed: a window as large as the stage is no bubble
+            stop_bubble(p)
+            return None
     return p
 
 
@@ -963,7 +1032,24 @@ def stop(_a=None, defer: bool | None = None):
             # wf-recorder loses its last frames on SIGINT: without this tail the end sync
             # marker (and the user's last half second) never reaches raw.mkv. The export
             # range ends at the marker, so the tail itself is not shown.
-            time.sleep(float(os.environ.get("DOLLY_WF_STOP_TAIL", "1.0")))
+            tail = float(os.environ.get("DOLLY_WF_STOP_TAIL", "1.0"))
+            if on_stage():
+                # The stop mark is on show (the pointer waits in the corner, and the logger kept
+                # the stage repainting while it put it there). Now the stage is left still
+                # until the recorder has encoded what it holds: it drops its queue of frames
+                # when it is told to stop, and on a busy machine that queue is the last
+                # second and more of the take (dolly/stage.py, recorder_drained).
+                try:
+                    from . import stage
+                    with open(pdir / "recorder.log", "a") as lf:
+                        stage.recorder_drained(st["recorder_pid"], least=max(0.3, tail * 0.5),
+                                               most=stage.drain_limit(elapsed(st)),
+                                               log=lambda m: lf.write(m + "\n"))
+                except Exception:
+                    _dlog.swallowed()
+                    time.sleep(tail)
+            else:
+                time.sleep(tail)
         os.kill(st["recorder_pid"], signal.SIGINT)
         # a recorder whose monitor is gone will never see the frame it is waiting for (and
         # there is no corner left to repaint): 1.5 s for it to finish by itself, not 10
@@ -975,6 +1061,7 @@ def stop(_a=None, defer: bool | None = None):
             time.sleep(0.02)
         else:
             os.kill(st["recorder_pid"], signal.SIGKILL)
+    _stage_pointer_home()
     side = [p for p in [st.get("webcam_pid"), *(st.get("track_pids") or [])] if p and _alive(p)]
     for p in side:
         os.kill(p, signal.SIGINT)                 # ffmpeg finalises camera / audio files on SIGINT
@@ -1088,6 +1175,12 @@ def cancel(_a=None):
     solid_restore()
     health.dnd_end(st.get("dnd_prev"))
     health.awake_end(st.get("awake"))
+    if on_stage():
+        for _ in range(40):                 # the logger makes its stop mark as it leaves: the pointer
+            if not _alive(st.get("logger_pid", 0)):       # goes to the corner and would stay there
+                break
+            time.sleep(0.05)
+        _stage_pointer_home()
     shutil.rmtree(st["dir"], ignore_errors=True)
     health.set_phase("idle")
     print("recording discarded")
@@ -1487,6 +1580,8 @@ def _scan_head_early(pdir: Path, out: dict):
         from . import sync as syncmod
         from .render import ffmpeg_bin
         meta = json.loads((pdir / "capture.json").read_text())
+        if meta.get("stage"):
+            return                           # a stage take has pointer marks: finalize reads them itself
         raw = projmod.Project(pdir).raw
         info = video_info(raw)               # the size is known while the file grows; the length is not
         rw = meta["region"][2]
@@ -1547,7 +1642,17 @@ def finalize(pdir: Path, aoi: bool = True, plan: bool = True, on_video=None, hea
     clock_a = syncmod.clock_offset(meta, lines)
     fit = syncmod.SyncFit(clock_a, 1.0, [], [], "clock") if clock_a is not None else syncmod.SyncFit()
     runs = []
-    if log_marks:
+    marks = None                             # the hidden stage: {"start", "stop"} pointer marks
+    if log_marks and meta.get("stage"):
+        try:
+            from .render import ffmpeg_bin
+            marks = syncmod.detect_pointer_marks(
+                raw, sx, info["fps"] or 60, ffmpeg_bin(), log_marks, clock_a, info["duration"],
+                log=lambda m: (pdir / "recorder.log").open("a").write(m + "\n"))
+            fit = syncmod.fit_pointer(log_marks, marks, info["fps"] or 60, clock_a)
+        except Exception as ex:  # never lose a recording over sync
+            fit = syncmod.SyncFit(method=f"failed: {ex}"[:80])
+    elif log_marks:
         try:
             from .render import ffmpeg_bin
             if clock_a is None:
@@ -1635,6 +1740,8 @@ def finalize(pdir: Path, aoi: bool = True, plan: bool = True, on_video=None, hea
                        "go": go_t, "toasts_before": int(meta.get("toasts_before") or 0),
                        "toasts_at_go": meta.get("toasts_at_go") if go_t is not None else None},
            "events": events}
+    if meta.get("stage"):
+        doc["capture"]["stage"] = True       # recorded on the hidden stage (dolly/stage.py)
     # privacy by default: what was typed into a password manager or an authentication prompt
     # is not kept (no keycaps, no typing zoom, nothing in events.json)
     try:
@@ -1671,6 +1778,8 @@ def finalize(pdir: Path, aoi: bool = True, plan: bool = True, on_video=None, hea
     # in (below when `plan`, otherwise after the card) and until then the marker file says so
     data["segments"] = None
     trim = list(syncmod.marker_trim(runs, info["fps"] or 60, duration) or (0.0, duration))
+    if marks is not None:
+        trim = list(syncmod.pointer_trim(marks, info["fps"] or 60, duration) or (0.0, duration))
     if go_t is not None and go_t < duration:
         trim[0] = round(max(trim[0], go_t), 4)       # the countdown is in the file, not in the clip
     target = meta.get("target") if meta.get("mode") == "window" else None

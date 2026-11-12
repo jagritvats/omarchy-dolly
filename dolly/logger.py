@@ -40,9 +40,19 @@ from . import log as _dlog
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 
 
+def on_stage() -> bool:
+    """This process works on Dolly's hidden stage (dolly/stage.py), not on the real desktop."""
+    return bool(os.environ.get("DOLLY_STAGE"))
+
+
 def runtime_dir() -> Path:
+    """Where the state of the take in progress lives. One folder per desktop: a take on the
+    hidden stage keeps its own, so the bar button (which watches the real desktop's folder)
+    does not react to it and neither desktop's recording blocks the other's."""
     base = os.environ.get("XDG_RUNTIME_DIR") or os.path.expanduser("~/.local/state")
     d = Path(base) / "dolly"
+    if on_stage():
+        d = d / "stage" / "rt"
     d.mkdir(parents=True, exist_ok=True, mode=0o700)
     return d
 
@@ -153,6 +163,10 @@ class Logger:
         self.recorder_pid = None
         self.solid = False
         self.last_ws = ""
+        self.stage = on_stage()
+        self.raw_hold_until = 0.0        # a `dolly stage type|key` is typing: it reports the keys by name
+        self.feed_on = False             # a second source of clicks is followed (the same click may come twice)
+        self._last_click = None
 
     def ms(self) -> float:
         return round((time.monotonic() - self.t0) * 1000.0, 1)
@@ -217,7 +231,7 @@ class Logger:
                 d = hypr_json("cursorpos")
                 if d:
                     pos = (float(d["x"]), float(d["y"]))
-            if pos and pos != last:
+            if pos and pos != last and not getattr(self, "marking", False):
                 self.last_pos = pos
                 self.write({"type": "move", "x": pos[0], "y": pos[1]})
                 last = pos
@@ -296,6 +310,8 @@ class Logger:
         Hyprland cannot tell: the notification layer stays mapped while idle. Written on
         change, starting with what is there when the recording begins; privacy.auto_boxes
         blurs them. A shell without the call ends the polling quietly."""
+        if on_stage():
+            return                  # no shell and no notification cards on a stage
         prev = None
         while not self.stop.is_set():
             try:
@@ -398,6 +414,8 @@ class Logger:
         layer open for ~70 ms, yet 0 of 632 frames showed it. So the surface is first
         mapped transparent (`syncArm`), and the flash only changes its colour. An older
         bar widget without syncArm still gets the one-step flash."""
+        if on_stage():
+            return self.stage_mark(kind)
         x, y = (self.region or [0, 0])[:2]
         size = int(40)
         ms = flash_ms()
@@ -431,6 +449,29 @@ class Logger:
             self.write({"type": "info", "msg": "sync marker unavailable (no omarchy-shell IPC); "
                                                "using logger start as time base"})
         return ok
+
+    def stage_mark(self, kind: str) -> bool:
+        """The sync marker on the hidden stage: no shell lives there to flash a square, so the
+        stage's own pointer jumps into the top-left corner for a moment (dolly/stage.py,
+        sync.detect_pointer_marks). The jump is not part of the pointer's path."""
+        from . import stage
+        hold = max(stage.MARK_HOLD_S, flash_ms() / 1000.0)
+        stay = kind == "stop"                # the stop mark stays in the corner until the recorder has gone
+        self.marking = True
+        m = None
+        try:
+            m = stage.pointer_mark(hold + (0.15 if stay else 0.0), stay=stay)
+            time.sleep(0.06)                 # the poller must not log the way back either
+        finally:
+            if not (stay and m):
+                self.marking = False         # (after a stop mark the pointer is not where the take left it)
+        if m is None:
+            self.write({"type": "info", "msg": "no sync marker on the stage (the pointer could not be moved); "
+                                               "timed by the clock"})
+            return False
+        self.write({"type": "sync", "kind": kind, "method": "pointer", "ms": round((m["t"] - self.t0) * 1000.0, 1),
+                    "rtt_ms": round(m["rtt"] * 1000.0, 1), "flash_ms": round(hold * 1000), "stays": stay})
+        return True
 
     # ---------------------------------------------------------- watchdog
     def on_trouble(self, reason: str, msg: str):
@@ -477,9 +518,9 @@ class Logger:
                     out = ""
                 if "PrepareForSleep" in out and "true" in out:
                     self.on_trouble("suspend", "The computer is going to sleep")
-                elif "Lock" in out and "Session" in out:
+                elif "Lock" in out and "Session" in out and not on_stage():
                     self.on_trouble("lock", "The session was locked")
-            if shutil.which("pgrep") and int(time.monotonic() * 2) % 4 == 0:
+            if not on_stage() and shutil.which("pgrep") and int(time.monotonic() * 2) % 4 == 0:
                 try:
                     locked = subprocess.run(["pgrep", "-x", "hyprlock"], capture_output=True,
                                             timeout=2).returncode == 0
@@ -501,7 +542,8 @@ class Logger:
         else:
             nk.write_text("1")
         lua = PLUGIN_ROOT / "hypr" / "dolly-input.lua"
-        ok, out = hypr_eval(f'dofile("{lua}")')
+        # the bridge writes where this take's state lives (one folder per desktop, see runtime_dir)
+        ok, out = hypr_eval(f'dolly_input_dir = {json.dumps(str(rd))}; dofile("{lua}")')
         if not ok:
             self.write({"type": "info", "msg": f"lua bridge failed: {out[:200]}"})
             return False
@@ -534,16 +576,46 @@ class Logger:
                 except ValueError:
                     continue
                 if d.get("type") == "click":
-                    self.write({"type": "click", "x": d["x"], "y": d["y"], "button": d.get("button", "left")})
+                    self.on_click(d, fed=False)
                 elif d.get("type") == "key" and self.keys:
-                    self.on_key(int(d["code"]) - 8, bool(d.get("down", True)))
+                    if self.stage:
+                        self.on_unnamed_key(bool(d.get("down", True)))
+                    else:
+                        self.on_key(int(d["code"]) - 8, bool(d.get("down", True)))
+
+    def on_click(self, d: dict, fed: bool):
+        """One click. With two sources followed (a stage: Hyprland's own report and the
+        command that made the click) the same click can arrive from both: logged once."""
+        x, y, button = d["x"], d["y"], d.get("button", "left")
+        if self.feed_on:
+            now, last = time.monotonic(), self._last_click
+            if last and last[1] != fed and now - last[0] < 0.4 and last[4] == button \
+                    and abs(last[2] - x) <= 3 and abs(last[3] - y) <= 3:
+                return
+            self._last_click = (now, fed, x, y, button)
+        self.write({"type": "click", "x": x, "y": y, "button": button})
+
+    def on_unnamed_key(self, down: bool):
+        """A key pressed on the hidden stage, as Hyprland reports it: a code and nothing else.
+        Every key on a stage comes from a typing tool (wtype and the like), and each of those
+        brings a keymap of its own, so the code says nothing about which key it was (the
+        letters of "ls" arrive as codes 9 and 10: "Escape" and "1" on a real keyboard).
+        `dolly stage type` and `dolly stage key` report what they type by name; while they
+        do, the codes are theirs and are dropped here. A key from any other tool is logged
+        as a key without a name: typing is still followed, and no wrong key is shown."""
+        if not down or time.monotonic() < self.raw_hold_until:
+            return
+        if getattr(self, "secret_focus", False):
+            return
+        self.write({"type": "key", "key": keymap.UNNAMED, "mods": []})
 
     def start_harness_input(self, name="harness-input.jsonl", source="harness",
                             msg="clicks/keys from the test harness input driver (not Hyprland)"):
         path = runtime_dir() / name
         if not path.exists():
             path.write_text("")
-        self.click_source = source
+        if source:
+            self.click_source = source
         self.write({"type": "info", "msg": msg})
         threading.Thread(target=self.tail_harness, args=(path,), daemon=True).start()
 
@@ -562,7 +634,12 @@ class Logger:
                 except ValueError:
                     continue
                 if d.get("type") == "click":
-                    self.write({"type": "click", "x": d["x"], "y": d["y"], "button": d.get("button", "left")})
+                    self.on_click(d, fed=True)
+                elif d.get("type") == "hold":
+                    try:
+                        self.raw_hold_until = float(d.get("until") or 0.0)
+                    except (TypeError, ValueError):
+                        pass
                 elif d.get("type") == "key" and self.keys:
                     self.on_key(int(d["code"]) - 8, bool(d.get("down", True)))
 
@@ -661,6 +738,13 @@ class Logger:
             pass
         elif pref in ("auto", "evdev") and self.start_evdev():
             pass
+        if self.stage and not any(os.environ.get(k) == "1" for k in ("DOLLY_EVENTS_FROM_HARNESS",
+                                                                     "DOLLY_EVENTS_FROM_SCRIPT")):
+            # a take somebody drives by hand on the stage: `dolly stage type|key|click` report
+            # what they do by name, next to what Hyprland itself sees
+            self.feed_on = True
+            self.start_harness_input("script-input.jsonl", "" if self.click_source != "none" else "stage",
+                                     "keys and clicks made with `dolly stage type|key|click` are reported by name")
         self.write({"type": "info", "click_source": self.click_source})
         if not self.replay and os.environ.get("DOLLY_SYNC", "1") != "0":
             time.sleep(0.15)          # the recorder is producing frames; mark t0
@@ -679,8 +763,8 @@ class Logger:
         if not self.replay and self.trouble is None and os.environ.get("DOLLY_SYNC", "1") != "0":
             # end marker while the recorder is still running (dolly stop stops us first)
             self.stop.clear()
-            if self.sync_flash("stop"):
-                time.sleep(0.25)
+            if self.sync_flash("stop") and not self.stage:
+                time.sleep(0.25)     # (on a stage the mark stays; whoever stops the recorder keeps it repainting)
             self.stop.set()
         if self.click_source == "lua":
             self.stop_lua_bridge()

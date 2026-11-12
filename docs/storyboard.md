@@ -100,6 +100,22 @@ released one at a time, so nothing stays held when a run is cut short.
 `--json` result: `{"ok", "title", "project", "outputs": [{"aspect" | "preset", "file"}],
 "seconds", "steps_done", "steps", "error", "warnings"}`.
 
+## On the hidden stage (beta)
+
+`dolly run demo.toml --stage` performs and records the storyboard on a second, invisible
+desktop, so your own pointer, keyboard and windows stay yours while it runs. Add
+`--stage-size 1080x1920` for a vertical stage. Nothing in the file changes: `open`
+starts programs there, `type` and `click` go there. A browser opened on the stage gets a
+profile folder of its own. See "Hidden stage (beta)" in the README for what it is and
+what is known not to work yet. (The `stage` setting in the file's header is something
+else: it only chooses between an empty workspace and the current one.)
+
+A storyboard is one way to drive a stage. The other is by hand, step by step, while
+`dolly record --stage` records: `dolly stage type 'ls' --enter`, `dolly stage key ctrl+l`,
+`dolly stage click 640 360`, `dolly stage move 200 120`, with `dolly stage shot` to look.
+They perform the same steps a storyboard's `type`, `key`, `click` and `move` do, and tell
+the take what they did, so it shows the right keycaps and follows the typing.
+
 ## What it needs
 
 | | Uses | On stock Omarchy 4.5 |

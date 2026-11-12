@@ -22,7 +22,7 @@ import sys
 import time
 from pathlib import Path
 
-FLAGS = ("window", "monitor", "region", "duration", "wait", "json", "no_editor")
+FLAGS = ("window", "monitor", "region", "duration", "wait", "json", "no_editor", "stage")
 
 
 class HeadlessError(Exception):
@@ -37,7 +37,11 @@ def wanted(a) -> bool:
 
 def adopt_session_env(env=None) -> dict:
     """Fill in HYPRLAND_INSTANCE_SIGNATURE / WAYLAND_DISPLAY / the session bus from the
-    runtime dir when the caller's environment does not have them. Returns what it set."""
+    runtime dir when the caller's environment does not have them. Returns what it set.
+
+    The session found is always the real desktop's: a hidden stage (dolly/stage.py) is a
+    second Hyprland with a newer folder and a higher socket number, and "the newest" used to
+    pick it. A stage is only used when asked for (--stage)."""
     env = os.environ if env is None else env
     rt = Path(env.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}")
     got = {}
@@ -45,18 +49,21 @@ def adopt_session_env(env=None) -> dict:
         return got
     if not env.get("XDG_RUNTIME_DIR"):
         got["XDG_RUNTIME_DIR"] = str(rt)
+    from . import stage
+    stage_socks = {i["wl"] for i in stage.instances(rt) if i["stage"] and i["wl"]}
+    if rt == stage.rt_root():
+        stage_socks |= {k.get("wl") for k in stage.known() if k.get("wl")}
     if not env.get("HYPRLAND_INSTANCE_SIGNATURE"):
-        try:
-            inst = sorted((p for p in (rt / "hypr").iterdir() if (p / ".socket.sock").exists()),
-                          key=lambda p: p.stat().st_mtime, reverse=True)
-        except OSError:
-            inst = []
-        if inst:
-            got["HYPRLAND_INSTANCE_SIGNATURE"] = inst[0].name
-    if not env.get("WAYLAND_DISPLAY"):
-        socks = sorted(p.name for p in rt.glob("wayland-*") if not p.name.endswith(".lock"))
+        real = stage.real_session(rt, prefer_wl=env.get("WAYLAND_DISPLAY"))
+        if real:
+            got["HYPRLAND_INSTANCE_SIGNATURE"] = real["sig"]
+            if not env.get("WAYLAND_DISPLAY") and real.get("wl"):
+                got["WAYLAND_DISPLAY"] = real["wl"]         # its own socket, by its own word
+    if not env.get("WAYLAND_DISPLAY") and "WAYLAND_DISPLAY" not in got:
+        socks = sorted(p.name for p in rt.glob("wayland-*")
+                       if not p.name.endswith(".lock") and p.name not in stage_socks)
         if socks:
-            got["WAYLAND_DISPLAY"] = socks[-1]
+            got["WAYLAND_DISPLAY"] = socks[0]               # the session's own socket is the first one made
     if not env.get("DBUS_SESSION_BUS_ADDRESS") and (rt / "bus").exists():
         got["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={rt / 'bus'}"
     env.update(got)
@@ -188,9 +195,17 @@ def summary(pdir: Path, target: dict | None = None) -> dict:
         warnings.append("no sync marker or clock estimate: events are timed from the logger start")
     if meta.get("stop_reason"):
         warnings.append(f"stopped early: {meta['stop_reason']}")
+    if meta.get("stage") and sync == "clock":
+        warnings.append("the stage's pointer mark was not found in the video: timed by the clock (about 0.2 s loose)")
+    elif meta.get("stage") and sync == "markers1":
+        # one mark of two. Seen when the machine was so busy that the recorder fell many seconds
+        # behind (three compilers on four cores): the end of the take never reached the file.
+        warnings.append("only one of the stage's two sync marks is in the video: the recorder fell behind (a very "
+                        "busy machine); part of the take may be missing or late in the picture")
     if (target or {}).get("note"):
         warnings.append(target["note"])
     return {"ok": True, "recording": False, "dir": str(pdir), "raw": str(raw) if raw else None,
+            **({"stage": True} if meta.get("stage") else {}),
             "events": str(pdir / "events.json"), "project": str(pdir / "project.json"),
             "duration": round(float(v.get("duration") or 0), 3), "trim": proj.get("trim"),
             "width": v.get("w"), "height": v.get("h"), "fps": v.get("fps"),
@@ -321,8 +336,8 @@ def record(a):
     """`dolly record` with any of the headless flags."""
     as_json = bool(getattr(a, "json", False))
     adopt_session_env()
-    if as_json or getattr(a, "no_editor", False):
-        os.environ["DOLLY_OPEN_EDITOR"] = "0"
+    if as_json or getattr(a, "no_editor", False) or getattr(a, "stage", False):
+        os.environ["DOLLY_OPEN_EDITOR"] = "0"       # --stage: an editor window would open on the stage
     if not as_json:
         try:
             _record(a)                               # start/stop print the folder, as always

@@ -467,7 +467,7 @@ def check_report() -> dict:
 
 
 def cmd_run(a) -> int:
-    """dolly run <file|-> [--dry-run] [--check] [--json] [--no-export] [--keep-open]"""
+    """dolly run <file|-> [--dry-run] [--check] [--json] [--no-export] [--keep-open] [--stage]"""
     def emit(obj: dict, text: str, code: int) -> int:
         print(json.dumps(obj, indent=2) if a.json else text, file=sys.stdout if a.json or code == 0 else sys.stderr)
         return code
