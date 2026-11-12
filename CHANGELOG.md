@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.7.1 (2026-11-12)
+
+A recorder that leaves more of the machine to the desktop you are working on, and small
+things. Tested on Omarchy 4.5 in VirtualBox (wf-recorder, software rendering); not yet on
+real hardware.
+
+Lighter recording (software recorder)
+- Where the software recorder is used (virtual machines, machines without a working GPU
+  recorder) it now encodes lightly, so more of the machine is left for the desktop and the
+  pointer while a take runs. Measured in a 4-CPU virtual machine: the old encoding kept a
+  whole CPU busy and at times froze the desktop for a quarter of a second or more; the
+  light one takes about two thirds of a CPU, showed no such freezes, and more of what
+  happens reaches the file. Raw files are 9 to 13 % larger; exports are unchanged. The GPU
+  recorder is not affected.
+- Settings > Capture > "Keep the desktop responsive while recording" (on by default) turns
+  it off, `DOLLY_WF_PRESET` names a preset, and `dolly doctor` says which is in use.
+- Stop returns about half a second sooner with the software recorder (3.1 s where it was
+  3.7 s for a short take in a virtual machine).
+
+Small things
+- The countdown shows on Omarchy's own on-screen display, where volume and brightness do,
+  instead of a notification card every second (cards remain where the shell has no
+  on-screen display, or with `DOLLY_COUNTDOWN=cards`).
+- Dolly's problem cards ("Nothing was recorded", "Recording stopped: ...") no longer stay
+  on screen into the next take; they are dismissed when you press Record, like "Demo
+  recorded", without making Record slower.
+- Shortcut keycaps pressed close together are all readable: a chord right after Enter
+  used to show only while it was fading out. Each keycap now gets at least 0.6 s, and
+  the next one waits at most 0.35 s for it.
+- The panel's hotkey-conflict card has a **Shortcuts** button that opens Settings at the
+  Shortcuts group (`dolly settings --section shortcuts`).
+- `omarchy-shell io.github.jagritvats.dolly open` opens the panel on the bar in front, not
+  always on the first monitor.
+- `dolly doctor` says so when `python-opencv` is still installed from before 0.7.0 and
+  how to remove it. Nothing is removed for you.
+- README: Super+Ctrl+1 to 9 toggles the panel from the keyboard.
+
 ## 0.7.0 (2026-11-11)
 
 Faster, lighter and closer to Omarchy. Tested on Omarchy 4.5 in VirtualBox (wf-recorder,

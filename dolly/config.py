@@ -27,6 +27,8 @@ SCHEMA: list[dict] = [
     {"key": "capture.countdown", "type": "int", "default": 3, "min": 0, "max": 10},
     {"key": "capture.fps", "type": "enum", "default": "60", "options": ["30", "60"]},
     {"key": "capture.keys", "type": "bool", "default": True},
+    # software recorder only (wf-recorder: VMs, machines without a working GPU recorder)
+    {"key": "capture.responsive", "type": "bool", "default": True},
     {"key": "capture.replay_seconds", "type": "int", "default": 60, "min": 10, "max": 600},
     # ---- Look
     {"key": "look.follow_theme", "type": "bool", "default": True},
@@ -323,6 +325,7 @@ def record_defaults(cfg: dict | None = None) -> dict:
     c = cfg["capture"]
     au, cam = cfg["audio"], cfg["camera"]
     return {"mode": c["mode"], "countdown": c["countdown"], "fps": int(c["fps"]), "keys": c["keys"],
+            "responsive": c.get("responsive", True),
             "audio": au["mode"], "mic_device": au["mic_device"], "system_device": au["system_device"],
             "camera": cam["mode"], "camera_device": cam["device"],
             "solid": cfg["privacy"]["solid_windows"], "dnd": cfg["privacy"]["dnd"]}

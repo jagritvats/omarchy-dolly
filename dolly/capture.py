@@ -85,12 +85,39 @@ def _nudge_screen(region=None):
             return
 
 
+OWN_PROBLEM_CARDS = ("notify.nothingRecorded", "notify.recoverFailed", "notify.analysisFailed",
+                     "notify.cannotStart", "notify.recovered", "notify.errorTitle")
+
+
+def own_card_titles() -> list[str]:
+    """Titles of Dolly's cards, other than "Demo recorded", that can still be on screen when
+    the next take starts (problem cards stay for ten seconds or until they are dismissed)."""
+    titles = [t(k) for k in OWN_PROBLEM_CARDS]
+    titles.append(t("notify.stoppedReason", "").strip())        # "Recording stopped:" + any reason
+    return [s for s in titles if s]
+
+
+def _dismiss_own_problem_cards():
+    """Take Dolly's own problem cards off the screen without making Record wait: one detached
+    shell loop (the shell dismisses by title, one title at a time)."""
+    try:
+        subprocess.Popen(["sh", "-c", 'for s in "$@"; do omarchy-shell -q notifications dismiss "$s"; done',
+                          "dolly-dismiss", *own_card_titles()],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True)
+    except OSError:
+        pass
+
+
 def _dismiss_own_toasts() -> bool:
-    """Dolly's own card from the last take stays for 10 s; a take started within that time
-    must not open with it. Other apps' notifications are left alone (Do Not Disturb and
-    the automatic privacy blur deal with those). True when the shell says a card went."""
+    """Dolly's own cards from the last take must not open the next one: "Demo recorded" stays
+    for 10 s, problem cards ("Nothing was recorded", "Recording stopped: ...") as long or
+    longer. Other apps' notifications are left alone (Do Not Disturb and the automatic
+    privacy blur deal with those). True when the shell says the "Demo recorded" card went;
+    the problem cards go in the background, so Record does not wait for them."""
     if not _have("omarchy-shell"):
         return False
+    _dismiss_own_problem_cards()
     try:
         r = subprocess.run(["omarchy-shell", "notifications", "dismiss", t("notify.recorded")], timeout=1.5,
                            capture_output=True, text=True)
@@ -108,6 +135,36 @@ def _dismiss_toast(summary: str | None):
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except (OSError, subprocess.TimeoutExpired):
         pass
+
+
+def _osd_available() -> bool:
+    """Omarchy's on-screen display (the shell's "osd" target) is there to be used."""
+    if os.environ.get("DOLLY_COUNTDOWN", "osd") == "cards" or not _have("omarchy-shell"):
+        return False
+    root = Path(os.environ.get("OMARCHY_PATH") or "/usr/share/omarchy")
+    return (root / "shell" / "plugins" / "osd").is_dir()
+
+
+def _osd(*args):
+    """One call to the shell's on-screen display, not waited for."""
+    try:
+        subprocess.Popen(["omarchy-shell", "-q", "osd", *args], stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    except OSError:
+        pass
+
+
+# The record glyph of the bar button (nf-md-record). The on-screen display draws a name it
+# does not know as the glyph itself; an empty one falls back to its muted-speaker icon.
+OSD_ICON = chr(0xF044A)
+
+
+def _osd_countdown(i: int):
+    """"Recording in 3" where Omarchy shows volume and brightness. It stays up a little
+    longer than a second so the next number replaces it without a gap; the last one is
+    closed by the countdown itself before the take starts."""
+    _osd("show", json.dumps({"icon": OSD_ICON, "message": t("notify.countdown", i), "value": "", "progressText": "",
+                             "max": "100", "duration": str(1150 if i > 1 else 700)}))
 
 
 def _toasts_at_start() -> int:
@@ -343,8 +400,9 @@ class RecorderGone(Exception):
 
 
 def countdown(n: int, alive=None, last_call=None, last_call_s: float = 0.5):
-    """3-2-1 in the bar (phase 'countdown') and as a toast; `dolly toggle`/`cancel`
-    or a bar click during it cancels (SIGTERM to this process).
+    """3-2-1 in the bar (phase 'countdown') and on Omarchy's on-screen display (as a card
+    where the shell has none, or with DOLLY_COUNTDOWN=cards); `dolly toggle`/`cancel` or a
+    bar click during it cancels (SIGTERM to this process).
 
     The recorder and the event logger are already running when this is called (see
     `start`), so the take begins the instant it returns and the countdown lasts exactly
@@ -356,13 +414,19 @@ def countdown(n: int, alive=None, last_call=None, last_call_s: float = 0.5):
         raise Cancelled()
     old = signal.signal(signal.SIGTERM, _cancel)
     shown = None
+    osd = _osd_available()                 # Omarchy's own on-screen display; cards where there is none
+    osd_up = False
     try:
         t_end = time.monotonic() + n
         for i in range(n, 0, -1):
             set_phase("countdown", left=i)
-            _dismiss_toast(shown)          # one card at a time, and none may outlive the countdown:
-            shown = t("notify.countdown", i)       # the shell keeps a card longer than it is asked to
-            notify(shown, t("notify.countdownBody", "Super+Alt+R"), timeout=900 if i > 1 else 550)
+            if osd:
+                _osd_countdown(i)
+                osd_up = True
+            else:
+                _dismiss_toast(shown)      # one card at a time, and none may outlive the countdown:
+                shown = t("notify.countdown", i)   # the shell keeps a card longer than it is asked to
+                notify(shown, t("notify.countdownBody", "Super+Alt+R"), timeout=900 if i > 1 else 550)
             tick_end = t_end - (i - 1)
             while True:
                 left = tick_end - time.monotonic()
@@ -374,12 +438,17 @@ def countdown(n: int, alive=None, last_call=None, last_call_s: float = 0.5):
                 if i == 1 and shown and left <= 0.35:
                     _dismiss_toast(shown)  # gone before the take starts
                     shown = None
+                if i == 1 and osd_up and left <= 0.35:
+                    _osd("close")          # gone before the take starts
+                    osd_up = False
                 if left <= 0:
                     break
                 time.sleep(min(0.05, left))
     finally:
         signal.signal(signal.SIGTERM, old)
         _dismiss_toast(shown)
+        if osd_up:
+            _osd("close")
 
 
 # ---------------------------------------------------------------- backends
@@ -480,7 +549,27 @@ def _pactl_out(*args) -> str:
         return ""
 
 
-def recorder_cmd(backend: str, target, out: Path, fps: int, audio: list[str]) -> list[str]:
+X264_PRESETS = ("ultrafast", "superfast", "veryfast", "faster", "fast", "medium")
+
+
+def wf_preset(light: bool = True) -> str:
+    """x264 preset for the software recorder (wf-recorder).
+
+    Measured in a 4-CPU VirtualBox VM at 1920x1200, 60 fps asked for: with "veryfast" the
+    encoder cannot keep up (over 100 % of a CPU, 33-37 new pictures a second reach the file)
+    and the desktop pays for it: the compositor falls from about 150 to 85 frames a second
+    and freezes for a quarter of a second or more when the backlog is flushed. With
+    "ultrafast" it takes two thirds of a CPU, 40-42 pictures a second reach the file, and
+    those freezes were not seen. The raw file is 9 to 13 %
+    larger; it is an intermediate (exports are encoded again from it). DOLLY_WF_PRESET
+    overrides."""
+    env = os.environ.get("DOLLY_WF_PRESET", "").strip().lower()
+    if env in X264_PRESETS:
+        return env
+    return "ultrafast" if light else "veryfast"
+
+
+def recorder_cmd(backend: str, target, out: Path, fps: int, audio: list[str], light: bool = True) -> list[str]:
     """`target` is a monitors.Target. Geometry mirrors omarchy-capture-screenrecording:
     gsr `-w NAME -s RES` for a monitor (RES caps above 4K, else 0x0 = native) or
     `-w WxH+X+Y` (logical; gsr scales to physical itself); wf-recorder `-o NAME`
@@ -503,7 +592,7 @@ def recorder_cmd(backend: str, target, out: Path, fps: int, audio: list[str]) ->
             # that ask the recorder itself for audio.
             raise ValueError("wf-recorder records one audio device; record mic and system as separate tracks")
         cmd = ["wf-recorder", *target.wf_args(), "-r", str(fps), "-c", "libx264",
-               "-p", "preset=veryfast", "-p", "crf=16", "-x", "yuv420p", "-f", str(out)]
+               "-p", f"preset={wf_preset(light)}", "-p", "crf=16", "-x", "yuv420p", "-f", str(out)]
         if audio:
             dev = None
             if "default_output" in audio and _have("pactl"):
@@ -652,7 +741,7 @@ def start(a):
             warn.append(t("notify.trackFailed", t(f"audio.{tr['track']}"), tr["error"]))
     chosen, proc = None, None
     for backend in backend_order(a.backend):
-        cmd = recorder_cmd(backend, tgt, raw, a.fps, [])
+        cmd = recorder_cmd(backend, tgt, raw, a.fps, [], light=getattr(a, "responsive", True))
         log.write(f"\n=== {time.strftime('%F %T')} backend={backend}\n$ {' '.join(cmd)}\n")
         log.flush()
         try:
@@ -963,7 +1052,7 @@ def stop(_a=None, defer: bool | None = None):
             # wf-recorder loses its last frames on SIGINT: without this tail the end sync
             # marker (and the user's last half second) never reaches raw.mkv. The export
             # range ends at the marker, so the tail itself is not shown.
-            time.sleep(float(os.environ.get("DOLLY_WF_STOP_TAIL", "1.0")))
+            time.sleep(float(os.environ.get("DOLLY_WF_STOP_TAIL", "0.5")))
         os.kill(st["recorder_pid"], signal.SIGINT)
         # a recorder whose monitor is gone will never see the frame it is waiting for (and
         # there is no corner left to repaint): 1.5 s for it to finish by itself, not 10

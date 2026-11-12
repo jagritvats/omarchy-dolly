@@ -331,7 +331,43 @@ def key_overlay_events(tl: Timeline) -> list[dict]:
             out[-1]["t_last"] = k["t"]
             continue
         out.append({"t": k["t"], "t_last": k["t"], "caps": caps, "count": 1})
+    return schedule_keycaps(out)
+
+
+KEY_HOLD = 1.1          # s a keycap stays after its last press
+KEY_MIN_SHOW = 0.6      # s a keycap is given before the next one may take its place
+KEY_MAX_LAG = 0.35      # s the next keycap may be held back for that
+KEY_FADE_IN = 0.12
+KEY_FADE_OUT = 0.2
+KEY_CUT_FADE = 0.08     # s fade when a keycap makes way for the next one
+
+
+def schedule_keycaps(out: list[dict]) -> list[dict]:
+    """When each keycap is on screen (`show`, `hide`, `fade_out`). One shows at a time, so a
+    chord pressed right after another key (Enter, then Ctrl+L 0.25 s later) used to appear
+    only while it was already fading out. Now the earlier keycap makes way: it keeps
+    KEY_MIN_SHOW unless that would hold the next one back by more than KEY_MAX_LAG, and a
+    keycap that was held back stays as long as it would have."""
+    prev = None
+    for ev in out:
+        show = ev["t"]
+        if prev is not None and prev["hide"] > show:
+            show = min(max(ev["t"], prev["show"] + KEY_MIN_SHOW), ev["t"] + KEY_MAX_LAG)
+            prev["hide"], prev["fade_out"] = show, KEY_CUT_FADE
+        ev["show"], ev["hide"], ev["fade_out"] = show, max(ev["t_last"], show) + KEY_HOLD, KEY_FADE_OUT
+        prev = ev
     return out
+
+
+def keycap_alpha(ev: dict, t: float) -> float:
+    """0..1: how visible this keycap is at time t."""
+    t0, t1 = ev.get("show", ev["t"]), ev.get("hide", ev["t_last"] + KEY_HOLD)
+    if not (t0 - 0.05 <= t <= t1):
+        return 0.0
+    fin = min(1.0, max(0.0, (t - t0) / KEY_FADE_IN))
+    fout = min(1.0, max(0.0, (t1 - t) / ev.get("fade_out", KEY_FADE_OUT)))
+    a = min(fin, fout)
+    return float(a * a * (3 - 2 * a))
 
 
 def font_path(bold=True) -> str | None:
@@ -887,13 +923,10 @@ class Compositor:
             return
         OW, OH = self.lay.OW, self.lay.OH
         for ev in self.keys:
-            t0, t1 = ev["t"], ev["t_last"] + 1.1
+            t0, t1 = ev.get("show", ev["t"]), ev.get("hide", ev["t_last"] + KEY_HOLD)
             if not (t0 - 0.05 <= t <= t1):
                 continue
-            fin = np.clip((t - t0) / 0.12, 0, 1)
-            fout = np.clip((t1 - t) / 0.2, 0, 1)
-            a = float(min(fin, fout))
-            a = a * a * (3 - 2 * a)
+            a = keycap_alpha(ev, t)
             if a <= 0.01:
                 continue
             sc = min(OW, OH) / 1080 if self.reframe else OH / 1080

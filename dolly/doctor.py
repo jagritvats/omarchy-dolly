@@ -99,6 +99,14 @@ def check(as_json=False) -> dict:
     # --- ffmpeg
     ff = shutil.which("ffmpeg")
     add("ffmpeg", ff, ff or "pacman -S ffmpeg")
+    # Dolly stopped using OpenCV in 0.7.0. Say so once if the package is still here; nothing
+    # is ever removed for the user (another program may need it).
+    if shutil.which("pacman"):
+        rc, _out = sh(["pacman", "-Qq", "python-opencv"])
+        if rc == 0:
+            add("python-opencv (no longer needed)", True,
+                "still installed, but Dolly does not use it any more. If nothing else on this machine does: "
+                "sudo pacman -Rs python-opencv (pacman lists what goes with it before it asks)")
     if ff:
         rc, enc = sh(["ffmpeg", "-hide_banner", "-encoders"])
         add("ffmpeg libx264 encoder", "libx264" in enc, "needed for export")
@@ -236,6 +244,15 @@ def check(as_json=False) -> dict:
         cap = "gsr-cpu (will try; software rendering detected - install wf-recorder as fallback)"
     else:
         cap = "none"
+    if cap.startswith("wf:"):
+        try:
+            from . import config as _config
+            light = bool(_config.load()["capture"].get("responsive", True))
+        except Exception:
+            light = True
+        cap += ("; light encoding (leaves more of the CPU to the desktop while recording)" if light else
+                "; heavier encoding (Settings > Capture > Keep the desktop responsive "
+                "while recording is off)")
     rep["paths"]["capture"] = cap
     if gpu["virtual"]:
         rep["paths"]["vm"] = f"running in a VM ({gpu['virtual']}); renderer: {gpu['renderer'] or 'unknown'}"

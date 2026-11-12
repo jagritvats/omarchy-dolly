@@ -360,7 +360,8 @@ Panel {
           Item {
             visible: root.integrationKnown && (!root.setUp || root.hotkeyConflicts.length > 0)
             width: parent.width; height: visible ? setupLabel.implicitHeight + Style.space(8) : 0
-            Label { id: setupLabel; anchors.left: parent.left; anchors.right: setupBtn.left
+            Label { id: setupLabel; anchors.left: parent.left
+                    anchors.right: shortcutsBtn.visible ? shortcutsBtn.left : setupBtn.left
                     anchors.rightMargin: Style.space(8); anchors.verticalCenter: parent.verticalCenter
                     wrapMode: Text.WordWrap; elide: Text.ElideNone
                     color: root.setUp ? root.urgent : root.fg
@@ -368,6 +369,11 @@ Panel {
                                      : (root.missingPackages.length > 0
                                         ? tr.t("panel.setupHintPackages").arg(root.missingPackages.join(", "))
                                         : tr.t("panel.setupHint")) }
+            // a hotkey is taken: Fix gives it up, Shortcuts opens Settings where other keys can be chosen
+            Button { id: shortcutsBtn; visible: root.setUp; anchors.right: setupBtn.left
+                     anchors.rightMargin: Style.space(6); anchors.verticalCenter: parent.verticalCenter
+                     text: tr.t("panel.shortcuts"); bordered: true; foreground: root.fg; fontFamily: root.ff
+                     onClicked: { root.close(); root.run(["settings", "--section", "shortcuts"]) } }
             Button { id: setupBtn; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
                      text: root.setUp ? tr.t("panel.setupFix") : tr.t("panel.setup"); iconText: "󰌌"
                      bordered: true; foreground: root.accent; fontFamily: root.ff

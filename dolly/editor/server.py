@@ -78,6 +78,7 @@ class Editor:
         self.last_ping = time.time()
         self.page_seen = 0.0             # last long-poll from the page: is a window showing us?
         self.nav_seq = 0
+        self.section = None                # a Settings group to scroll to (`dolly settings --section`)
         self.nav_cv = threading.Condition()
         self._plan_wait = False          # the page was given a take whose zoom plan is still coming
         self._preview = None             # (folder, thread) while the preview proxy is being encoded
@@ -133,7 +134,7 @@ class Editor:
         self._plan_wait = False          # from here on the page's segments and speed are saved again
         return {"analysis": "ready", "preview": preview, "segments": segs, "speed": data.get("speed") or []}
 
-    def navigate(self, view: str, pdir: Path | None = None) -> dict:
+    def navigate(self, view: str, pdir: Path | None = None, section: str | None = None) -> dict:
         """Show another view / recording in the existing window (bumps the sequence the
         page long-polls on)."""
         if view not in ("edit", "share", "library", "settings"):
@@ -143,6 +144,7 @@ class Editor:
         self.view = "edit" if view == "share" else view
         if self.view == "edit" and not self.proj:
             self.view = "library"
+        self.section = str(section) if section and self.view == "settings" else None
         with self.nav_cv:
             self.nav_seq += 1
             self.nav_cv.notify_all()
@@ -150,7 +152,7 @@ class Editor:
 
     def nav_state(self) -> dict:
         return {"seq": self.nav_seq, "view": self.view, "project": self.proj.name if self.proj else None,
-                "page": time.time() - self.page_seen < 30}
+                "section": self.section, "page": time.time() - self.page_seen < 30}
 
     def wait_nav(self, seq: int, timeout: float = 25.0) -> dict:
         self.page_seen = time.time()
@@ -180,7 +182,8 @@ class Editor:
         snap = projmod.theme_snapshot()
         return {"view": self.view, "project": self.proj.name if self.proj else None,
                 "theme": {**snap, "gradients": projmod.gradient_presets(snap["colors"])},
-                "version": _version(), "videos_root": str(projmod.videos_root()), "nav_seq": self.nav_seq}
+                "version": _version(), "videos_root": str(projmod.videos_root()), "nav_seq": self.nav_seq,
+                "section": self.section}
 
     def settings_payload(self) -> dict:
         from .. import config as cfgmod
@@ -665,7 +668,8 @@ def make_handler(ed: Editor):
                 if u.path == "/api/navigate":
                     pdir = body.get("dir")
                     try:
-                        return self._json(ed.navigate(str(body.get("view") or "edit"), Path(pdir) if pdir else None))
+                        return self._json(ed.navigate(str(body.get("view") or "edit"), Path(pdir) if pdir else None,
+                                                      section=body.get("section")))
                     except ValueError as e:
                         return self._json({"error": str(e)}, 400)
                 if u.path == "/api/images/check":
@@ -900,7 +904,7 @@ def _registry_file() -> Path:
     return runtime_dir() / "editor.json"
 
 
-def _attach(view: str, pdir: Path | None):
+def _attach(view: str, pdir: Path | None, section: str | None = None):
     """Reuse the running editor: ask it to show `view` (and `pdir`), return (url, page_open)
     or None when there is no live editor. A navigation the editor refuses (e.g. a recording
     whose raw video was cleaned up) is an error for the caller, not a reason for a second editor."""
@@ -926,7 +930,8 @@ def _attach(view: str, pdir: Path | None):
         f.unlink(missing_ok=True)                  # a stale entry (editor exited or crashed)
         return None
     try:
-        st = call("/api/navigate", {"view": view, "dir": str(pdir) if pdir else None}, timeout=120)
+        st = call("/api/navigate", {"view": view, "dir": str(pdir) if pdir else None, "section": section},
+                  timeout=120)
     except urllib.error.HTTPError as e:
         try:
             msg = json.loads(e.read() or b"{}").get("error") or str(e)
@@ -966,10 +971,11 @@ def editor_windows() -> list[dict]:
     return sorted(wins, key=lambda c: c.get("focusHistoryID", 1 << 30))
 
 
-def serve(pdir: Path | None, port: int = 0, open_browser: bool = True, view: str = "edit"):
+def serve(pdir: Path | None, port: int = 0, open_browser: bool = True, view: str = "edit",
+          section: str | None = None):
     keep_focus = os.environ.get("DOLLY_KEEP_FOCUS") == "1"
     if os.environ.get("DOLLY_EDITOR_NEW") != "1" and not port:
-        got = _attach(view, Path(pdir).resolve() if pdir else None)
+        got = _attach(view, Path(pdir).resolve() if pdir else None, section)
         if got:
             url, page_open = got
             if pdir:
@@ -985,6 +991,7 @@ def serve(pdir: Path | None, port: int = 0, open_browser: bool = True, view: str
                     raise_window(wins[0]["address"])
             return
     ed = Editor(pdir, view=view)
+    ed.section = str(section) if section and view == "settings" else None
     ed.start_preview()                     # in the background: the window does not wait for it
     httpd = ThreadingHTTPServer(("127.0.0.1", port), make_handler(ed))
     url = f"http://127.0.0.1:{httpd.server_address[1]}/?t={ed.token}#{ed.view}"

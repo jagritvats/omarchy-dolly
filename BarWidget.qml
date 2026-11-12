@@ -145,6 +145,15 @@ BarWidget {
   readonly property bool opened: panelLoader.item ? panelLoader.item.opened === true : false
   readonly property bool popoutSwitchClosing: panelLoader.item ? panelLoader.item.popoutSwitchClosing === true : false
   function open() { if (panelLoader.item) panelLoader.item.open() }
+  // `omarchy-shell io.github.jagritvats.dolly open` reaches one bar's button only (one name,
+  // one button per monitor), which need not be the bar you are looking at. The shell knows
+  // which bar is in front, so ask it; where it cannot tell, open here as before.
+  function openInFront() { if (!summonProc.running) summonProc.running = true }
+  Process {
+    id: summonProc
+    command: ["omarchy-shell", "shell", "summon", "io.github.jagritvats.dolly", "{}"]
+    stdout: StdioCollector { waitForEnd: true; onStreamFinished: { if (text.trim() !== "ok") root.open() } }
+  }
   function close() { if (panelLoader.item) panelLoader.item.close() }
   function toggle() { if (root.recording) stopRecording(); else if (panelLoader.item) panelLoader.item.toggle() }
   function closeForPopoutSwitch() { if (panelLoader.item) panelLoader.item.closeForPopoutSwitch() }
@@ -475,9 +484,9 @@ BarWidget {
     function syncDisarm(): string { return root.syncDisarm() }
     function refresh(): void { root.broadcast("refresh"); root.reloadAll() }
     function toggle(): void { root.toggle() }
-    function open(): void { root.open() }
+    function open(): void { root.openInFront() }
     function close(): void { root.close() }
-    function show(): void { root.open() }
+    function show(): void { root.openInFront() }
     function hide(): void { root.close() }
     function record(): void { root.startRecording({}) }
     function stop(): void { root.stopRecording() }

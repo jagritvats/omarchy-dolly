@@ -301,7 +301,7 @@ def test_wf_recorder_never_drops_a_source_silently():
         capture.recorder_cmd("wf", t, Path("/tmp/x.mkv"), 60, ["default_output", "default_input"])
     # Dolly itself never asks the recorder for audio: tracks are separate on every backend
     src = (ROOT / "dolly" / "capture.py").read_text()
-    assert "recorder_cmd(backend, tgt, raw, a.fps, [])" in src
+    assert "recorder_cmd(backend, tgt, raw, a.fps, []," in src
 
 
 def test_audio_devices_and_meter(env, pulse):

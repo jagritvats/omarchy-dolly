@@ -437,6 +437,7 @@ def apply_record_defaults(a):
     a.mode = a.mode or d["mode"]
     a.countdown = d["countdown"] if a.countdown is None else a.countdown
     a.fps = a.fps or d["fps"]
+    a.responsive = d.get("responsive", True)
     audio = getattr(a, "audio", None)
     if audio is None and (getattr(a, "mic", None) is not None or getattr(a, "desktop_audio", None) is not None):
         mic, sysa = bool(getattr(a, "mic", False)), bool(getattr(a, "desktop_audio", False))   # old flags
@@ -646,6 +647,7 @@ def _main(argv=None):
     x = ls.add_parser("poster"); x.add_argument("target")
     st_ = sub.add_parser("settings", help="open the editor's Settings view")
     st_.add_argument("--no-browser", action="store_true")
+    st_.add_argument("--section", help="scroll to this group, e.g. shortcuts")
     cf = sub.add_parser("config", help="get/set settings (~/.config/dolly/config.json)")
     cs = cf.add_subparsers(dest="cfg_cmd", required=True)
     x = cs.add_parser("get"); x.add_argument("key", nargs="?")
@@ -704,7 +706,7 @@ def _main(argv=None):
         cmd_library(a)
     elif a.cmd == "settings":
         from .editor.server import serve
-        serve(None, port=0, open_browser=not a.no_browser, view="settings")
+        serve(None, port=0, open_browser=not a.no_browser, view="settings", section=a.section)
     elif a.cmd == "config":
         cmd_config(a)
     elif a.cmd == "share":

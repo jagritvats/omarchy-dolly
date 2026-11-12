@@ -173,3 +173,10 @@ def _no_stray_recorders(request):
     if root:
         markers.append(str(root / "videos"))
     reap(markers)
+
+
+# The countdown uses Omarchy's on-screen display where there is one. Tests keep to cards
+# (which they stub) so a run on an Omarchy machine never draws on the real desktop.
+import os as _os  # noqa: E402
+
+_os.environ.setdefault("DOLLY_COUNTDOWN", "cards")
