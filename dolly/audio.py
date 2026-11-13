@@ -32,7 +32,9 @@ from . import log as _dlog
 # with a quote or a bracket in it would be read by ffmpeg as more filters, and ffmpeg has
 # filters that write files.
 TRACK_NAME = re.compile(r"[a-z][a-z0-9_]{0,15}\Z")
-TRACK_FILE = re.compile(r"tracks/[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}\Z")
+# .mka only, the one container Dolly records: by its name ffmpeg would read a playlist, and a
+# playlist pulls in other files from the disk
+TRACK_FILE = re.compile(r"tracks/[A-Za-z0-9_][A-Za-z0-9_.-]{0,59}\.mka\Z")
 _MODEL_PATH = re.compile(r"[A-Za-z0-9_./+@ -]{1,400}\Z")
 
 

@@ -26,8 +26,8 @@ def run_dir() -> Path:
 
 def state_dir() -> Path:
     d = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state") / "dolly"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    from . import fsutil
+    return fsutil.private_dir(d)        # logs, undo list, what failed last: this user's alone
 
 
 def _write(p: Path, text: str):

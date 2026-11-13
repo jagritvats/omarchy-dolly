@@ -96,7 +96,13 @@ def cmd_share(a):
         if e.get("url") and e.get("copied"):
             from .capture import notify
 
-            notify(t("notify.linkCopied"), e["url"], (t("notify.open"), "xdg-open", e["url"]), timeout=8000)
+            # other accounts can read command lines: a link to a private bucket is all it takes
+            # to download, so the notifier is given the file's name, not the link (it is on
+            # the clipboard). A public link is public anyway and keeps its Open button.
+            if e.get("public"):
+                notify(t("notify.linkCopied"), e["url"], (t("notify.open"), "xdg-open", e["url"]), timeout=8000)
+            else:
+                notify(t("notify.linkCopied"), f.name, timeout=8000)
     elif act == "targets":
         cfg = scfg.load()
         if not cfg["targets"]:
@@ -134,8 +140,8 @@ def cmd_library(a):
         else:
             idx = library.index(refresh=True, posters=not a.no_posters)
         items = idx["items"][: a.recent] if a.recent else idx["items"]
-        if a.json:
-            print(json.dumps({**idx, "items": items}))
+        if a.json:                          # links come from each recording's share history, not the index
+            print(json.dumps({**idx, "items": [{**e, "links": library.links(e["dir"])} for e in items]}))
             return
         for e in items:
             flags = " ".join(f for f, on in (("exported", e["exported"]), ("shared", e["shared"]),
@@ -143,8 +149,10 @@ def cmd_library(a):
                                              ("recovered", e["recovered"]), ("partial", e["partial"]),
                                              ("raw-cleaned", not e["raw"])) if on)
             print(f"{e['id']:28s} {e['duration']:6.1f}s {e.get('size_text') or '':>8s}  {e['title'][:40]:40s} {flags}")
-            for u in e["links"]:
+            for u in library.links(e["dir"]):
                 print(f"    link: {u}")
+        for s in idx.get("skipped") or []:
+            print(f"skipped {s['id']}: {s['reason']}", file=sys.stderr)
         print(f"{len(idx['items'])} recordings, {idx['total_bytes'] / 1e9:.2f} GB "
               f"({idx['cleanable_bytes'] / 1e9:.2f} GB of raw files belong to exported recordings)")
         return
@@ -307,6 +315,12 @@ def cmd_shell_start(a):
         from . import log
         log.swallowed("auto-apply at shell start")
     _say_refreshed(res)
+    try:                                    # an index from before 0.7.3 holds share links
+        from . import library
+        library.drop_cached_links()
+    except Exception:
+        from . import log
+        log.swallowed("library index clean-up at shell start")
     try:                                    # once: recordings made before 0.7.2 name typed characters
         from . import library
         library.scrub_typed_keys_in_background()

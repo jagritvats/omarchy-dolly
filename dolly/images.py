@@ -142,12 +142,14 @@ def save_upload(data: bytes, name: str) -> dict:
     ext = Path(name or "").suffix.lower()
     if ext not in IMAGE_EXT:
         raise ImageError("not an image (PNG, JPEG or WebP)")
-    d = uploads_dir()
-    d.mkdir(parents=True, exist_ok=True)
+    from . import fsutil
+    d = fsutil.private_dir(uploads_dir())   # the original may have sat in a private folder
     out = d / (hashlib.sha256(data).hexdigest()[:16] + (".jpg" if ext == ".jpeg" else ext))
     if not out.exists():
         tmp = out.with_suffix(out.suffix + ".part")
-        tmp.write_bytes(data)
+        tmp.unlink(missing_ok=True)
+        with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as f:
+            f.write(data)
         try:
             _verify(tmp)
         except ImageError:

@@ -18,12 +18,29 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import sys
 import tempfile
 from pathlib import Path
 
 _UMASK = os.umask(0)
 os.umask(_UMASK)
+
+
+def private_dir(path: str | Path) -> Path:
+    """Create `path` and keep it this user's alone (0700): Dolly's state, cache and runtime
+    folders hold logs, the list of recordings and what the recorder is doing. A folder of
+    ours that an older version made with the umask is tightened; one that is not ours is
+    left as it is (the caller decides whether to use it)."""
+    p = Path(path)
+    p.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        st = os.lstat(p)
+        if stat.S_ISDIR(st.st_mode) and st.st_uid == os.geteuid() and st.st_mode & 0o077:
+            os.chmod(p, 0o700)
+    except OSError:
+        pass
+    return p
 
 
 class DamagedFile(ValueError):
@@ -65,7 +82,9 @@ def _readable_json(path: Path) -> bool:
         return False
 
 
-def atomic_write_text(path: str | Path, text: str, backup: bool = False, durable: bool = True) -> None:
+def atomic_write_text(path: str | Path, text: str, backup: bool = False, durable: bool = True,
+                      private: bool = False) -> None:
+    """`private`: the file is this user's alone (0600) whatever the umask says."""
     path = Path(path)
     d = path.parent
     fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=d)
@@ -75,7 +94,13 @@ def atomic_write_text(path: str | Path, text: str, backup: bool = False, durable
             f.flush()
             if durable:
                 os.fsync(f.fileno())
-        os.chmod(tmp, 0o666 & ~_UMASK)          # mkstemp makes 0600; match a normal file
+        if not private:                         # mkstemp makes 0600: match a normal file, or the
+            mode = 0o666 & ~_UMASK              # file being replaced (one made private stays so)
+            try:
+                mode = stat.S_IMODE(os.stat(path).st_mode)
+            except OSError:
+                pass
+            os.chmod(tmp, mode)
         if backup and path.exists() and (path.suffix != ".json" or _readable_json(path)):
             try:
                 _copy(path, backup_path(path))   # copy, not move: the target stays in place until replaced
@@ -98,7 +123,7 @@ def _copy(src: Path, dst: Path) -> None:
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(data)
-        os.chmod(tmp, 0o666 & ~_UMASK)
+        os.chmod(tmp, stat.S_IMODE(os.stat(src).st_mode))    # a backup is as private as its file
         os.replace(tmp, dst)
     except BaseException:
         try:
@@ -127,8 +152,9 @@ def erase_range(fd: int, offset: int, length: int) -> bool:
 
 
 def atomic_write_json(path: str | Path, obj, indent: int | None = None, backup: bool = False,
-                      durable: bool = True, **dumps_kw) -> None:
-    atomic_write_text(path, json.dumps(obj, indent=indent, **dumps_kw), backup=backup, durable=durable)
+                      durable: bool = True, private: bool = False, **dumps_kw) -> None:
+    atomic_write_text(path, json.dumps(obj, indent=indent, **dumps_kw), backup=backup, durable=durable,
+                      private=private)
 
 
 def read_json(path: str | Path, recover: bool = True):

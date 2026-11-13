@@ -165,15 +165,17 @@ def marker_no_anim() -> bool:
         return True
     # Hyprland with the old config format: a keyword rule, once per session
     import os
-    from pathlib import Path
     sig = os.environ.get("HYPRLAND_INSTANCE_SIGNATURE") or "x"
-    flag = Path(os.environ.get("XDG_RUNTIME_DIR") or "/tmp") / "dolly" / f"marker-no-anim-{sig[:16]}"
-    if flag.exists():
+    try:                                    # in Dolly's own runtime folder, not a shared /tmp
+        from .logger import runtime_dir
+        flag = runtime_dir() / f"marker-no-anim-{re.sub(r'[^A-Za-z0-9_-]', '_', sig[:16])}"
+    except OSError:
+        flag = None
+    if flag and flag.exists():
         return True
     ok, _ = _run(["keyword", "layerrule", "noanim, dolly-sync"])
-    if ok:
+    if ok and flag:
         try:
-            flag.parent.mkdir(parents=True, exist_ok=True)
             flag.touch()
         except OSError:
             pass

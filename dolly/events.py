@@ -62,6 +62,8 @@ class Timeline:
     def from_dict(cls, data: dict) -> "Timeline":
         v = data["video"]
         tl = cls(int(v["w"]), int(v["h"]), float(v.get("fps", 60)), float(v["duration"]))
+        if not (0 < tl.w <= 32768 and 0 < tl.h <= 32768 and 0 < tl.fps <= 1000 and 0 <= tl.duration <= 7 * 86400):
+            raise ValueError("events.json: video size, rate or length out of range")
         tl.capture = dict(data.get("capture", {}))
         # names and paths from the file end up in ffmpeg's arguments at export (audio.py)
         from .audio import clean_spans, clean_tracks
