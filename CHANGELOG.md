@@ -1,5 +1,60 @@
 # Changelog
 
+## 0.7.2 (2026-11-13)
+
+Security fixes. If you recorded while typing a password, or use Dolly on a machine other
+people log in to, update. Checked with the test suite and in headless Chromium; not yet
+run on an Omarchy desktop.
+
+What you type is no longer kept
+- A recording stored the name of every key pressed while it ran, in `events.json` and
+  `events.raw.jsonl`, and sent them to the editor page. A password typed into a terminal
+  or a web page during a take was in those files, and went wherever the folder went. Only
+  shortcuts and Enter/Escape/Tab were ever used.
+- Typed characters are now recorded as a time only. Shortcuts (with Ctrl, Alt or Super)
+  and keys that type nothing keep their names, so the shortcut overlay, typing zooms and
+  idle speed-ups work as before.
+- A character typed with AltGr (`@ { [ ] } \ | ~ €` on many keyboards) is typed text too.
+  It used to be recorded as an Alt shortcut, key name included. Shortcuts with the left
+  Alt key are still shown. Older recordings do not say which Alt key it was, so in those
+  Alt+letter is treated as typed and its keycap no longer shows.
+- Recordings you already have, also those in the Trash, are cleaned once, in the
+  background, the next time a session starts; `dolly library scrub-keys` does it right
+  away and says how many it changed, and `dolly library scrub-keys FOLDER` cleans another
+  folder (an old library folder, a backup you can reach). Copies you cannot reach (a
+  synced folder elsewhere, a folder you sent someone) still hold the old files: if you
+  typed a password during a take that left your machine, change that password.
+- The file Hyprland's input bridge writes raw key codes to
+  (`$XDG_RUNTIME_DIR/dolly/input.jsonl`) was never deleted and held every key since the
+  bridge started, including keys pressed while a password manager had focus. It is now
+  private to you, erased as it is read, and removed when the bridge stops.
+
+The editor only answers you
+- The editor's address, token included, was on the browser's command line, which every
+  local account can read. On a shared machine another user could open your editor: read
+  recordings, change the library and settings. The editor now refuses connections from
+  other accounts even with the right token, and the browser is started with a code that
+  works once. (If the editor window ever shows "Error response 403" on your system,
+  `DOLLY_EDITOR_PEER_CHECK=0` turns the account check off; please report it.)
+- The address is no longer saved in the recording folder (`.editor-url`).
+- A web page in your browser can no longer post to the editor, also not with a token it
+  got hold of.
+
+Shared links and other people's folders
+- An upload host could answer with markup instead of a link, and the editor showed share
+  history as HTML: script from the host ran in the editor with full access. Uploads now
+  accept one http(s) link and nothing else (Litterbox, `rclone link`, any target), the
+  editor shows everything from recording folders and the share config as text, and the
+  page runs no script but its own (Content-Security-Policy).
+- The analysis cache in a recording folder was a pickle, so opening a folder someone else
+  made could run their code. It is JSON now; old `.pkl` files are deleted unread.
+- Exporting a recording folder someone else made could empty any file of yours: the name
+  of an audio track in its `events.json` became part of ffmpeg's filter graph, and ffmpeg
+  has filters that write files. Track names, track files and the denoise model path are
+  now checked before they reach ffmpeg.
+- Share history (`shares.json`, `~/.local/state/dolly/shares.jsonl`) is readable by you
+  only: with a private bucket, the link is the access.
+
 ## 0.7.1 (2026-11-12)
 
 A recorder that leaves more of the machine to the desktop you are working on, and small

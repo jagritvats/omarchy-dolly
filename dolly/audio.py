@@ -24,7 +24,60 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
+import re
 from . import log as _dlog
+
+# What goes into an ffmpeg filter graph as text. A recording's files name its audio tracks
+# and may name a denoise model, and a recording folder can come from someone else: a name
+# with a quote or a bracket in it would be read by ffmpeg as more filters, and ffmpeg has
+# filters that write files.
+TRACK_NAME = re.compile(r"[a-z][a-z0-9_]{0,15}\Z")
+TRACK_FILE = re.compile(r"tracks/[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}\Z")
+_MODEL_PATH = re.compile(r"[A-Za-z0-9_./+@ -]{1,400}\Z")
+
+
+def clean_tracks(tracks) -> list[dict]:
+    """The audio tracks a recording lists, keeping only entries of the shape Dolly writes:
+    a plain name ("mic", "system") and a file directly inside the take's tracks/ folder."""
+    out = []
+    for t in tracks if isinstance(tracks, list) else []:
+        if not isinstance(t, dict) or not isinstance(t.get("track"), str) or not isinstance(t.get("file"), str):
+            continue
+        if not TRACK_NAME.match(t["track"]) or not TRACK_FILE.match(t["file"]) or ".." in t["file"]:
+            continue
+        try:
+            off, sc = float(t.get("offset", 0.0) or 0.0), float(t.get("scale", 1.0) or 1.0)
+        except (TypeError, ValueError):
+            continue
+        if not (-3600.0 < off < 3600.0 and 0.5 < sc < 2.0):       # also drops nan and inf
+            off, sc = 0.0, 1.0
+        out.append({**t, "offset": off, "scale": sc})
+    return out
+
+
+def clean_spans(spans) -> list[list[float]]:
+    """[[start, end], ...] in seconds, numbers only."""
+    out = []
+    for s in spans if isinstance(spans, list) else []:
+        try:
+            a, b = float(s[0]), float(s[1])
+        except (TypeError, ValueError, IndexError, KeyError):
+            continue
+        if 0.0 <= a < b < 1e7:
+            out.append([a, b])
+    return out
+
+
+def model_arg(path) -> str | None:
+    """The denoise model path as it may stand inside arnndn=m='...': an existing file whose
+    path has no character ffmpeg's filter syntax gives a meaning to. Anything else: None,
+    and the built-in denoiser is used."""
+    if not isinstance(path, str) or not _MODEL_PATH.match(path):
+        return None
+    try:
+        return path if Path(path).is_file() else None
+    except OSError:
+        return None
 
 MODES = ("none", "mic", "system", "both")
 DEFAULT = "default"          # follow the default device (resolved when the recording starts)
@@ -234,6 +287,10 @@ def mix_filter(tracks: list[dict], first_input: int, pieces, intro: float, total
     """filter_complex for separate tracks -> [aout]. tracks: align() entries in input order."""
     parts, mixed = [], []
     duck = bool(settings.get("duck", True))
+    rnn_model = model_arg(rnn_model)
+    for t in tracks:                                # the names become filter labels: see TRACK_NAME
+        if not TRACK_NAME.match(str(t.get("track"))):
+            raise ValueError(f"not an audio track name: {t.get('track')!r}")
     for i, t in enumerate(tracks):
         cfg = settings.get(t["track"], {})
         if cfg.get("mute"):

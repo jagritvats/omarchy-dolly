@@ -97,7 +97,7 @@ def test_logger_drops_keys_while_a_secret_window_has_focus():
         lg.on_key(code, True), lg.on_key(code, False)
     lg.secret_focus = False
     lg.on_key(31, True)
-    assert [e["key"] for e in seen if e["type"] == "key"] == ["a", "s"]
+    assert [e["key"] for e in seen if e["type"] == "key"] == ["char", "char"]   # A and S (typed: no names); none between
     assert sum(e["type"] == "info" for e in seen) == 1                        # said once, not per key
 
 

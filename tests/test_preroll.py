@@ -117,17 +117,17 @@ def _take(tmp_path, meta, lines, seconds=6):
 
 def test_input_during_the_countdown_is_not_part_of_the_take(tmp_path):
     lines = [{"type": "start", "ms": 0, "t0_mono": 1000.2},
-             {"type": "key", "ms": 1500, "key": "a", "mods": []},                       # during the countdown
+             {"type": "key", "ms": 1500, "key": "Return", "mods": []},                  # during the countdown
              {"type": "click", "ms": 2000, "x": 50, "y": 50, "button": "left"},
              {"type": "move", "ms": 2100, "x": 60, "y": 60},
-             {"type": "key", "ms": 3100, "key": "b", "mods": []},                       # 0.1 s after go
+             {"type": "key", "ms": 3100, "key": "Tab", "mods": []},                     # 0.1 s after go
              {"type": "click", "ms": 4000, "x": 80, "y": 80, "button": "left"}]
     pdir = _take(tmp_path, {"countdown": 3, "clock_mono": 1000.0, "go_mono": 1003.2}, lines)
     doc = capture.finalize(pdir, aoi=False)
     go = doc["capture"]["go"]
     assert go == pytest.approx(3.04, abs=0.01)                # clock fit: 0.04 + (1003.2 - 1000.2)
     ev = doc["events"]
-    assert [e["key"] for e in ev if e["type"] == "key"] == ["b"]
+    assert [e["key"] for e in ev if e["type"] == "key"] == ["Tab"]
     assert [round(e["t"], 1) for e in ev if e["type"] == "click"] == [4.0]
     assert any(e["type"] == "move" and e["t"] < go for e in ev)                         # the pointer path is kept
     proj = json.loads((pdir / "project.json").read_text())

@@ -108,6 +108,24 @@ def _copy(src: Path, dst: Path) -> None:
         raise
 
 
+def erase_range(fd: int, offset: int, length: int) -> bool:
+    """Zero `length` bytes at `offset` of an open file and give their storage back, without
+    changing the file's length (Linux fallocate, punch hole). For a file another process
+    keeps appending to: its writes and a reader's position are undisturbed. False where the
+    filesystem cannot do it; the caller then relies on deleting the file."""
+    if length <= 0:
+        return True
+    try:
+        import ctypes
+        libc = ctypes.CDLL(None, use_errno=True)
+        fn = getattr(libc, "fallocate64", None) or libc.fallocate
+        fn.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_longlong, ctypes.c_longlong]
+        fn.restype = ctypes.c_int
+        return fn(fd, 0x01 | 0x02, offset, length) == 0     # FALLOC_FL_KEEP_SIZE | FALLOC_FL_PUNCH_HOLE
+    except (OSError, AttributeError, ValueError):
+        return False
+
+
 def atomic_write_json(path: str | Path, obj, indent: int | None = None, backup: bool = False,
                       durable: bool = True, **dumps_kw) -> None:
     atomic_write_text(path, json.dumps(obj, indent=indent, **dumps_kw), backup=backup, durable=durable)

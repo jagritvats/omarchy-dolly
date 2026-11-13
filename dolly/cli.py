@@ -173,6 +173,19 @@ def cmd_library(a):
         print(f"copied {f.name}")
     elif act == "poster":
         print(library.poster(library.find(a.target), refresh=True) or "")
+    elif act == "scrub-keys":
+        if a.once:
+            try:
+                os.nice(10)                         # started by the session: stay out of the way
+            except OSError:
+                pass
+        r = library.scrub_typed_keys(once=a.once, folder=a.folder)
+        if r is not None:
+            print(f"removed typed text from {r['recordings']} recordings in {r['root']} "
+                  f"({r['keys']} key presses kept as times only)")
+            if r["failed"]:
+                print(f"{r['failed']} folders could not be rewritten (read-only, or the disk is full)")
+                sys.exit(1)
 
 
 def cmd_config(a):
@@ -294,6 +307,12 @@ def cmd_shell_start(a):
         from . import log
         log.swallowed("auto-apply at shell start")
     _say_refreshed(res)
+    try:                                    # once: recordings made before 0.7.2 name typed characters
+        from . import library
+        library.scrub_typed_keys_in_background()
+    except Exception:
+        from . import log
+        log.swallowed("typed-key scrub at shell start")
     print(json.dumps({"runtime": str(rd), "changed": (res or {}).get("changed", [])}))
 
 
@@ -645,6 +664,9 @@ def _main(argv=None):
     x = ls.add_parser("reveal"); x.add_argument("target")
     x = ls.add_parser("copy"); x.add_argument("target")
     x = ls.add_parser("poster"); x.add_argument("target")
+    x = ls.add_parser("scrub-keys", help="remove typed text from the event files of recordings made before 0.7.2")
+    x.add_argument("folder", nargs="?", help="another folder of recordings (default: the library and the Trash)")
+    x.add_argument("--once", action="store_true", help=argparse.SUPPRESS)
     st_ = sub.add_parser("settings", help="open the editor's Settings view")
     st_.add_argument("--no-browser", action="store_true")
     st_.add_argument("--section", help="scroll to this group, e.g. shortcuts")

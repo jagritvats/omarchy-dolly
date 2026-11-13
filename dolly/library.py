@@ -265,6 +265,60 @@ def rename(pdir: Path, title: str) -> dict:
 
 
 # ------------------------------------------------------------------ trash (freedesktop spec) + undo
+def _scrub_stamp() -> Path:
+    from .guards import state_dir
+    return state_dir() / "typed-keys-scrubbed"
+
+
+def scrub_typed_keys(once: bool = False, folder: str | Path | None = None) -> dict | None:
+    """Remove typed text from the event files of every recording in the library (see
+    events.scrub_typed_keys), and of the recordings in the Trash. `folder`: another folder
+    of recordings (an old library folder, a backup), or one recording. `once`: only until it
+    has gone through the whole library once on this machine; None when that was done."""
+    from .events import scrub_typed_keys as scrub_one
+    stamp = _scrub_stamp()
+    if once and stamp.exists():
+        return None
+    root, live = Path(folder).expanduser() if folder else projmod.videos_root(), _live_dir()
+    recordings = keys = failed = 0
+    dirs = [root] + sorted(root.iterdir()) if root.is_dir() else []
+    if not folder:
+        try:                                # recordings moved to the Trash still hold their files
+            dirs += [d for d in sorted((trash_dir() / "files").iterdir()) if (d / "capture.json").is_file()]
+        except OSError:
+            pass
+    for d in dirs:
+        if not d.is_dir() or d.is_symlink() or (live and d.resolve() == live):
+            continue
+        try:
+            n = scrub_one(d)
+        except OSError:
+            failed += 1                     # read-only or full disk: the next session start tries again
+            continue
+        if n:
+            recordings, keys = recordings + 1, keys + n
+    if not folder and not failed:
+        try:
+            stamp.write_text(f"{time.time():.0f}\n")
+        except OSError:
+            pass
+    return {"recordings": recordings, "keys": keys, "root": str(root), "failed": failed}
+
+
+def scrub_typed_keys_in_background() -> bool:
+    """At session start: go through the library once without holding up the bar. A library
+    of long takes is hundreds of megabytes of event files to read."""
+    import subprocess
+    import sys
+    if _scrub_stamp().exists():
+        return False
+    root = Path(__file__).resolve().parents[1]
+    env = dict(os.environ, PYTHONPATH=str(root) + (os.pathsep + os.environ["PYTHONPATH"] if os.environ.get("PYTHONPATH") else ""))
+    subprocess.Popen([sys.executable, "-m", "dolly.cli", "library", "scrub-keys", "--once"], stdin=subprocess.DEVNULL,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True, env=env)
+    return True
+
+
 def trash_dir() -> Path:
     return Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") / "Trash"
 
