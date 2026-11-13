@@ -14,6 +14,7 @@ import secrets
 import time
 from pathlib import Path
 
+from .. import fsutil
 from .. import project as projmod
 from . import clipboard, config, encode, presets, targets
 
@@ -24,7 +25,7 @@ MB = 1_000_000
 def _global_log() -> Path:
     base = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local" / "state")
     p = Path(base) / "dolly" / "shares.jsonl"
-    p.parent.mkdir(parents=True, exist_ok=True)
+    fsutil.private_dir(p.parent)
     return p
 
 
@@ -49,11 +50,9 @@ def _private(path: Path, flags: int) -> int:
 
 
 def _save_history(project_dir, items):
-    f = Path(project_dir) / "shares.json"
-    tmp = f.with_suffix(".tmp")
-    with os.fdopen(_private(tmp, os.O_TRUNC), "w") as t:
-        t.write(json.dumps(items, indent=2))
-    tmp.replace(f)
+    # a temp file of its own name, then a rename: nothing in the folder is written through
+    fsutil.atomic_write_text(Path(project_dir) / "shares.json", json.dumps(items, indent=2), durable=False,
+                             private=True)
 
 
 def record(project_dir, entry: dict) -> dict:
@@ -161,21 +160,42 @@ def upload(project_dir, file: Path, target_name: str | None = None, copy_link: b
         try:
             clipboard.copy_text(res["url"])
             res["copied"] = True
-        except clipboard.ClipboardUnavailable:
-            res["copied"] = False
+        except Exception:                      # no clipboard, or wl-copy failed: the file is up
+            res["copied"] = False              # there, so the entry (and its delete) is kept
     return record(project_dir, {"action": "upload", "file": str(file), "target": t.name, "target_type": t.kind,
                                 **{k: v for k, v in res.items() if k != "copied"}, "copied": res.get("copied")})
 
 
+def _uploaded_here(e: dict) -> bool:
+    try:
+        with open(_global_log(), encoding="utf-8") as g:
+            for line in g:
+                try:
+                    own = json.loads(line)
+                except ValueError:
+                    continue
+                if (isinstance(own, dict) and own.get("action") == "upload" and own.get("id") == e.get("id")
+                        and own.get("target") == e.get("target") and own.get("remote_ref")
+                        and own.get("remote_ref") == e.get("remote_ref")):
+                    return True
+    except OSError:
+        pass
+    return False
+
+
 def delete_remote(project_dir, share_id: str) -> dict:
     items = history(project_dir)
-    e = next((x for x in items if x["id"] == share_id), None)
+    e = next((x for x in items if x.get("id") == share_id), None)
     if not e or e.get("action") != "upload":
         raise KeyError(f"no upload with id {share_id}")
     if e.get("deleted"):
         return e
     if not e.get("deletable", True):
         raise targets.UploadError("this host does not support deleting; the link expires on its own")
+    # shares.json travels with the folder. What to delete, and from which target, is taken
+    # only from an upload this machine made itself (the log in Dolly's own state folder).
+    if not _uploaded_here(e):
+        raise targets.UploadError("this upload was not made from this computer: delete it at the host")
     cfg = config.load()
     if e["target"] not in cfg["targets"]:
         raise config.ConfigError(f"target '{e['target']}' is no longer configured")

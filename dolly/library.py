@@ -22,7 +22,7 @@ from pathlib import Path
 from . import project as projmod
 from . import fsutil
 
-INDEX_VERSION = 2
+INDEX_VERSION = 3          # 3: no share links in the index (0.7.3)
 VIDEO_EXT = (".mp4", ".gif", ".webm", ".mkv")
 
 
@@ -105,6 +105,8 @@ def entry(d: Path, with_poster: bool = True) -> dict | None:
         meta = fsutil.read_json(d / "capture.json")
     except (OSError, ValueError):
         pass
+    if not isinstance(meta, dict):          # any of these files can come from someone else
+        meta = {}
     raw = proj.raw
     if not raw.exists() and not meta and not (d / "exports").is_dir():
         return None
@@ -113,11 +115,14 @@ def entry(d: Path, with_poster: bool = True) -> dict | None:
         data = fsutil.read_json(proj.file)
     except (OSError, ValueError):            # fsutil.DamagedFile is a ValueError
         pass
+    if not isinstance(data, dict):
+        data = {}
     duration = 0.0
     finalized = (d / "events.json").exists()
     try:
         duration = float(fsutil.read_json(d / "events.json")["video"]["duration"])
-    except (OSError, ValueError, KeyError):
+        duration = duration if 0 <= duration < 1e7 else 0.0
+    except (OSError, ValueError, KeyError, TypeError):
         pass
     exports = []
     if (d / "exports").is_dir():
@@ -131,14 +136,18 @@ def entry(d: Path, with_poster: bool = True) -> dict | None:
         shares = json.loads((d / "shares.json").read_text())
     except (OSError, ValueError):
         pass
+    if not isinstance(shares, list):
+        shares = []
     created = meta.get("started")
+    if isinstance(created, bool) or not isinstance(created, (int, float)) or not 0 < created < 1e11:
+        created = None
     if not created:
         try:
             created = time.mktime(time.strptime(d.name[:19], "%Y-%m-%d_%H-%M-%S"))
         except ValueError:
             created = d.stat().st_mtime
-    reason = meta.get("stop_reason")
-    title = (data.get("title") or "").strip()
+    reason = meta.get("stop_reason") if isinstance(meta.get("stop_reason"), str) else None
+    title = data.get("title").strip() if isinstance(data.get("title"), str) else ""
     thumb = poster(d) if with_poster else (d / "thumb.jpg" if (d / "thumb.jpg").exists() else None)
     return {
         "dir": str(d), "id": d.name, "title": title or default_title(d.name, meta),
@@ -146,14 +155,28 @@ def entry(d: Path, with_poster: bool = True) -> dict | None:
         "bytes": _du(d), "raw_bytes": raw.stat().st_size if raw.exists() else 0, "raw": raw.exists(),
         "exports": exports, "exported": bool(exports),
         "shared": any(s.get("action") in ("upload", "copy") for s in shares if isinstance(s, dict)),
-        "links": [s.get("url") for s in shares if isinstance(s, dict) and s.get("url") and not s.get("deleted")],
         "captions": (d / "captions.srt").exists(),
         "vertical": any(e["vertical"] for e in exports),
         "recovered": reason == "recovered" or (not finalized and raw.exists()),
         "partial": reason in ("recorder-died", "disk-full", "suspend", "lock", "monitor-removed", "hyprland-exit"),
-        "stop_reason": reason, "replay": d.name.endswith("-replay"), "mode": meta.get("mode", "screen"),
-        "monitor": meta.get("monitor"), "thumb": str(thumb) if thumb else None, "sig": _sig(d),
+        "stop_reason": reason, "replay": d.name.endswith("-replay"),
+        "mode": meta.get("mode") if isinstance(meta.get("mode"), str) else "screen",
+        "monitor": meta.get("monitor") if isinstance(meta.get("monitor"), str) else None, "thumb": str(thumb) if thumb else None, "sig": _sig(d),
     }
+
+
+def links(d: str | Path) -> list[str]:
+    """Links of a recording's uploads that were not deleted since. Read from its share
+    history when someone asks: a link to a private bucket is what lets a person download,
+    so it is not copied into the index."""
+    try:
+        shares = json.loads((Path(d) / "shares.json").read_text())
+    except (OSError, ValueError):
+        return []
+    if not isinstance(shares, list):
+        return []
+    return [s["url"] for s in shares
+            if isinstance(s, dict) and isinstance(s.get("url"), str) and s["url"] and not s.get("deleted")]
 
 
 def default_title(folder: str, meta: dict) -> str:
@@ -176,8 +199,36 @@ def _load_cache() -> dict:
 
 
 def _write_atomic(p: Path, data: dict):
-    p.parent.mkdir(parents=True, exist_ok=True)
-    fsutil.atomic_write_json(p, data, durable=False)     # a cache: rebuilt if lost
+    fsutil.private_dir(p.parent)
+    # a cache: rebuilt if lost. Private: it lists every recording's title and folder
+    fsutil.atomic_write_json(p, data, durable=False, private=True)
+
+
+def drop_cached_links() -> bool:
+    """At session start: an index written before 0.7.3 holds a copy of every share link and
+    is readable by whoever the umask allows. Take the links out and make the file this
+    user's alone, without waiting for the panel to be opened. True when it was rewritten."""
+    p = cache_path()
+    try:
+        c = json.loads(p.read_text())
+    except FileNotFoundError:
+        return False
+    except (OSError, ValueError):
+        c = None
+    try:
+        if not isinstance(c, dict) or not isinstance(c.get("items"), list):
+            p.unlink()                      # not an index: the next scan writes a new one
+            return True
+        if c.get("version") == INDEX_VERSION and not p.stat().st_mode & 0o077:
+            return False
+        for e in c["items"]:
+            if isinstance(e, dict):
+                e.pop("links", None)
+        c["version"] = INDEX_VERSION
+        _write_atomic(p, c)
+    except OSError:
+        return False
+    return True
 
 
 def index(refresh: bool = True, posters: bool = True) -> dict:
@@ -185,7 +236,7 @@ def index(refresh: bool = True, posters: bool = True) -> dict:
     root = projmod.videos_root()
     cache = _load_cache()
     old = {e["dir"]: e for e in cache.get("items", [])}
-    items = []
+    items, skipped = [], []
     live = _live_dir()
     if root.is_dir():
         for d in root.iterdir():
@@ -198,7 +249,14 @@ def index(refresh: bool = True, posters: bool = True) -> dict:
             if prev and prev.get("sig") == _sig(d) and (prev.get("thumb") or not posters):
                 items.append(prev)
                 continue
-            e = entry(d, with_poster=posters)
+            try:
+                e = entry(d, with_poster=posters)
+            except projmod.UnsafeFolder:
+                skipped.append({"dir": str(d), "id": d.name, "reason": "symbolic links inside"})
+                continue
+            except Exception as ex:         # a folder from elsewhere with files Dolly cannot read
+                skipped.append({"dir": str(d), "id": d.name, "reason": f"unreadable ({type(ex).__name__})"})
+                continue
             if e:
                 items.append(e)
     # newest first; same start time (copied/imported projects, test fixtures) falls back to the
@@ -215,6 +273,7 @@ def index(refresh: bool = True, posters: bool = True) -> dict:
     cleanable = sum(e["raw_bytes"] for e in items if e["exported"] and e["raw"])
     free = _free(root)
     out = {"version": INDEX_VERSION, "root": str(root), "updated": time.time(), "items": items,
+           "skipped": skipped,
            "total_bytes": total, "raw_bytes": sum(e["raw_bytes"] for e in items),
            "cleanable_bytes": cleanable, "free_bytes": free,
            "total_text": human_size(total), "cleanable_text": human_size(cleanable),
@@ -324,10 +383,11 @@ def trash_dir() -> Path:
 
 
 def _trash_one(p: Path) -> dict:
-    p = Path(p).resolve()
+    p = Path(p)
+    p = p.parent.resolve() / p.name         # the entry itself, never what a link points at
     td = trash_dir()
-    (td / "files").mkdir(parents=True, exist_ok=True)
-    (td / "info").mkdir(parents=True, exist_ok=True)
+    for sub in (td, td / "files", td / "info"):
+        sub.mkdir(parents=True, exist_ok=True, mode=0o700)      # as file managers make it
     base, n = p.name, 1
     name = base
     while (td / "files" / name).exists() or (td / "info" / f"{name}.trashinfo").exists():
@@ -357,7 +417,6 @@ def trash(pdirs: list) -> dict:
         if not d.is_dir() or root not in d.parents:
             raise ValueError(f"{d} is not a recording in {root}")
         moved.append(_trash_one(d))
-    state_dir().mkdir(parents=True, exist_ok=True)
     _write_atomic(_undo_file(), {"time": time.time(), "items": moved})
     index(refresh=False, posters=False)
     _refresh_last()
@@ -397,7 +456,7 @@ def trash_raw(pdir: Path) -> int:
     pdir = Path(pdir)
     for name in ("raw.mkv", "raw.mp4", "webcam.mkv"):
         f = pdir / name
-        if f.exists():
+        if f.is_file() and not f.is_symlink():
             freed += f.stat().st_size
             _trash_one(f)
     if freed:

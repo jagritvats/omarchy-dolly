@@ -1464,7 +1464,7 @@ def recover_all(_a=None) -> list[Path]:
     for d in sorted(root.iterdir()):
         if not d.is_dir() or d == live or (d / "events.json").exists():
             continue
-        if projmod.Project(d).raw.exists() and (d / "capture.json").exists():
+        if projmod.usable(d) and projmod.Project(d).raw.exists() and (d / "capture.json").exists():
             try:
                 recover_dir(d)
                 out.append(d)

@@ -41,8 +41,10 @@ def redact(text: str) -> str:
     user = os.environ.get("USER") or Path.home().name
     if user and len(user) > 2:
         text = re.sub(rf"(?<![\w-]){re.escape(user)}(?![\w-])", "<user>", text)
-    return re.sub(r'(?i)("?(?:\w*(?:secret|token|password|passwd|access_key|api_key)\w*)"?\s*[:=]\s*)("[^"]*"|\S+)',
+    text = re.sub(r'(?i)("?(?:\w*(?:secret|token|password|passwd|access_key|api_key)\w*)"?\s*[:=]\s*)("[^"]*"|\S+)',
                   r"\1<redacted>", text)
+    # a link's query is where a signed link keeps its signature
+    return re.sub(r"(https?://[^\s?\"'<>]+)\?[^\s\"'<>]+", r"\1?<redacted>", text)
 
 
 def _versions() -> list[str]:
@@ -145,7 +147,9 @@ def write(dest: Path | None = None) -> Path:
     for folder in ([dest] if dest else []) + [Path.cwd(), Path.home()]:
         try:
             p = Path(folder) / name
-            p.write_text(text)
+            fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(text)
             return p
         except OSError:
             continue
