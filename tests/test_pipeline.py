@@ -167,7 +167,7 @@ def test_logger_lua_bridge_parsing(tmp_path, monkeypatch):
     L.f.close()
     lines = [json.loads(x) for x in (tmp_path / "events.raw.jsonl").read_text().splitlines()]
     assert lines[0]["key"] == "s" and lines[0]["mods"] == ["ctrl"]
-    assert lines[1]["key"] == "a" and lines[1]["mods"] == []
+    assert lines[1]["key"] == "char" and lines[1]["mods"] == []     # typed text: the time only
 
 
 def test_recorder_commands():

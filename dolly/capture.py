@@ -1688,7 +1688,9 @@ def finalize(pdir: Path, aoi: bool = True, plan: bool = True, on_video=None, hea
             events.append({"t": t, "type": "mark", "x": round((e["x"] - rx) * sx, 2),
                            "y": round((e["y"] - ry) * sy, 2)})
         elif kind == "key":
-            events.append({"t": t, "type": "key", "key": e["key"], "mods": e.get("mods", [])})
+            # a raw log written before 0.7.2 still names typed characters: never carry them over
+            from .keymap import stored
+            events.append({"t": t, "type": "key", **stored(str(e["key"]), e.get("mods", []), bool(e.get("lalt")))})
         elif kind == "window" and e.get("rect"):
             events.append({"t": t, "type": "window", "rect": _map_rect(e["rect"], rx, ry, sx, sy),
                            "title": e.get("title", ""), "class": e.get("class", ""),

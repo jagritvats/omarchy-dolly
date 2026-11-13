@@ -29,7 +29,7 @@ from __future__ import annotations
 import bisect
 from dataclasses import dataclass, field
 from pathlib import Path
-from . import fsutil
+from . import fsutil, keymap
 
 MODIFIERS = ("ctrl", "alt", "shift", "super")
 
@@ -63,6 +63,12 @@ class Timeline:
         v = data["video"]
         tl = cls(int(v["w"]), int(v["h"]), float(v.get("fps", 60)), float(v["duration"]))
         tl.capture = dict(data.get("capture", {}))
+        # names and paths from the file end up in ffmpeg's arguments at export (audio.py)
+        from .audio import clean_spans, clean_tracks
+        if "audio_tracks" in tl.capture:
+            tl.capture["audio_tracks"] = clean_tracks(tl.capture["audio_tracks"])
+        if "mic_mutes" in tl.capture:
+            tl.capture["mic_mutes"] = clean_spans(tl.capture["mic_mutes"])
         evs = sorted(data.get("events", []), key=lambda e: e["t"])
         for e in evs:
             kind = e.get("type")
@@ -73,8 +79,11 @@ class Timeline:
                                   "button": e.get("button", "left")})
                 tl._add_move(e["t"], e["x"], e["y"])
             elif kind == "key":
-                tl.keys.append({"t": float(e["t"]), "key": str(e["key"]),
-                                "mods": [m for m in e.get("mods", []) if m in MODIFIERS]})
+                # recordings made before 0.7.2 name typed characters in events.json; they
+                # are dropped here too, so neither the editor page nor a render sees them
+                key, mods = keymap.recorded(str(e["key"]), [m for m in e.get("mods", []) if m in MODIFIERS],
+                                            bool(e.get("lalt")))
+                tl.keys.append({"t": float(e["t"]), "key": key, "mods": mods})
             elif kind == "mark":
                 tl.marks.append({"t": float(e["t"]), "x": float(e["x"]), "y": float(e["y"])})
             elif kind == "window":
@@ -292,3 +301,66 @@ class Timeline:
                     best = max(best, e["t"])
                     break
         return best
+
+
+# ------------------------------------------------------------------ typed text in older recordings
+def scrub_typed_keys(project_dir: str | Path) -> int:
+    """Recordings made before 0.7.2 name every key that was pressed, typed text included, in
+    their event files. Rewrite those files so a typed character is only "a character was
+    typed at this time" (keymap.recorded); shortcuts and Enter/Esc/Tab stay, so the take
+    looks and plays as before. Returns how many key events changed. A file that cannot be
+    read is left as it is; no backup of the old contents is kept."""
+    import json
+    import os
+    d = Path(project_dir)
+    changed = 0
+
+    def fix(e) -> bool:
+        if not isinstance(e, dict) or e.get("type") != "key" or "key" not in e:
+            return False
+        mods = e.get("mods") if isinstance(e.get("mods"), list) else []
+        key, new_mods = keymap.recorded(str(e["key"]), [str(m) for m in mods], bool(e.get("lalt")))
+        if key == e["key"] and new_mods == mods:
+            return False
+        e["key"], e["mods"] = key, new_mods
+        return True
+
+    def keep_times(p: Path, st) -> None:
+        try:
+            os.utime(p, ns=(st.st_atime_ns, st.st_mtime_ns))     # caches compare times: the take did not change
+        except OSError:
+            pass
+
+    for name in ("events.json", "events.json.bak"):
+        p = d / name
+        try:
+            st = p.stat()
+            doc = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        n = sum(fix(e) for e in doc.get("events", [])) if isinstance(doc, dict) else 0
+        if n:
+            fsutil.atomic_write_json(p, doc)
+            keep_times(p, st)
+            changed += n
+    for name in ("events.raw.jsonl", "replay-events.jsonl"):
+        p = d / name
+        try:
+            st = p.stat()
+            lines = p.read_text(encoding="utf-8").splitlines()
+        except (OSError, ValueError):
+            continue
+        n = 0
+        for i, line in enumerate(lines):
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue
+            if fix(e):
+                lines[i] = json.dumps(e, separators=(",", ":"))
+                n += 1
+        if n:
+            fsutil.atomic_write_text(p, "\n".join(lines) + "\n")
+            keep_times(p, st)
+            changed += n
+    return changed

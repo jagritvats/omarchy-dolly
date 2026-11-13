@@ -414,7 +414,8 @@ function rr(c,x,y,w,h,r){ c.beginPath(); c.moveTo(x+r,y); c.arcTo(x+w,y,x+w,y+h,
 // background pictures by path (theme backgrounds, ~/Pictures, uploads), loaded through the
 // server's checked /media/image endpoint; redraws when one arrives
 const imgCache={};
-const imgUrl=p=>`/media/image?path=${encodeURIComponent(p)}&t=${TOKEN}`;
+const encU=x=>encodeURIComponent(x).replace(/[!'()*]/g,c=>'%'+c.charCodeAt(0).toString(16).toUpperCase());   // also safe inside url('…')
+const imgUrl=p=>`/media/image?path=${encU(p)}&t=${encU(TOKEN)}`;
 function bgImg(path){ if(!path) return null; let im=imgCache[path];
   if(!im){ im=new Image(); imgCache[path]=im; im.onload=()=>{ if(P&&PATH){ buildBg(); render() } if(VIEW==='settings') drawSettingsPreview() }; im.src=imgUrl(path) }
   return im.complete&&im.naturalWidth?im:null }
@@ -493,9 +494,9 @@ function drawBadge(sp){ const G=PATH.geom, sc=Math.min(G.OW,G.OH)/1080, m=0.035*
 // ------------------------------------------------------------ timeline
 const wrap=$('#tlwrap');
 const X=t=>t/P.video.duration*wrap.clientWidth, T=x=>Math.max(0,Math.min(P.video.duration,x/wrap.clientWidth*P.video.duration));
-const LANES={zoom:{el:'#zlane',arr:()=>S.segments,cls:s=>'it'+(s.source==='manual'?' manual':''),label:s=>`${s.zoom.toFixed(1)}×<span class="r">${s.source==='manual'?'manual':(s.reason||'auto')}</span>`},
-  speed:{el:'#slane',arr:()=>S.speed,cls:s=>'it speed'+(S.style.speed.enabled?'':' off'),label:s=>`⏩ ${s.speed}× <span class="r" style="color:var(--orange)">${s.reason||''}</span>`},
-  privacy:{el:'#plane',arr:()=>S.privacy,cls:s=>'it privacy'+(s.source==='secret'?' secret':'')+(s.source==='auto'?' auto':'')+(s.enabled===false?' off':''),label:s=>(s.source==='secret'?'⚠ ':s.source==='auto'?'auto · ':'▦ ')+(s.label||s.mode)}};
+const LANES={zoom:{el:'#zlane',arr:()=>S.segments,cls:s=>'it'+(s.source==='manual'?' manual':''),label:s=>`${(+s.zoom).toFixed(1)}×<span class="r">${esc(s.source==='manual'?'manual':(s.reason||'auto'))}</span>`},
+  speed:{el:'#slane',arr:()=>S.speed,cls:s=>'it speed'+(S.style.speed.enabled?'':' off'),label:s=>`⏩ ${esc(s.speed)}× <span class="r" style="color:var(--orange)">${esc(s.reason||'')}</span>`},
+  privacy:{el:'#plane',arr:()=>S.privacy,cls:s=>'it privacy'+(s.source==='secret'?' secret':'')+(s.source==='auto'?' auto':'')+(s.enabled===false?' off':''),label:s=>(s.source==='secret'?'⚠ ':s.source==='auto'?'auto · ':'▦ ')+esc(s.label||s.mode)}};
 function laneOf(id){ for(const [n,L] of Object.entries(LANES)){ const it=L.arr().find(s=>s.id===id); if(it) return [n,it] } return [null,null] }
 function drawRuler(){ const r=$('#ruler'); r.innerHTML=''; const d=P.video.duration, step=d>120?15:d>60?10:d>20?5:d>8?2:1; for(let t=0;t<=d+1e-6;t+=step){ const s=document.createElement('span'); s.style.left=X(t)+'px'; s.textContent=fmtT(t).replace(/\.\d+$/,''); r.appendChild(s) } }
 function drawTimeline(){
@@ -516,7 +517,7 @@ function drawTimeline(){
   for(const [i,side] of [[0,'in'],[1,'out']]){ const e=document.createElement('div'); e.className='trim'; e.dataset.side=side; e.style.left=(X(S.trim[i])-(i?0:9))+'px'; cl.appendChild(e) }
   $('#autochip').textContent=`${S.segments.length} zooms · ${S.speed.length} speed-ups · ${S.privacy.length} blurs`;
   const saved=S.speed.reduce((a,s)=>a+(s.end-s.start)*(1-1/s.speed),0); $('#speedInfo').textContent=S.speed.length?`${S.speed.length} stretches, saves ${saved.toFixed(1)} s of ${P.video.duration.toFixed(1)} s`:'No speed-ups yet.';
-  $('#privList').innerHTML=S.privacy.map(b=>`<div><span>${b.source==='secret'?'⚠':b.source==='auto'?'auto ·':'▦'} ${fmtT(b.start)}–${fmtT(b.end)} · ${b.label||b.mode}</span><span><span class="x" data-tog="${b.id}">${b.enabled===false?'enable':'disable'}</span> · <span class="x" data-del="${b.id}">delete</span></span></div>`).join('')||'<div class="small">None.</div>';
+  $('#privList').innerHTML=S.privacy.map(b=>`<div><span>${b.source==='secret'?'⚠':b.source==='auto'?'auto ·':'▦'} ${fmtT(b.start)}–${fmtT(b.end)} · ${esc(b.label||b.mode)}</span><span><span class="x" data-tog="${esc(b.id)}">${b.enabled===false?'enable':'disable'}</span> · <span class="x" data-del="${esc(b.id)}">delete</span></span></div>`).join('')||'<div class="small">None.</div>';
   drawSelPanel(); updatePH() }
 function updatePH(){ $('#ph').style.left=X(vid.currentTime)+'px'; $('#tc').textContent=fmtT(vid.currentTime) }
 function newId(p){ let i=1; const all=[...S.segments,...S.speed,...S.privacy]; while(all.find(s=>s.id===p+i)) i++; return p+i }
@@ -524,7 +525,7 @@ function drawSelPanel(){
   const [lane,s]=laneOf(sel), body=$('#segbody');
   if(!s){ $('#segtitle').textContent='Selection'; body.className='empty'; body.innerHTML='Click an item on the timeline to edit it. <span class="kbd">Z</span> adds a zoom at the playhead, <span class="kbd">Del</span> deletes.'; return }
   body.className=''; $('#segtitle').textContent=`${lane} ${s.id} · ${fmtT(s.start)} – ${fmtT(s.end)}`;
-  if(lane==='zoom'){ body.innerHTML=`<div class="row"><label>Scale</label><input type="range" min="1.1" max="3.5" step="0.05" value="${s.zoom}" id="szoom"><span class="v">${s.zoom.toFixed(2)}×</span></div>
+  if(lane==='zoom'){ body.innerHTML=`<div class="row"><label>Scale</label><input type="range" min="1.1" max="3.5" step="0.05" value="${esc(s.zoom)}" id="szoom"><span class="v">${(+s.zoom).toFixed(2)}×</span></div>
     <div class="tg ${s.follow?'on':''}" id="sfollow"><span>Follow cursor</span><i></i></div><div class="small" style="margin:4px 0 8px">${s.focus?'Fixed focus point set.':'Focus: centre of the clicks/typing inside the segment.'}</div>
     <div style="display:flex;gap:6px;flex-wrap:wrap"><button id="sfocus">Set focus: click preview</button>${s.focus?'<button id="sunfocus">Auto focus</button>':''}<button class="danger" id="sdel">Delete</button></div>`;
     $('#szoom').oninput=e=>{ s.zoom=+e.target.value; e.target.nextElementSibling.textContent=s.zoom.toFixed(2)+'×'; s.source='manual'; scheduleRepath() }; $('#szoom').onchange=()=>{commit();drawTimeline()};
@@ -533,7 +534,7 @@ function drawSelPanel(){
   else if(lane==='speed'){ body.innerHTML=`<div class="seg3" id="spdopts">${[1.5,2,4,8].map(v=>`<div class="opt ${s.speed==v?'on':''}" data-v="${v}">${v}×</div>`).join('')}</div><div style="margin-top:8px"><button class="danger" id="sdel">Delete</button></div>`;
     $('#spdopts').style.gridTemplateColumns='repeat(4,1fr)'; $('#spdopts').querySelectorAll('.opt').forEach(o=>o.onclick=()=>{ s.speed=+o.dataset.v; s.source='manual'; commit(); drawTimeline() }) }
   else { body.innerHTML=`<div class="seg2" id="pmode"><div class="opt ${s.mode!=='pixelate'?'on':''}" data-v="blur">Blur</div><div class="opt ${s.mode==='pixelate'?'on':''}" data-v="pixelate">Pixelate</div></div>
-    <div class="small" style="margin:6px 0">${s.source==='secret'?'Flagged by OCR: '+(s.label||''):'Drawn by you.'} Drag on the preview to redraw.</div><div style="display:flex;gap:6px"><button id="predraw">Redraw box</button><button class="danger" id="sdel">Delete</button></div>`;
+    <div class="small" style="margin:6px 0">${s.source==='secret'?'Flagged by OCR: '+esc(s.label||''):'Drawn by you.'} Drag on the preview to redraw.</div><div style="display:flex;gap:6px"><button id="predraw">Redraw box</button><button class="danger" id="sdel">Delete</button></div>`;
     $('#pmode').querySelectorAll('.opt').forEach(o=>o.onclick=()=>{ s.mode=o.dataset.v; commit(); drawTimeline() }); $('#predraw').onclick=()=>startDraw(s) }
   $('#sdel').onclick=delSel }
 function delSel(){ for(const L of Object.values(LANES)){ const a=L.arr(), i=a.findIndex(s=>s.id===sel); if(i>=0){ a.splice(i,1); sel=null; commit(); drawTimeline(); render(); return } } }
@@ -629,22 +630,23 @@ let presets=[], chosen='github', lastFile=null;
 async function openShare(){ $('#share').classList.add('open'); await api('/api/save',{segments:S.segments,style:S.style,trim:S.trim,speed:S.speed,privacy:S.privacy});
   const [pr,tg]=await Promise.all([api('/api/share/presets'),api('/api/share/targets')]); presets=pr.presets; drawPresets();
   $('#shMeta').textContent=`${P.name} · output ${fmtT(presets[0].duration)}`;
-  const sel=$('#shTarget'); sel.innerHTML=tg.targets.map(t=>`<option value="${t.name}" ${t.name===tg.default?'selected':''}>${t.name} · ${t.type}${t.public?' · public':''}</option>`).join('');
+  const sel=$('#shTarget'); sel.innerHTML=tg.targets.map(t=>`<option value="${esc(t.name)}" ${t.name===tg.default?'selected':''}>${esc(t.name)} · ${esc(t.type)}${t.public?' · public':''}</option>`).join('');
   $('#shUpload').disabled=!tg.targets.length||!lastFile;
-  $('#shTgtInfo').innerHTML=tg.error?`<span class="warn">${tg.error}</span>`:tg.targets.length?(tg.targets.find(t=>t.public)?'<span class="warn">Public targets: anyone with the link can watch.</span>':'Links come from your own bucket / rclone remote.'):`Local-only: nothing uploads until you add a target to <span style="color:var(--fg)">${tg.path}</span> (run <span class="kbd">dolly share init</span>).`;
+  $('#shTgtInfo').innerHTML=tg.error?`<span class="warn">${esc(tg.error)}</span>`:tg.targets.length?(tg.targets.find(t=>t.public)?'<span class="warn">Public targets: anyone with the link can watch.</span>':'Links come from your own bucket / rclone remote.'):`Local-only: nothing uploads until you add a target to <span style="color:var(--fg)">${esc(tg.path)}</span> (run <span class="kbd">dolly share init</span>).`;
   drawHistory() }
 function drawPresets(){ $('#pgrid').innerHTML=presets.map(p=>{ const e=p.estimate, cap=p.cap_mb, pct=cap?Math.min(100,e.bytes/(cap*1e6)*100):Math.min(100,e.bytes/50e6*100);
-  return `<div class="pc ${p.id===chosen?'on':''}" data-id="${p.id}">${cap?`<span class="badge">${cap>=1000?cap/1000+' GB':cap+' MB'} cap</span>`:p.aspect!=='16:9'?`<span class="badge">${p.aspect}</span>`:''}<div class="nm">${p.label}</div>
-   <div class="spec">${p.format.toUpperCase()} · ${p.width}×${p.height} · ${p.fps} fps<br>${p.note||''}</div><div class="est"><span>≈ <b>${fmtMB(e.bytes)}</b></span><span class="${e.over_duration?'warn':'ok'}">${e.over_duration?'too long':e.fits?'fits':'squeezed'}</span></div><div class="bar"><i style="width:${pct}%;background:${e.fits?'var(--green)':'var(--yellow)'}"></i></div></div>` }).join('');
+  return `<div class="pc ${p.id===chosen?'on':''}" data-id="${esc(p.id)}">${cap?`<span class="badge">${esc(cap>=1000?cap/1000+' GB':cap+' MB')} cap</span>`:p.aspect!=='16:9'?`<span class="badge">${esc(p.aspect)}</span>`:''}<div class="nm">${esc(p.label)}</div>
+   <div class="spec">${esc(String(p.format).toUpperCase())} · ${esc(p.width)}×${esc(p.height)} · ${esc(p.fps)} fps<br>${esc(p.note||'')}</div><div class="est"><span>≈ <b>${fmtMB(e.bytes)}</b></span><span class="${e.over_duration?'warn':'ok'}">${e.over_duration?'too long':e.fits?'fits':'squeezed'}</span></div><div class="bar"><i style="width:${+pct||0}%;background:${e.fits?'var(--green)':'var(--yellow)'}"></i></div></div>` }).join('');
   $('#pgrid').querySelectorAll('.pc').forEach(c=>c.onclick=()=>{ chosen=c.dataset.id; drawPresets() }); const p=presets.find(x=>x.id===chosen); $('#shExport').textContent=`Export for ${p.label} · ≈ ${fmtMB(p.estimate.bytes)}` }
 let autoCopy=false;
 async function shareExport(){ $('#shExport').disabled=true; $('#shDone').style.display='none';
   const r=await api('/api/share/export',{preset:chosen,project:{segments:S.segments,style:S.style,trim:S.trim,speed:S.speed,privacy:S.privacy}}); if(r.error){ toast(r.error); $('#shExport').disabled=false; return }
   pollJob($('#shbar'),$('#shtxt'),async s=>{ $('#shExport').disabled=false; if(s.result){ lastFile=s.result.out; $('#shtxt').textContent=`Done · ${s.result.out} · ${fmtMB(s.result.size)} (${s.result.report.method})`; $('#shDone').style.display='block'; $('#shUpload').disabled=!$('#shTarget').options.length;
     if(autoCopy){ autoCopy=false; const c=await api('/api/share/copy',{file:lastFile}); toast(c.error||'GIF copied as a file: paste with Ctrl+V') } drawHistory() } }) }
-async function drawHistory(){ const h=(await api('/api/share/history')).history.slice(-8).reverse();
+async function drawHistory(){ const h=(await api('/api/share/history')).history.filter(e=>e&&typeof e==='object').slice(-8).reverse();
   $('#shHist').innerHTML=h.map(e=>{ const when=new Date(e.time*1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}); const exp=e.expires_at?` · expires ${new Date(e.expires_at*1000).toLocaleDateString()}`:'';
-    return `<div><span>${e.action}${e.preset?' · '+e.preset:''} → ${e.target||'local'} <span class="small">${when}${e.public?' · public':''}${exp}${e.deleted?' · deleted':''}</span>${e.url?`<br><span style="color:var(--cyan)">${e.url.slice(0,70)}${e.url.length>70?'…':''}</span>`:''}</span>${e.action==='upload'&&!e.deleted&&e.deletable!==false?`<span class="x" data-rm="${e.id}">delete remote</span>`:''}</div>` }).join('')||'<div class="small">Nothing shared yet.</div>';
+    const url=String(e.url||'');
+    return `<div><span>${esc(e.action)}${e.preset?' · '+esc(e.preset):''} → ${esc(e.target||'local')} <span class="small">${when}${e.public?' · public':''}${exp}${e.deleted?' · deleted':''}</span>${url?`<br><span style="color:var(--cyan)">${esc(url.slice(0,70))}${url.length>70?'…':''}</span>`:''}</span>${e.action==='upload'&&!e.deleted&&e.deletable!==false?`<span class="x" data-rm="${esc(e.id)}">delete remote</span>`:''}</div>` }).join('')||'<div class="small">Nothing shared yet.</div>';
   $('#shHist').querySelectorAll('[data-rm]').forEach(x=>x.onclick=async()=>{ const r=await api('/api/share/delete',{id:x.dataset.rm}); toast(r.error||'Remote copy deleted'); drawHistory() }) }
 
 document.addEventListener('keydown',e=>{
@@ -714,7 +716,7 @@ async function init(){
   if(P.has_captions) $('#capInfo').textContent=`${(P.caption_cues||[]).length} cues`;
   optGroup('camShape',v=>{ S.style.webcam.shape=v; commit(); render() });
   for(const [id,k] of [['tText','text'],['tSub','subtitle'],['tOut','outro_text']]) $('#'+id).onchange=e=>{ S.style.title[k]=e.target.value; if(k==='text'&&e.target.value) S.style.title.enabled=true; commit(); syncControls() };
-  const ss=$('#stylesel'); const fillStyles=list=>{ ss.innerHTML='<option value="">Load a preset…</option>'+list.map(s=>`<option>${s.name}</option>`).join(''); ss._list=list }; fillStyles(P.styles||[]);
+  const ss=$('#stylesel'); const fillStyles=list=>{ ss.innerHTML='<option value="">Load a preset…</option>'+list.map(s=>`<option>${esc(s.name)}</option>`).join(''); ss._list=list }; fillStyles(P.styles||[]);
   ss.onchange=()=>{ const st=(ss._list||[]).find(s=>s.name===ss.value); if(!st) return; Object.assign(S.style,JSON.parse(JSON.stringify(st.style))); commit(); syncControls(); buildBg(); render(); toast('Style "'+st.name+'" applied') };
   $('#stylesave').onclick=async()=>{ const name=prompt('Save style as'); if(!name) return; const r=await api('/api/styles',{name,style:S.style}); fillStyles(r.styles); toast('Saved') };
   ['fmt','res','efps','qual'].forEach(id=>optGroup(id));
@@ -767,7 +769,7 @@ function syncCam(){ const wc=S.style.webcam; document.querySelectorAll('#camShap
   $('#camsize')._sync&&$('#camsize')._sync(); $('#camborder')._sync&&$('#camborder')._sync() }
 function initAudioCam(){
   const tr=$('#trackRows'); S.style.audio=S.style.audio||{};
-  tr.innerHTML=(P.audio_tracks||[]).map(t=>`<div class="row"><label>${t.track==='mic'?'Mic':'System'}</label><input type="range" min="0" max="2" step="0.05" id="vol_${t.track}"><span class="v" id="vol_${t.track}v"></span><span class="x" id="mute_${t.track}" style="cursor:pointer;width:40px;text-align:right"></span></div>`).join('')||'<div class="small">Audio recorded with the video (older recording) or none.</div>';
+  tr.innerHTML=(P.audio_tracks||[]).map(t=>`<div class="row"><label>${t.track==='mic'?'Mic':'System'}</label><input type="range" min="0" max="2" step="0.05" id="vol_${esc(t.track)}"><span class="v" id="vol_${esc(t.track)}v"></span><span class="x" id="mute_${esc(t.track)}" style="cursor:pointer;width:40px;text-align:right"></span></div>`).join('')||'<div class="small">Audio recorded with the video (older recording) or none.</div>';
   for(const t of (P.audio_tracks||[])){ const k=t.track; S.style.audio[k]=S.style.audio[k]||{volume:1,mute:false};
     bindRange('vol_'+k,()=>S.style.audio[k].volume??1,v=>S.style.audio[k].volume=v,v=>Math.round(v*100)+'%');
     const m=$('#mute_'+k); const upd=()=>{ m.textContent=S.style.audio[k].mute?'muted':'mute'; m.style.color=S.style.audio[k].mute?'var(--red)':'var(--fg-d)' }; upd();
@@ -802,7 +804,7 @@ function drawLibrary(){ if(!LIB) return; const q=$('#lq').value.trim().toLowerCa
   $('#lclean').disabled=!LIB.cleanable_bytes; $('#ltrash').disabled=!lsel.size; $('#ltrash').textContent=lsel.size?`Move ${lsel.size} to trash`:'Move to trash';
   const g=$('#lgrid'); g.className='lgrid'+(lmode==='list'?' list':''); $('#lempty').style.display=items.length?'none':'block';
   g.innerHTML=items.map(e=>{ const b=[e.exported&&'exported',e.shared&&'shared',e.vertical&&'9:16',e.captions&&'CC'].filter(Boolean).map(x=>`<span>${x}</span>`).join('')+(e.recovered?'<span class="warn">recovered</span>':'')+(e.partial?`<span class="warn" title="${esc(e.stop_reason)}">partial</span>`:'')+(!e.raw?'<span class="warn" title="raw files cleaned up; exports kept">raw cleaned</span>':'');
-    return `<div class="card${lsel.has(e.dir)?' sel':''}" data-dir="${esc(e.dir)}"><div class="th" style="background-image:url('/media/thumb?dir=${encodeURIComponent(e.dir)}&t=${TOKEN}')"><input type="checkbox" class="cb" ${lsel.has(e.dir)?'checked':''}><span class="du">${fmtT(e.duration).replace(/\.\d+$/,'')}</span></div>
+    return `<div class="card${lsel.has(e.dir)?' sel':''}" data-dir="${esc(e.dir)}"><div class="th" style="background-image:url('/media/thumb?dir=${encU(e.dir)}&t=${encU(TOKEN)}')"><input type="checkbox" class="cb" ${lsel.has(e.dir)?'checked':''}><span class="du">${fmtT(e.duration).replace(/\.\d+$/,'')}</span></div>
       <div class="bd"><div class="tt" title="${esc(e.title)}">${esc(e.title)}</div><div class="mt">${new Date(e.created*1000).toLocaleString([], {dateStyle:'medium',timeStyle:'short'})} · ${fmtGB(e.bytes)} · ${esc(e.mode)}</div><div class="bdg">${b}</div>
       <div class="acts"><button data-a="open">Open</button><button data-a="copy">Copy video</button><button data-a="reveal">Show in Files</button><button data-a="rename">Rename</button><button data-a="trash" class="danger">Trash</button></div></div></div>` }).join('') }
 $('#lq').oninput=drawLibrary; $('#lsort').onchange=drawLibrary;
@@ -826,7 +828,7 @@ $('#lgrid').addEventListener('click',async e=>{ const card=e.target.closest('.ca
 // ---- Settings
 const SL={ // labels + help
  'capture.mode':['Default capture','What Super+Alt+R and quick record use'], 'capture.countdown':['Countdown','Seconds before recording starts (the same key cancels)'],
- 'capture.fps':['Frame rate',''], 'capture.keys':['Log shortcuts','For the keystroke overlay; only chords are shown'], 'capture.replay_seconds':['Instant replay length','Seconds kept in memory'],
+ 'capture.fps':['Frame rate',''], 'capture.keys':['Log shortcuts','For the shortcut overlay. Typed text is kept as timing only, never which keys'], 'capture.replay_seconds':['Instant replay length','Seconds kept in memory'],
  'audio.mode':['Audio','Separate tracks: microphone, system audio, or both'], 'audio.mic_device':['Microphone','"default" follows the default input'], 'audio.system_device':['System audio','"default" follows the default output'],
  'audio.denoise':['Mic noise suppression',''], 'audio.duck':['Lower system audio while speaking',''], 'audio.normalize':['Loudness normalise',''],
  'camera.mode':['Camera','Off · Bubble in edit (recorded separately, editable later) · Live bubble (on screen, recorded as seen)'], 'camera.device':['Camera device','Empty = the first camera'],

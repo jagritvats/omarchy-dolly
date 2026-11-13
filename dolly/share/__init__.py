@@ -31,15 +31,28 @@ def _global_log() -> Path:
 def history(project_dir) -> list[dict]:
     f = Path(project_dir) / "shares.json"
     try:
-        return json.loads(f.read_text())
+        items = json.loads(f.read_text())
     except (OSError, ValueError):
         return []
+    return [e for e in items if isinstance(e, dict)] if isinstance(items, list) else []
+
+
+def _private(path: Path, flags: int) -> int:
+    """Open for writing as this user's file alone: share history holds links, and with a
+    private bucket the link is what lets someone download."""
+    fd = os.open(path, flags | os.O_WRONLY | os.O_CREAT, 0o600)
+    try:
+        os.fchmod(fd, 0o600)                     # also one an older version made readable
+    except OSError:
+        pass
+    return fd
 
 
 def _save_history(project_dir, items):
     f = Path(project_dir) / "shares.json"
     tmp = f.with_suffix(".tmp")
-    tmp.write_text(json.dumps(items, indent=2))
+    with os.fdopen(_private(tmp, os.O_TRUNC), "w") as t:
+        t.write(json.dumps(items, indent=2))
     tmp.replace(f)
 
 
@@ -48,7 +61,7 @@ def record(project_dir, entry: dict) -> dict:
     items = history(project_dir)
     items.append(entry)
     _save_history(project_dir, items)
-    with open(_global_log(), "a") as g:
+    with os.fdopen(_private(_global_log(), os.O_APPEND), "a") as g:
         g.write(json.dumps({**entry, "project_dir": str(project_dir)}) + "\n")
     return entry
 
@@ -138,6 +151,12 @@ def copy_to_clipboard(project_dir, file: Path, as_text=False) -> dict:
 def upload(project_dir, file: Path, target_name: str | None = None, copy_link: bool = True) -> dict:
     t = targets.get_target(target_name)
     res = t.upload(Path(file))
+    if res.get("url"):                         # whatever the target is: a link and nothing else
+        try:
+            res["url"] = targets.checked_link(res["url"], f"target '{t.name}'")
+        except targets.UploadError:            # the file is up there: keep the entry (so it can be
+            res = {**res, "url": None, "public": False,          # deleted again), not the "link"
+                   "note": "uploaded, but the target did not hand back a usable link"}
     if copy_link and res.get("url"):
         try:
             clipboard.copy_text(res["url"])

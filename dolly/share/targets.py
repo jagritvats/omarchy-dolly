@@ -27,6 +27,27 @@ class UploadError(RuntimeError):
     pass
 
 
+# RFC 3986: every character a URL may contain. No space, quote, angle bracket or control code.
+_URL_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~:/?#[]@!$&'()*+,;=%")
+MAX_LINK = 8192            # a presigned S3 link with a session token runs to a few thousand
+
+
+def checked_link(url, source: str = "the upload host") -> str:
+    """A link that came back from somewhere else (an upload host's answer, rclone's output),
+    before it is copied to the clipboard, saved in the share history and shown in the editor:
+    one http(s) URL and nothing else. Anything more (markup, a second line that would run
+    when pasted into a terminal) is an UploadError."""
+    url = str(url or "").strip()
+    try:
+        u = urlsplit(url)
+        ok = u.scheme in ("http", "https") and bool(u.hostname)
+    except ValueError:
+        ok = False
+    if not ok or len(url) > MAX_LINK or not _URL_CHARS.issuperset(url):
+        raise UploadError(f"{source} did not answer with a link: {url[:120]!r}")
+    return url
+
+
 def remote_name(local: Path, prefix: str = "") -> str:
     """Unguessable object name (public buckets are often listable by URL guessing)."""
     stem = "".join(c if c.isalnum() or c in "-_." else "-" for c in local.stem)[:60]
@@ -146,11 +167,11 @@ class RcloneTarget:
         if self.t.get("link_expire"):
             args += ["--expire", self.t["link_expire"]]
         try:
-            link = self._run(*args, timeout=120).splitlines()[-1].strip()
+            link = checked_link((self._run(*args, timeout=120).splitlines() or [""])[-1], "rclone link")
             if self.t.get("link_expire"):
                 expires_at = time.time() + _duration_seconds(self.t["link_expire"])
         except UploadError as e:
-            note = f"uploaded, but this remote cannot make links ({e})"
+            link, note = None, f"uploaded, but this remote cannot make links ({e})"
         return {"url": link, "public": bool(link), "expires_at": expires_at, "deletable": True,
                 "remote_ref": {"path": dest}, "note": note}
 
@@ -202,11 +223,12 @@ class LitterboxTarget:
                                               "Content-Length": str(size), "User-Agent": "dolly/0.2"})
         try:
             with urllib.request.urlopen(req, timeout=600) as r:
-                url = r.read().decode().strip()
+                answer = r.read(MAX_LINK + 2).decode("utf-8", "replace").strip()     # a link, not a page
         except urllib.error.URLError as e:
             raise UploadError(f"Litterbox upload failed: {e}") from e
-        if not url.startswith("http"):
-            raise UploadError(f"Litterbox said: {url[:200]}")
+        if not answer.startswith("http"):
+            raise UploadError(f"Litterbox said: {answer[:200]!r}")
+        url = checked_link(answer, "Litterbox")
         return {"url": url, "public": True, "expires_at": time.time() + self.TIMES[self.time],
                 "deletable": False, "remote_ref": {}, "note": f"public temporary link, expires in {self.time}"}
 

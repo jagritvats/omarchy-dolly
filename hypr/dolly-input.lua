@@ -19,7 +19,8 @@
 
 if dolly_input_stop then pcall(dolly_input_stop) end
 
-local runtime = os.getenv("XDG_RUNTIME_DIR") or "/tmp"
+-- the same folder the logger uses (logger.runtime_dir); never a shared one like /tmp
+local runtime = os.getenv("XDG_RUNTIME_DIR") or ((os.getenv("HOME") or "") .. "/.local/state")
 local dir = (type(dolly_input_dir) == "string" and dolly_input_dir ~= "") and dolly_input_dir or (runtime .. "/dolly")
 local path = dir .. "/input.jsonl"
 local f = io.open(path, "a")

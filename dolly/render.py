@@ -1254,6 +1254,11 @@ class FrameReader:
 def audio_filter(pieces, intro: float, total: float, denoise: bool, normalize: bool, rnn_model: str | None = None,
                  inp: str = "1:a") -> str:
     """Trimmed + speed-ramped + cleaned audio, padded to the video length -> [aout]."""
+    import re
+    from .audio import model_arg
+    rnn_model = model_arg(rnn_model)
+    if not re.fullmatch(r"[0-9]+:a(:[0-9]+)?", inp):
+        raise ValueError(f"not an input stream: {inp!r}")
     parts, labels = [], []
     for k, (a, b, sp) in enumerate(pieces):
         ch = f"[{inp}]atrim={a:.4f}:{b:.4f},asetpts=PTS-STARTPTS"

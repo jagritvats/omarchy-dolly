@@ -1012,9 +1012,9 @@ def test_a_key_from_another_tool_is_a_key_without_a_name(desk, tmp_path, monkeyp
     lg.on_unnamed_key(False)
     lg.raw_hold_until = time.monotonic() + 5    # `dolly stage type` is typing: the codes are its own
     lg.on_unnamed_key(True)
-    lg.on_key(38, True)                         # ... and it says which key it was
-    keys = [e for e in raw_events(tmp_path) if e["type"] == "key"]
-    assert [k["key"] for k in keys] == [keymap.UNNAMED, "l"]
+    lg.on_key(38, True)                         # ... and it says which key it was (an "l": typed text,
+    keys = [e for e in raw_events(tmp_path) if e["type"] == "key"]          # kept as a time only)
+    assert [k["key"] for k in keys] == [keymap.UNNAMED, keymap.TYPED]
     assert keymap.UNNAMED not in render.SHOW_ALONE and keymap.UNNAMED not in keymap.NAMES.values()
 
 
