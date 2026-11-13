@@ -51,9 +51,14 @@ def runtime_dir() -> Path:
     does not react to it and neither desktop's recording blocks the other's."""
     base = os.environ.get("XDG_RUNTIME_DIR") or os.path.expanduser("~/.local/state")
     d = Path(base) / "dolly"
+    from . import fsutil
+    fsutil.private_dir(d)
+    # the editor's address, the recorder's state and the key bridge's file live here: a folder
+    # someone else made (XDG_RUNTIME_DIR pointing at a shared place) is not used
+    if os.lstat(d).st_uid != os.geteuid() or os.stat(d).st_uid != os.geteuid():
+        raise PermissionError(f"{d} belongs to another account: check XDG_RUNTIME_DIR")
     if on_stage():
-        d = d / "stage" / "rt"
-    d.mkdir(parents=True, exist_ok=True, mode=0o700)
+        d = fsutil.private_dir(d / "stage" / "rt")
     return d
 
 
@@ -71,8 +76,11 @@ def hypr_socket(kind: str = ".socket.sock") -> str | None:
         return None
     for base in (os.environ.get("XDG_RUNTIME_DIR", ""), "/tmp"):
         p = os.path.join(base, "hypr", sig, kind)
-        if os.path.exists(p):
-            return p
+        try:                                # /tmp is everyone's: only a socket of our own
+            if os.stat(p).st_uid == os.geteuid():
+                return p
+        except OSError:
+            pass
     return None
 
 

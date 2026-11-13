@@ -203,13 +203,49 @@ def latest_project() -> Path | None:
     root = videos_root()
     if not root.is_dir():
         return None
-    cands = [p for p in root.iterdir() if Project(p).raw.exists() and (p / "events.json").exists()]
+    cands = [p for p in root.iterdir() if usable(p) and Project(p).raw.exists() and (p / "events.json").exists()]
     return max(cands, key=lambda p: p.stat().st_mtime) if cands else None
+
+
+class UnsafeFolder(ValueError):
+    """A recording folder with symbolic links inside. Dolly writes into a recording folder by
+    name (a thumbnail, the share history, a log, exports) and moves its raw files to the
+    Trash; in a folder someone else made, a link under one of those names points that write
+    or that move at a file somewhere else in the home folder."""
+
+
+def links_in(path: str | Path, depth: int = 3) -> list[str]:
+    """Symbolic links inside a recording folder (not the folder itself: a library or a
+    recording kept on another disk through a link is the user's own doing)."""
+    top, found = str(path), []
+
+    def walk(d: str, left: int):
+        try:
+            with os.scandir(d) as it:
+                for e in it:
+                    if e.is_symlink():
+                        found.append(os.path.relpath(e.path, top))
+                    elif left and e.is_dir(follow_symlinks=False):
+                        walk(e.path, left - 1)
+        except OSError:
+            pass
+
+    walk(top, depth)
+    return sorted(found)
+
+
+def usable(path: str | Path) -> bool:
+    return not links_in(path)
 
 
 class Project:
     def __init__(self, path: str | Path):
         self.dir = Path(path)
+        found = links_in(self.dir)
+        if found:
+            shown = ", ".join(found[:3]) + (f" and {len(found) - 3} more" if len(found) > 3 else "")
+            raise UnsafeFolder(f"{self.dir} contains symbolic links ({shown}). Dolly does not open a recording "
+                               f"folder with links in it: remove them first (find {self.dir} -type l)")
 
     @property
     def raw(self) -> Path:

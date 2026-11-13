@@ -134,8 +134,15 @@ def build_background(lay: Layout, style: dict, colors: dict | None = None,
     colors = colors or projmod.style_colors(style)
     kind = bg.get("type", "gradient")
     img = None
-    if kind == "wallpaper" and bg.get("path") and Path(bg["path"]).exists():
-        im = Image.open(bg["path"]).convert("RGB")
+    path = None
+    if kind == "wallpaper" and bg.get("path"):
+        try:                                # project.json may come from someone else: the same rules
+            from . import images            # as when a picture is picked (place, type, size)
+            path = images.check(bg["path"])
+        except (images.ImageError, OSError):
+            path = None
+    if path:
+        im = Image.open(path).convert("RGB")
         s = max(OW / im.width, OH / im.height)
         im = im.resize((math.ceil(im.width * s), math.ceil(im.height * s)), Image.LANCZOS)
         l, t = (im.width - OW) // 2, (im.height - OH) // 2
@@ -1537,7 +1544,7 @@ def export(project_dir: str | Path, out_path: str | Path | None = None, fmt: str
                         "mic": {"denoise": au.get("denoise", True), **(au.get("mic") or {})},
                         "system": dict(au.get("system") or {})}
             for t in tracks:
-                cmd += ["-i", str(proj.dir / t["file"])]
+                cmd += ["-f", "matroska", "-i", str(proj.dir / t["file"])]
             af = mix_filter(tracks, 1, tm.pieces(), plan["intro"], total, settings,
                             tl.capture.get("mic_mutes") or [], au.get("rnnoise_model"))
             cmd += ["-filter_complex", af, "-map", "0:v", "-map", "[aout]", "-c:a", "aac", "-b:a", "160k"]

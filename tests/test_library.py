@@ -32,7 +32,8 @@ def test_index_flags_posters_rename_trash_undo(home):  # noqa: F811
     ids = [e["id"] for e in idx["items"]]
     assert ids[0] == "2026-11-09_12-00-00" and set(ids) == {a.name, b.name, c.name}
     eb = next(e for e in idx["items"] if e["id"] == b.name)
-    assert eb["exported"] and eb["vertical"] and eb["captions"] and eb["shared"] and eb["links"] == ["https://x.example/v"]
+    assert eb["exported"] and eb["vertical"] and eb["captions"] and eb["shared"]
+    assert "links" not in eb and library.links(b) == ["https://x.example/v"]
     assert next(e for e in idx["items"] if e["id"] == c.name)["recovered"]
     assert all(Path(e["thumb"]).exists() for e in idx["items"])          # cached poster frames
     cached = json.loads(library.cache_path().read_text())

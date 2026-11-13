@@ -285,6 +285,15 @@ systemd-run, pactl, grim, wf-recorder, wtype, quickshell). Timing check on a rea
   numbers; names go through `audio.clean_tracks` / `audio.model_arg`).
   Tests: `test_typed_keys.py`, `test_editor_access.py`, `test_editor_page_markup.py`,
   `test_share_links.py`, `test_activity_cache.py`, `test_audio_names.py`.
+- A recording folder may come from someone else, links included. `projmod.Project(dir)`
+  refuses a folder with symbolic links inside (`UnsafeFolder`); loops over the library use
+  `projmod.usable(dir)` or catch it. Write into a recording folder with
+  `fsutil.atomic_write_*` (own temp name, then rename), never through a fixed temp name.
+  Never act on a remote from what a folder's `shares.json` says (`share._uploaded_here`).
+- Share links are kept in share history only (0600): not in the library index, not in a
+  log, not on a command line. Folders Dolly makes for itself go through
+  `fsutil.private_dir` (0700). Tests: `test_foreign_folder.py`, `test_private_files.py`,
+  `test_library_links.py`.
 - Tests: `tests/test_privacy_auto.py` (synthetic timelines).
 
 ## Prerequisites (`bin/dolly doctor` checks all of these)

@@ -1,5 +1,54 @@
 # Changelog
 
+## 0.9.9-beta.3 (2026-11-14)
+
+The security fixes of 0.7.3, on the beta. If you upload to a private bucket, share a machine
+with other accounts, or open recording folders that other people made, update. Checked
+with the test suite; not yet run on an Omarchy desktop. Still a test build on its own
+branch.
+
+Links and files other accounts could read
+- Opening the bar panel copied every share link into the library index
+  (`~/.cache/dolly/library.json`), which was readable by other accounts with the usual
+  umask. With a private bucket the link is the access. The index no longer holds links and
+  is readable by you only; an index left by an earlier version is cleaned at the next session start.
+  `dolly library` still lists links: it reads them from each recording's share history.
+- After `dolly share upload`, the link went to the notifier as a command-line argument,
+  which other accounts can read. For a private link the notification now names the file
+  instead (the link is on the clipboard). A public link keeps its Open button.
+- Dolly's state folder (`~/.local/state/dolly`: logs, undo list), its cache folder, the
+  copy it keeps of a background picture you pick, and the Trash folder when Dolly is the
+  first to create it, are now made for you alone (0700). Existing folders are tightened.
+- `dolly doctor --report` writes its file as a new private file and no longer follows a
+  link planted under the report's name; links in the report lose their query string.
+- Without `XDG_RUNTIME_DIR`, the recorder's state was kept in a folder made with the
+  umask. That folder is now private, and a runtime folder that belongs to another account
+  is refused. Two fallbacks to `/tmp` are gone or check the owner.
+- Rewriting a file keeps the mode it had (a `bindings.lua` you made private stays private).
+
+Recording folders other people made
+- Dolly writes into a recording folder by name (thumbnail, share history, log, exports).
+  In a folder from someone else, a symbolic link under one of those names sent the write
+  to a file elsewhere in your home folder; a library scan was enough. Dolly now refuses to
+  open a recording folder with symbolic links inside, and the library skips it and says so
+  (`dolly library` prints "skipped ..."). The library folder itself, or a recording, may
+  still be a link you made.
+- Cleaning up raw files moved whatever a link named `raw.mkv` or `webcam.mkv` pointed at
+  to the Trash. Links are no longer followed there.
+- "Delete remote" took the target and the object to delete from the folder's
+  `shares.json`. It now only deletes uploads this machine made (they are in Dolly's own
+  log), and the targets refuse an object outside their bucket or remote.
+- One folder with a file of the wrong shape (`shares.json` holding a number, a title that
+  is not text) broke the library for every recording. Such values are ignored, and a
+  folder Dolly cannot read is skipped and named.
+- At export, the background picture named in `project.json` is checked again like when it
+  is picked (in your home folder or a theme, an image, under 50 MB). Audio tracks must be
+  `.mka` files. Video sizes and lengths no recording has are refused.
+
+Also
+- An upload whose link could not be copied (`wl-copy` failing) left the file on the host
+  with no history entry, so no link and no way to delete it from Dolly. The entry is kept.
+
 ## 0.9.9-beta.2 (2026-11-13)
 
 The security fixes of 0.7.2, on the beta. If you recorded while typing a password, or use
