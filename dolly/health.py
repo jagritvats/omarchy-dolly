@@ -399,6 +399,12 @@ def heal(key_repeat: bool = True) -> list[str]:
                            capture_output=True, timeout=2)
         except Exception:
             _dlog.swallowed()
+    try:                                     # and its file of raw key codes (kept while instant replay follows it)
+        if not (runtime_dir() / "replay.json").exists():
+            from .logger import drop_bridge_file
+            drop_bridge_file()
+    except Exception:
+        _dlog.swallowed()
     if done:
         _dlog.get().info("desktop healed: %s", "; ".join(done))
     return done

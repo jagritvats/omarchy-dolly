@@ -71,9 +71,14 @@ def cached_activity(project_dir: Path):
     cache = project_dir / "activity-v2.npz"
     from .project import Project
     raw = Project(project_dir).raw
-    if cache.exists() and cache.stat().st_mtime >= raw.stat().st_mtime:
-        d = np.load(cache)
-        return d["t"], d["a"]
+    try:
+        if cache.stat().st_mtime >= raw.stat().st_mtime:
+            with np.load(cache, allow_pickle=False) as d:      # numbers only, whoever wrote the file
+                t, a = np.asarray(d["t"], dtype=float), np.asarray(d["a"], dtype=float)
+            if t.ndim == a.ndim == 1 and len(t) == len(a):
+                return t, a
+    except Exception:
+        pass                                                   # missing or damaged: work it out again
     t, a = visual_activity(raw)
     np.savez(cache, t=t, a=a)
     return t, a

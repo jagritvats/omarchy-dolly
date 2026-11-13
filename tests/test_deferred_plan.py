@@ -72,7 +72,7 @@ def test_the_fast_half_leaves_the_plan_pending(raw_take, tmp_path):
     p = project(pdir)
     assert p["segments"] is None            # null = "plan it": never an empty plan someone could export
     assert "style" in p and "zoom_config" in p
-    assert not (pdir / "aoi-activity-v8.pkl").exists()       # the slow analysis has not run
+    assert not (pdir / "aoi-activity-v9.json").exists()       # the slow analysis has not run
 
 
 def test_the_deferred_plan_is_the_synchronous_plan(raw_take, tmp_path):
@@ -149,7 +149,7 @@ def test_the_preview_path_does_not_start_its_own_analysis(raw_take, tmp_path, mo
     monkeypatch.setattr(ed, "aoi", lambda *a, **k: pytest.fail("the editor analysed the screen itself"))
     path = ed.path_payload(30.0)
     assert path["geom"]["W"] == 640
-    assert not (pdir / "aoi-activity-v8.pkl").exists()
+    assert not (pdir / "aoi-activity-v9.json").exists()
 
 
 def test_recover_finishes_interrupted_plans(raw_take, tmp_path, monkeypatch):

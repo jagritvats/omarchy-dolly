@@ -95,7 +95,8 @@ fresh processes (`dolly/render_chunk.py`). See CHANGELOG.md and "Round 4" below.
    - "get a link" from the user's **own** storage: S3-compatible (AWS/R2/B2/MinIO) via built-in SigV4, or rclone remotes (Drive/Dropbox/OneDrive via `rclone link`)
    - an opt-in **public** temp host (Litterbox)
    - share history with "delete remote copy"
-7. **Editor** (`dolly/editor/`), a local web UI (127.0.0.1, random port, token):
+7. **Editor** (`dolly/editor/`), a local web UI (127.0.0.1, random port, token; refuses other local
+   accounts, started with a one-time launch code, never the token; see the top of `server.py`):
    - timeline lanes for zoom / speed / privacy / clip, with drag, resize, add, split, delete and undo
    - 16:9 / 9:16 / 1:1 preview; draw blur boxes on the preview; "Scrub secrets"; "Auto-detect idle"
    - transcribe; effects, title card and style presets
@@ -109,7 +110,7 @@ fresh processes (`dolly/render_chunk.py`). See CHANGELOG.md and "Round 4" below.
    - menu `when:` guards are pure shell file tests (no Python): `$XDG_RUNTIME_DIR/dolly/{recording,replay}.pid`, `~/.local/state/dolly/{last,share-ready}`
 
 Recordings: `~/Videos/Dolly/<timestamp>/`, containing:
-- `raw.mkv` (older recordings: `raw.mp4`), `webcam.mkv`, `aoi-activity-v8.pkl` (analysis cache)
+- `raw.mkv` (older recordings: `raw.mp4`), `webcam.mkv`, `aoi-activity-v9.json` (analysis cache; JSON, never pickle: a recording folder may come from someone else)
 - `events.raw.jsonl`, `events.json`, `capture.json`, `project.json`
 - `shares.json`, `captions.srt`, `recorder.log`
 - `exports/`
@@ -273,6 +274,17 @@ systemd-run, pactl, grim, wf-recorder, wtype, quickshell). Timing check on a rea
   logger polls `omarchy-shell notifications count` and the box is sized from the count.
 - Keys typed while such a window has focus are not written by the logger, and
   `strip_secret_keys` drops any that slipped through before `events.json` is written.
+- Typed text is never stored anywhere: `keymap.recorded` turns a typed character into
+  `"char"` (a time, no name, no Shift) in the logger, at finalize and when a Timeline is
+  loaded. Only shortcuts and keys that type nothing keep their names. Do not add a code
+  path that writes a key name without going through it. The bridge's `input.jsonl` holds
+  raw key codes: it is 0600, erased as read, and removed when the bridge stops.
+- Whatever comes from a recording folder, the share config or a remote host is data:
+  `esc()` it in the page, never unpickle it, pass links through `targets.checked_link`,
+  and never put a string from it into an ffmpeg filter graph (numbers are formatted as
+  numbers; names go through `audio.clean_tracks` / `audio.model_arg`).
+  Tests: `test_typed_keys.py`, `test_editor_access.py`, `test_editor_page_markup.py`,
+  `test_share_links.py`, `test_activity_cache.py`, `test_audio_names.py`.
 - Tests: `tests/test_privacy_auto.py` (synthetic timelines).
 
 ## Prerequisites (`bin/dolly doctor` checks all of these)
