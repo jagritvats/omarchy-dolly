@@ -277,19 +277,61 @@ def compute_activity(raw: Path, W: int, H: int, cfg: AOIConfig | None = None, fr
     return act
 
 
+ACTIVITY_CACHE = "aoi-activity-v9.json"
+OLD_ACTIVITY_CACHES = ("aoi-activity-v8.pkl",)      # pickle: never read again (see cached_activity)
+
+
+def activity_to_doc(act: Activity) -> dict:
+    return {"w": int(act.w), "h": int(act.h),
+            "t": [float(v) for v in act.t], "frac": [float(v) for v in act.frac],
+            "blobs": [[[float(v) for v in b] for b in row] for row in act.blobs],
+            "reactions": [[float(t), None if r is None else [float(v) for v in r]] for t, r in act.reactions]}
+
+
+def activity_from_doc(doc) -> Activity:
+    """The Activity a cache file describes. Anything that is not exactly numbers in the
+    expected shape raises (ValueError, TypeError, KeyError) and the cache is worked out again."""
+    def nums(xs, n):
+        out = tuple(float(v) for v in xs)
+        if len(out) != n:
+            raise ValueError("wrong length")
+        return out
+    t = np.array([float(v) for v in doc["t"]], dtype=float)
+    frac = np.array([float(v) for v in doc["frac"]], dtype=float)
+    blobs = [[nums(b, 5) for b in row] for row in doc["blobs"]]
+    if not (len(t) == len(frac) == len(blobs)):
+        raise ValueError("lengths differ")
+    act = Activity(t, frac, blobs, int(doc["w"]), int(doc["h"]))
+    act.reactions = [(float(tc), None if r is None else nums(r, 4)) for tc, r in doc["reactions"]]
+    return act
+
+
 def cached_activity(project_dir: Path, tl: Timeline, cfg: AOIConfig | None = None) -> Activity:
-    import pickle
+    """The frame-difference analysis of a take, kept next to it as JSON. It used to be a
+    pickle: loading one runs whatever code the file names, and a recording folder is something
+    people pass around (a shared drive, an archive someone sent). A pickle left by an older
+    version is deleted unread."""
+    import json
+    from . import fsutil
     project_dir = Path(project_dir)
     from .project import Project
     raw = Project(project_dir).raw
-    cache = project_dir / "aoi-activity-v8.pkl"
-    if cache.exists() and cache.stat().st_mtime >= raw.stat().st_mtime:
+    for name in OLD_ACTIVITY_CACHES:
         try:
-            return pickle.loads(cache.read_bytes())
-        except Exception:
+            (project_dir / name).unlink(missing_ok=True)
+        except OSError:
             pass
+    cache = project_dir / ACTIVITY_CACHE
+    try:
+        if cache.stat().st_mtime >= raw.stat().st_mtime:
+            return activity_from_doc(json.loads(cache.read_text(encoding="utf-8")))
+    except (OSError, ValueError, TypeError, KeyError, AttributeError, RecursionError):
+        pass
     act = compute_activity(raw, tl.w, tl.h, cfg, clicks=[c["t"] for c in tl.clicks])
-    cache.write_bytes(pickle.dumps(act))
+    try:
+        fsutil.atomic_write_text(cache, json.dumps(activity_to_doc(act), separators=(",", ":")), durable=False)
+    except OSError:
+        pass                                    # a read-only folder: the analysis still stands
     return act
 
 

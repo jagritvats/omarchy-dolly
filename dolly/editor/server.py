@@ -1,10 +1,21 @@
 """Local editor server (stdlib only).
 
 Serves the single-page editor plus a small JSON API for one project. Binds to
-127.0.0.1 on a random port with a per-session token in the URL, so other local
-users and web pages cannot drive it.
+127.0.0.1 on a random port. Who may talk to it:
 
-    GET  /                      editor page (token in query)
+- only this user: each connection's other end is looked up in the kernel's socket table
+  and refused when another account owns it (peer_uid), so a token another local user
+  got hold of does not open the editor (DOLLY_EDITOR_PEER_CHECK=0 in the editor's
+  environment turns this one check off, for a system where it gets in the way);
+- only with the per-session token (query `t` or header X-Dolly-Token);
+- only this page: a Host or Origin that is not this server is refused (a web page in the
+  user's own browser cannot post here, also not under a made-up host name).
+
+The browser is not started with the token on its command line (any local user can read
+command lines): it gets an address with a code that works once, and is sent on from
+there (Editor.launch_code).
+
+    GET  /                      editor page (token in query, or ?k= a launch code)
     GET  /api/project           timeline summary, segments, style, presets
     GET  /api/path?fps=30       camera path for preview (z, cx, cy, cursor)
     POST /api/save              {segments, style, trim, zoom_config}
@@ -37,6 +48,8 @@ import numpy as np
 import os
 import re
 import secrets
+import socket
+import struct
 import subprocess
 import threading
 import time
@@ -51,6 +64,34 @@ from ..render import export, shift_timeline
 from ..zoom import Segment, ZoomConfig, build_segments
 
 STATIC = Path(__file__).parent / "static"
+
+GONE = -1          # peer_uid: the socket table has no such connection
+
+
+def _tcp_key(addr) -> str:
+    """ip:port the way /proc/net/tcp prints it (the address as the machine stores it)."""
+    return "%08X:%04X" % (struct.unpack("=I", socket.inet_aton(addr[0]))[0], int(addr[1]))
+
+
+def peer_uid(client, server, table: str = "/proc/net/tcp") -> int | None:
+    """The user id that owns the other end of a loopback connection, from the kernel's
+    socket table (readable by everyone; a process cannot keep its sockets out of it).
+    GONE: the table has no such open connection (the client sent its request and hung up;
+    the kernel lists what is left of a closed socket as root's, so it is never trusted).
+    None: this system has no readable table, and the caller has only the token."""
+    try:
+        want = (_tcp_key(client), _tcp_key(server))
+        with open(table, encoding="ascii", errors="replace") as f:
+            for line in f:
+                p = line.split()
+                if len(p) > 7 and p[1] == want[0] and p[2] == want[1]:
+                    return int(p[7]) if p[3] == "01" else GONE       # 01: established
+    except (OSError, ValueError, TypeError, IndexError, struct.error):
+        return None
+    return GONE
+
+
+LAUNCH_CODE_SECONDS = 120.0
 
 
 class Job:
@@ -74,6 +115,8 @@ class Editor:
         self.proj = projmod.Project(pdir) if pdir else None
         self.view = view if pdir or view != "edit" else "library"
         self.token = secrets.token_urlsafe(16)
+        self._codes: dict[str, float] = {}     # launch code -> when it stops working
+        self._codes_lock = threading.Lock()
         self.job = Job()
         self.last_ping = time.time()
         self.page_seen = 0.0             # last long-poll from the page: is a window showing us?
@@ -82,6 +125,29 @@ class Editor:
         self.nav_cv = threading.Condition()
         self._plan_wait = False          # the page was given a take whose zoom plan is still coming
         self._preview = None             # (folder, thread) while the preview proxy is being encoded
+
+    def launch_code(self) -> str:
+        """A code for the address the browser is started with. It opens the editor once,
+        within two minutes, and the browser is then sent on to the address with the token.
+        The token itself would stay readable in the browser's command line for as long as
+        the browser runs; a used code is worth nothing."""
+        code = secrets.token_urlsafe(16)
+        now = time.time()
+        with self._codes_lock:
+            for c in [c for c, end in self._codes.items() if end < now]:
+                del self._codes[c]
+            self._codes[code] = now + LAUNCH_CODE_SECONDS
+        return code
+
+    def take_launch_code(self, code) -> bool:
+        if not isinstance(code, str):
+            return False
+        with self._codes_lock:
+            end = None
+            for c in list(self._codes):                    # compare every one in constant time
+                if hmac.compare_digest(c.encode(), code.encode()):
+                    end = self._codes.pop(c)
+        return end is not None and end >= time.time()
 
     def start_preview(self) -> None:
         """Encode the browser-friendly preview of the open take in the background. The
@@ -470,6 +536,18 @@ STALE_PAGE = b"""<!doctype html><meta charset="utf-8"><title>Dolly</title>
 from the record button on the bar, or with <code>dolly edit</code>.</p>
 <script>setTimeout(function(){ window.close() }, 4000)</script>"""
 
+USED_PAGE = b"""<!doctype html><meta charset="utf-8"><title>Dolly</title>
+<body style="font:15px system-ui,sans-serif;background:#16161e;color:#c0caf5;margin:15vh auto;max-width:34em;padding:0 2em">
+<h3>This address has already been used</h3>
+<p>The address Dolly starts the browser with opens the editor once. Close this window
+and open the editor again from the record button on the bar, or with <code>dolly edit</code>.</p>"""
+
+# What the editor page may load and run: its own script (the nonce), and files from this
+# server. No script from an attribute or a string, whatever ends up in the page's HTML.
+PAGE_CSP = ("default-src 'none'; script-src 'nonce-{nonce}'; style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self'; connect-src 'self'; "
+            "base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+
 
 def make_handler(ed: Editor):
     class H(BaseHTTPRequestHandler):
@@ -478,18 +556,49 @@ def make_handler(ed: Editor):
         def log_message(self, *a):
             pass
 
+        def _gate(self) -> bool:
+            """Before anything else: is this the user's own browser (or `dolly`) talking to
+            this server? Answers 403 and returns False when not."""
+            port = self.server.server_address[1]
+            names = (f"127.0.0.1:{port}", f"localhost:{port}")
+            host, origin = self.headers.get("Host"), self.headers.get("Origin")
+            ok = host is None or host.strip().lower() in names
+            if ok and origin is not None and self.command != "GET":
+                ok = origin.strip().lower() in tuple("http://" + n for n in names)
+            if ok and os.environ.get("DOLLY_EDITOR_PEER_CHECK") != "0":
+                try:
+                    uid = peer_uid(self.client_address, self.connection.getsockname())
+                except OSError:
+                    uid = GONE
+                ok = uid is None or uid == os.getuid()
+            if not ok:
+                self.send_error(403)
+            return ok
+
+        def _html(self, body: bytes, code: int = 200, csp: str = "default-src 'none'; style-src 'unsafe-inline'; "
+                  "script-src 'unsafe-inline'"):
+            self.send_response(code)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Security-Policy", csp)
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _page(self):
+            nonce = secrets.token_urlsafe(16)
+            html = (STATIC / "index.html").read_text(encoding="utf-8").replace("<script>", f'<script nonce="{nonce}">')
+            self._html(html.encode(), csp=PAGE_CSP.format(nonce=nonce))
+
         def _auth(self, q) -> bool:
             tok = q.get("t", [None])[0] or self.headers.get("X-Dolly-Token")
             if not isinstance(tok, str) or not hmac.compare_digest(tok.encode(), ed.token.encode()):
                 if self.command == "GET" and urlparse(self.path).path in ("/", "/index.html"):
                     # a window left over from an editor that has exited, reloaded against a
                     # newer one: say so instead of the bare "Error response" page
-                    self.send_response(403)
-                    self.send_header("Content-Type", "text/html; charset=utf-8")
-                    self.send_header("Content-Length", str(len(STALE_PAGE)))
-                    self.send_header("Cache-Control", "no-store")
-                    self.end_headers()
-                    self.wfile.write(STALE_PAGE)
+                    self._html(STALE_PAGE, 403)
                 else:
                     self.send_error(403)
                 return False
@@ -531,6 +640,14 @@ def make_handler(ed: Editor):
             self.send_header("Content-Type", ctype)
             self.send_header("Accept-Ranges", "bytes")
             self.send_header("Content-Length", str(end - start + 1))
+            # a file from a recording folder or ~/Pictures is shown, never run: opened as a
+            # page of its own (an .html or .svg someone put there) it gets no script. Plain
+            # video, audio, pictures and fonts cannot hold script and are left alone (a video
+            # opened in a tab does not play in a sandbox).
+            self.send_header("X-Content-Type-Options", "nosniff")
+            kind = ctype.split(";")[0].strip().lower()
+            if not kind.startswith(("video/", "audio/", "font/", "image/")) or "svg" in kind:
+                self.send_header("Content-Security-Policy", "sandbox")
             self.end_headers()
             with open(path, "rb") as f:
                 f.seek(start)
@@ -546,13 +663,25 @@ def make_handler(ed: Editor):
                     left -= len(chunk)
 
         def do_GET(self):
+            if not self._gate():
+                return
             u = urlparse(self.path)
             q = parse_qs(u.query)
             ed.last_ping = time.time()
             if u.path in ("/", "/index.html"):
+                if "k" in q and "t" not in q:              # the address the browser was started with
+                    if not ed.take_launch_code(q["k"][0]):
+                        return self._html(USED_PAGE, 403)
+                    self.send_response(302)                # the browser keeps the #view of that address
+                    self.send_header("Location", f"/?t={ed.token}")
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("Referrer-Policy", "no-referrer")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
                 if not self._auth(q):
                     return
-                return self._file(STATIC / "index.html", "text/html; charset=utf-8")
+                return self._page()
             if u.path == "/favicon.ico":
                 self.send_response(204)
                 self.end_headers()
@@ -649,12 +778,16 @@ def make_handler(ed: Editor):
             self.send_error(404)
 
         def do_POST(self):
+            if not self._gate():
+                return
             u = urlparse(self.path)
             q = parse_qs(u.query)
             if not self._auth(q):
                 return
             ed.last_ping = time.time()
             try:
+                if u.path == "/api/launch-code":           # `dolly edit` reusing this editor: a new window
+                    return self._json({"code": ed.launch_code()})
                 if u.path == "/api/images/upload":
                     from .. import images
                     n = int(self.headers.get("Content-Length", 0) or 0)
@@ -940,7 +1073,23 @@ def _attach(view: str, pdir: Path | None, section: str | None = None):
         raise SystemExit(f"dolly: {msg}") from None
     except (OSError, ValueError, urllib.error.URLError):
         return None
-    return f"{base}/?t={tok}#{st['view']}", bool(st.get("page"))
+    def open_url() -> str:
+        return f"{base}/?k={call('/api/launch-code', {})['code']}#{st['view']}"
+    return f"{base}/?t={tok}#{st['view']}", bool(st.get("page")), open_url
+
+
+def _retire_running_editor() -> None:
+    """Ask the editor named in the registry to exit, and forget it."""
+    import urllib.request
+    f = _registry_file()
+    try:
+        reg = json.loads(f.read_text())
+        req = urllib.request.Request(f"http://127.0.0.1:{int(reg['port'])}/api/quit", data=b"{}", method="POST",
+                                     headers={"X-Dolly-Token": str(reg["token"]), "Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=5).read()
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    f.unlink(missing_ok=True)
 
 
 def focus_window(address: str) -> bool:
@@ -977,38 +1126,46 @@ def serve(pdir: Path | None, port: int = 0, open_browser: bool = True, view: str
     if os.environ.get("DOLLY_EDITOR_NEW") != "1" and not port:
         got = _attach(view, Path(pdir).resolve() if pdir else None, section)
         if got:
-            url, page_open = got
-            if pdir:
-                (Path(pdir) / ".editor-url").write_text(url)
-            print(url, flush=True)
+            url, page_open, open_url = got
+            _drop_url_file(pdir)
+            old = False
             if open_browser:
                 wins = editor_windows() if page_open else []
                 if not wins:
-                    launch(url)                    # the server outlived its window: one new window
+                    try:
+                        launch(open_url())         # the server outlived its window: one new window
+                    except (OSError, ValueError, KeyError):
+                        old = True                 # an editor from before 0.7.2 (still running across an
+                        _retire_running_editor()   # update) gives out no launch codes: start a new one
                 elif not keep_focus:
                     focus_window(wins[0]["address"])
                 else:                              # after a recording: visible, but no focus taken
                     raise_window(wins[0]["address"])
-            return
+            if not old:
+                print(url, flush=True)
+                return
     ed = Editor(pdir, view=view)
     ed.section = str(section) if section and view == "settings" else None
     ed.start_preview()                     # in the background: the window does not wait for it
     httpd = ThreadingHTTPServer(("127.0.0.1", port), make_handler(ed))
-    url = f"http://127.0.0.1:{httpd.server_address[1]}/?t={ed.token}#{ed.view}"
+    base = f"http://127.0.0.1:{httpd.server_address[1]}"
+    url = f"{base}/?t={ed.token}#{ed.view}"
     reg = _registry_file()
     try:
         reg.parent.mkdir(parents=True, exist_ok=True)
         tmp = reg.with_suffix(".tmp")
-        tmp.write_text(json.dumps({"pid": os.getpid(), "port": httpd.server_address[1], "token": ed.token}))
-        os.chmod(tmp, 0o600)                       # the token drives the editor: user-only
+        tmp.unlink(missing_ok=True)
+        # the token drives the editor: the file is this user's alone from the moment it exists
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(json.dumps({"pid": os.getpid(), "port": httpd.server_address[1], "token": ed.token}))
         tmp.replace(reg)
     except OSError:
         reg = None
-    if pdir:
-        (Path(pdir) / ".editor-url").write_text(url)
+    _drop_url_file(pdir)
     print(url, flush=True)
     if open_browser:
-        launch(url)
+        launch(f"{base}/?k={ed.launch_code()}#{ed.view}")
 
     def idle_watch():  # exit when the page has been gone for a while
         while True:
@@ -1029,8 +1186,20 @@ def serve(pdir: Path | None, port: int = 0, open_browser: bool = True, view: str
             pass
 
 
+def _drop_url_file(pdir) -> None:
+    """Older versions left the editor's address, token included, in a file in the recording
+    folder (nothing read it). Remove one that is still there."""
+    if pdir:
+        try:
+            (Path(pdir) / ".editor-url").unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def launch(url: str):
-    """Open as an app window (Omarchy web-app style) when possible. After a recording
+    """Open as an app window (Omarchy web-app style) when possible. `url` ends up on a
+    command line, which every local user can read: pass an address with a launch code
+    (Editor.launch_code), never the one with the token. After a recording
     (DOLLY_KEEP_FOCUS=1) the window must not steal focus: launch it with Hyprland's
     no_initial_focus exec rule, and if the browser still grabbed focus (an already
     running browser owns the new window, so the rule cannot match), hand focus back."""

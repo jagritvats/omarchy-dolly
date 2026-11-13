@@ -34,7 +34,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import keymap
+from . import fsutil, keymap
 from . import log as _dlog
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
@@ -45,6 +45,14 @@ def runtime_dir() -> Path:
     d = Path(base) / "dolly"
     d.mkdir(parents=True, exist_ok=True, mode=0o700)
     return d
+
+
+def drop_bridge_file() -> None:
+    """The input bridge's file is gone with the bridge: it lists raw key codes."""
+    try:
+        (runtime_dir() / "input.jsonl").unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def hypr_socket(kind: str = ".socket.sock") -> str | None:
@@ -494,7 +502,9 @@ class Logger:
     def start_lua_bridge(self) -> bool:
         rd = runtime_dir()
         inp = rd / "input.jsonl"
-        inp.write_text("")
+        # the bridge appends every key code here: ours alone, and emptied for this take
+        os.close(os.open(inp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600))
+        os.chmod(inp, 0o600)
         nk = rd / "nokeys"
         if self.keys:
             nk.unlink(missing_ok=True)
@@ -504,6 +514,7 @@ class Logger:
         ok, out = hypr_eval(f'dofile("{lua}")')
         if not ok:
             self.write({"type": "info", "msg": f"lua bridge failed: {out[:200]}"})
+            drop_bridge_file()
             return False
         # confirm the bridge wrote its hello line
         deadline = time.monotonic() + 1.5
@@ -521,22 +532,56 @@ class Logger:
         self.stop_lua_bridge()
         return False
 
+    BRIDGE_KEEP = 2.0       # s a line stays in the bridge's file after it was read
+
     def tail_lua(self, path: Path):
-        with open(path) as f:
-            f.readline()  # hello
+        """Follow the bridge's file. It holds the code of every key pressed, also those the
+        logger drops (a password manager has focus) or keeps only as a time (typed text), so
+        what has been read is erased from the file `BRIDGE_KEEP` seconds later: the file
+        keeps its length, the bridge keeps appending and nothing is lost, and neither a take
+        nor hours of instant replay pile key codes up in it. The delay is for a second logger
+        following the same file (a recording made while instant replay runs)."""
+        with open(path, "r+b", buffering=0) as f:           # writable: erasing needs it
+            fd = f.fileno()
+            buf, pos, done, erased, can_erase = b"", 0, 0, 0, True
+            marks: collections.deque = collections.deque()      # (time, bytes handled by then)
             while not self.stop.is_set():
-                line = f.readline()
-                if not line:
+                chunk = f.read(65536)
+                if not chunk:
+                    try:
+                        if os.fstat(fd).st_size < pos:         # emptied by a logger that started after us
+                            f.seek(0)
+                            buf, pos, done, erased = b"", 0, 0, 0
+                            marks.clear()
+                            continue
+                    except OSError:
+                        pass
+                    now = time.monotonic()
+                    upto = erased
+                    while marks and now - marks[0][0] >= self.BRIDGE_KEEP:
+                        upto = marks.popleft()[1]
+                    if can_erase and upto > erased:
+                        can_erase = fsutil.erase_range(fd, erased, upto - erased)
+                        erased = upto
                     time.sleep(0.004)
                     continue
-                try:
-                    d = json.loads(line)
-                except ValueError:
-                    continue
-                if d.get("type") == "click":
-                    self.write({"type": "click", "x": d["x"], "y": d["y"], "button": d.get("button", "left")})
-                elif d.get("type") == "key" and self.keys:
-                    self.on_key(int(d["code"]) - 8, bool(d.get("down", True)))
+                pos += len(chunk)
+                *lines, buf = (buf + chunk).split(b"\n")
+                for line in lines:
+                    done += len(line) + 1
+                    self._bridge_line(line)
+                if lines:
+                    marks.append((time.monotonic(), done))
+
+    def _bridge_line(self, line: bytes):
+        try:
+            d = json.loads(line)
+            if d.get("type") == "click":
+                self.write({"type": "click", "x": d["x"], "y": d["y"], "button": d.get("button", "left")})
+            elif d.get("type") == "key" and self.keys:
+                self.on_key(int(d["code"]) - 8, bool(d.get("down", True)))
+        except (ValueError, KeyError, TypeError, AttributeError):
+            pass                    # a torn or erased line; the hello line has neither type
 
     def start_harness_input(self, name="harness-input.jsonl", source="harness",
                             msg="clicks/keys from the test harness input driver (not Hyprland)"):
@@ -569,6 +614,7 @@ class Logger:
     @staticmethod
     def stop_lua_bridge():
         hypr_eval("if dolly_input_stop then dolly_input_stop() end")
+        drop_bridge_file()
 
     # ---------------------------------------------------------- input: evdev
     def start_evdev(self) -> bool:
@@ -611,6 +657,10 @@ class Logger:
     def on_key(self, code: int, down: bool):
         mod = keymap.MODS.get(code)
         if mod:
+            if mod == "alt":                    # which Alt key matters: see keymap.recorded
+                alts = self.__dict__.setdefault("_alts", set())
+                (alts.add if down else alts.discard)(code)
+                down = bool(alts)
             (self.mods.add if down else self.mods.discard)(mod)
             return
         held = self.__dict__.setdefault("_held_keys", set())
@@ -629,7 +679,8 @@ class Logger:
         name = keymap.label(code)
         if name is None:
             return
-        self.write({"type": "key", "key": name, "mods": sorted(self.mods)})
+        left_alt = keymap.LEFT_ALT in self.__dict__.get("_alts", ())
+        self.write({"type": "key", **keymap.stored(name, self.mods, left_alt)})    # typed characters: the time only
 
     # ---------------------------------------------------------- main
     def run(self, meta: dict):
