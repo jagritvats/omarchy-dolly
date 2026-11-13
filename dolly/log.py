@@ -30,8 +30,8 @@ def get() -> logging.Logger:
     lg.propagate = False
     if not lg.handlers:
         try:
-            d = state_dir()
-            d.mkdir(parents=True, exist_ok=True)
+            from . import fsutil
+            d = fsutil.private_dir(state_dir())
             h = logging.handlers.RotatingFileHandler(d / "dolly.log", maxBytes=512 * 1024, backupCount=3,
                                                      encoding="utf-8", delay=True)
             h.setFormatter(logging.Formatter("%(asctime)s %(process)d %(levelname)s %(message)s"))

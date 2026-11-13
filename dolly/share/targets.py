@@ -11,6 +11,7 @@ import datetime as dt
 import hashlib
 import hmac
 import mimetypes
+import re
 import secrets
 import shutil
 import subprocess
@@ -132,6 +133,8 @@ class S3Target:
                 "remote_ref": {"bucket": self.bucket, "key": key}}
 
     def delete(self, ref: dict):
+        if ref.get("bucket") != self.bucket or not isinstance(ref.get("key"), str) or not ref["key"]:
+            raise UploadError("this upload is not in the configured bucket")
         req = urllib.request.Request(self._url("DELETE", ref["key"]), method="DELETE")
         try:
             with urllib.request.urlopen(req, timeout=60) as r:
@@ -176,7 +179,15 @@ class RcloneTarget:
                 "remote_ref": {"path": dest}, "note": note}
 
     def delete(self, ref: dict):
-        self._run("deletefile", ref["path"], timeout=120)
+        path = ref.get("path")
+        if not isinstance(path, str) or not path.startswith(self.remote + "/") or "/../" in path:
+            raise UploadError("this upload is not on the configured remote")
+        self._run("deletefile", path, timeout=120)
+
+
+def _header_name(name: str) -> str:
+    """A file name as the value of a multipart header: no quote, backslash or line break."""
+    return re.sub(r'["\\\x00-\x1f\x7f]', "_", name)
 
 
 def _duration_seconds(s: str) -> float:
@@ -207,7 +218,7 @@ class LitterboxTarget:
         fields = [("reqtype", "fileupload"), ("time", self.time)]
         pre = b"".join(f"--{boundary}\r\nContent-Disposition: form-data; name=\"{k}\"\r\n\r\n{v}\r\n".encode()
                        for k, v in fields)
-        pre += (f"--{boundary}\r\nContent-Disposition: form-data; name=\"fileToUpload\"; filename=\"{path.name}\"\r\n"
+        pre += (f"--{boundary}\r\nContent-Disposition: form-data; name=\"fileToUpload\"; filename=\"{_header_name(path.name)}\"\r\n"
                 f"Content-Type: {mimetypes.guess_type(path.name)[0] or 'application/octet-stream'}\r\n\r\n").encode()
         post = f"\r\n--{boundary}--\r\n".encode()
         size = len(pre) + path.stat().st_size + len(post)

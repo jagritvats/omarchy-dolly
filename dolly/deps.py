@@ -37,7 +37,7 @@ def _note_path() -> Path:
 
 def _write_note(reason: str | None):
     try:
-        _state_dir().mkdir(parents=True, exist_ok=True)
+        fsutil.private_dir(_state_dir())
         gsr = shutil.which("gpu-screen-recorder") or ""
         fsutil.atomic_write_json(_note_path(), {"reason": reason, "t": time.time(), "gsr": gsr,
                                             "mtime": os.path.getmtime(gsr) if gsr else 0})
