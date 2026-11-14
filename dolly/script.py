@@ -56,7 +56,9 @@ class Recorder:
         cmd = [sys.executable, "-m", "dolly.cli", "record", "--mode", mode, "--countdown", "0",
                "--audio", "none", "--camera", "off"]
         if pick:
-            cmd += ["--pick", pick]          # merge note: becomes --window / --region (work/agent)
+            # Named storyboard windows must keep their identity across workspaces;
+            # a geometry-only pick can match an unrelated tiled window elsewhere.
+            cmd += ["--window", pick] if mode == "window" and pick.startswith("address:") else ["--pick", pick]
         r = subprocess.run(cmd, env=self._env(), capture_output=True, text=True, timeout=90)
         last = (r.stdout.strip().splitlines() or [""])[-1]
         if r.returncode != 0 or not self.active() or not Path(last).is_dir():
@@ -374,7 +376,7 @@ class Runner:
             self.desk.focus(addr)
             (x, y), (w, h) = win["at"], win["size"]
         self.area = (x, y, w, h)
-        return kind, f"{x},{y} {w}x{h}"
+        return kind, f"address:{addr}" if kind == "window" else f"{x},{y} {w}x{h}"
 
     def after_take(self, res: dict, export: bool, progress):
         """Title, captions from `say`, exports. `res["outputs"]` = [{"aspect"|"preset", "file"}]."""

@@ -6,7 +6,7 @@
 #   bin/dolly-setup --undo     remove what this script added
 #
 # What it does (each step prints what it touched):
-#   1. Adds one "Demo" entry (everything else inside it) to
+#   1. Adds one "Dolly Screen Recorder" entry (everything else inside it) to
 #      ~/.config/omarchy/extensions/omarchy-menu.jsonc under Trigger > Capture
 #      (between "// >>> dolly" / "// <<< dolly" markers; your other lines are kept).
 #   2. Adds keybinds to ~/.config/hypr/bindings.lua between the same markers
@@ -22,27 +22,29 @@
 #   4. Makes sure the record button is on the bar (omarchy bar put, where it exists).
 # It also links ~/.local/bin/dolly to this plugin's launcher, so `dolly` works in a
 # terminal, a script or a coding agent's shell (never replaces something that is not ours).
-# Steps 1, 2 and the link are done by `dolly integration apply` (dolly/integration.py):
+# Also installs the managed Dolly Screen Recorder application launcher.
+# Steps 1, 2, the link and launcher are done by `dolly integration apply` (dolly/integration.py):
 # no password, safe to repeat, and Dolly repeats them by itself after an update.
 set -euo pipefail
 # keep __pycache__ out of the plugin folder (Omarchy reloads the plugin when it changes)
 export PYTHONPYCACHEPREFIX="${PYTHONPYCACHEPREFIX:-${XDG_CACHE_HOME:-$HOME/.cache}/dolly/pycache}"
 ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 DOLLY="$ROOT/bin/dolly"
+PY="$("$DOLLY" --print-python)"
 UNDO=false
 [[ ${1:-} == --undo ]] && UNDO=true
 
 # ---- 1 + 2: the menu entry, the hotkeys, the `dolly` command (user files only, no password)
 if $UNDO; then
-  PYTHONPATH="$ROOT" python3 -m dolly.integration undo
+  "$DOLLY" integration undo
   exit 0
 fi
-PYTHONPATH="$ROOT" python3 -m dolly.integration apply
+"$DOLLY" integration apply
 
 # ---- 3. packages Dolly needs (python-numpy and python-pillow; wf-recorder when
 # gpu-screen-recorder cannot capture here, as in VMs). Asks only when someone can
 # answer: with stdin or stdout not a terminal (piped, scripted) it prints the command.
-MISSING="$("$DOLLY" deps --json 2>/dev/null | python3 -c 'import json,sys
+MISSING="$("$DOLLY" deps --json 2>/dev/null | "$PY" -c 'import json,sys
 try: print(" ".join(json.load(sys.stdin)["packages"]))
 except Exception: print("python-numpy python-pillow")' || true)"
 if [[ -z $MISSING ]]; then
@@ -60,7 +62,7 @@ else
       [yY]*) $INSTALL ;;
       [vV]*)
         VENV="${XDG_DATA_HOME:-$HOME/.local/share}/dolly/venv"
-        python3 -m venv "$VENV" && "$VENV/bin/pip" install -q numpy pillow
+        "$PY" -m venv "$VENV" && "$VENV/bin/pip" install -q numpy pillow
         echo "python: venv ready ($VENV); bin/dolly uses it automatically" ;;
       *) echo "packages: skipped; later run: $DOLLY deps --install" ;;
     esac

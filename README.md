@@ -70,6 +70,11 @@ features a VM cannot show:
 
 ## Install
 
+For step-by-step setup, Python runtime selection, launcher integration and
+version-specific checks, see [Installation and compatibility](docs/INSTALL.md).
+The [real-hardware verification report](docs/HARDWARE-VERIFICATION-2026-11-14.md)
+distinguishes the locally patched build from the published 0.7.3 release.
+
 From the Omarchy plugin marketplace, or:
 
 ```bash
@@ -91,6 +96,10 @@ dolly doctor                                                           # what wo
 Set up also puts `dolly` on your PATH (a link in `~/.local/bin`), so the commands
 below work in any terminal, script or agent shell.
 
+Set up installs **Dolly Screen Recorder** in the application launcher too. Search
+for `dolly` or `screen recorder`; launching it opens the record panel without
+starting a recording. Its application actions open Library and Settings.
+
 **Updating.** `dolly update` runs Omarchy's own `omarchy plugin update` and then
 refreshes what Set up wrote (the menu entry, the hotkeys, the `dolly` command): no
 password, no terminal. If you update with Omarchy's command directly, Dolly does the
@@ -100,6 +109,12 @@ after Omarchy's own command the new button appears at the next shell start, and 
 offers to restart it.
 
 Needs Omarchy 4.x (the Quattro shell).
+
+The compatibility adapters support older 4.0.4 shell APIs and retain the newer
+4.5 APIs when present. Real recording/export has been verified on 4.0.4;
+4.5.0's exact release APIs and plugin validator have been checked, but a complete
+4.5 desktop run remains pending. Do not interpret "4.x" as every future release
+having been tested.
 
 **Required packages** (not in Omarchy's base): `python-numpy` and `python-pillow`.
 In a virtual machine also `wf-recorder` (gpu-screen-recorder, which ships with
@@ -115,7 +130,7 @@ Omarchy, cannot use a virtual GPU). `ffmpeg` ships with Omarchy.
 |---|---|
 | Bar button | click: the Dolly panel (capture mode, audio, camera, Start, recent recordings, **Settings**) · right-click: quick record · while recording: click stops, right-click shows pause / mute mic / stop / discard · Omarchy's `Super+Ctrl+<n>` opens the panel by its place in the bar's right section. The button watches Dolly's state files; nothing runs in the background while you are not recording · from the keyboard: Super+Ctrl+1 to 9 toggles the panel (the number is the button's place among the panels on the right of the bar) |
 | Hotkeys (after **Set up**) | Super+Alt+R record/stop · Super+Alt+P pause · Super+Alt+N mute mic · Super+Alt+M zoom here · Super+Alt+Shift+R save last 30 s (instant replay) · Super+Alt+L recordings (Omarchy 4.5 uses it, so it is skipped there). Change any of them, or switch one off, in **Settings › Shortcuts** (or `dolly config set shortcuts.toggle="SUPER + CTRL + D"`; empty = off); only Dolly's own marked block in `~/.config/hypr/bindings.lua` is rewritten. A combination that is already bound is never taken; if an Omarchy update later claims one, the panel says so and **Fix** gives those keys up. Omarchy's Super+K lists them |
-| Menu (Super+Space, after **Set up**) | Trigger → Capture → **Demo**: record a window, a region or the screen · open last · recordings · share last recording · instant replay · settings. While a take is running the entry is **Stop demo** |
+| Menu (Super+Space, after **Set up**) | Trigger → Capture → **Dolly Screen Recorder**: record a window, a region or the screen · open last · recordings · share last recording · instant replay · settings. While a take is running the entry is **Stop Dolly Screen Recorder** |
 | Editor | opens after you stop, without taking focus. Library · Editor · Settings. Timeline lanes for zoom, speed and privacy; 16:9 / 9:16 / 1:1 preview; In/Out trim; camera bubble shape, size and position (drag it); camera-only ranges; per-track volume and mute; blur boxes; Scrub secrets; captions; title card; **Share** (Ctrl+E) |
 | Settings | the editor's Settings view (also `dolly settings`): Capture, Audio, Camera, Look, Auto-zoom, Privacy, Export, Sharing, Storage. Stored in `~/.config/dolly/config.json`; the bar widget's own options stay in sync |
 | CLI | `dolly record [--mode screen|window|region] [--audio none|mic|system|both] [--camera off|edit|live] · stop · pause · mute · mark · replay · edit · library [--open] · settings · config get/set · export [--aspect 16:9|9:16|1:1|4:5] [--quality draft|fast|high|best] [--gif] · share … · run demo.toml [--dry-run] [--json] · recover · deps · setup · update · integration · doctor` |
@@ -288,6 +303,13 @@ you want them gone. Packages installed for Dolly stay installed; remove them wit
   `~/.local/state/dolly/dolly.log`. Please attach both to a bug report.
 - A recording's files are written safely: if one is damaged (power loss), Dolly
   restores the previous version and keeps the broken copy as `*.damaged`.
+
+The editor uses its own private browser profile and disables accelerated **video
+decoding** by default to avoid a verified black-preview path in Chromium on
+Wayland. Normal browser settings and GPU compositing are unchanged. Software
+decoding can use more CPU; on machines where hardware decoding works, opt in for
+that invocation with `DOLLY_EDITOR_ACCELERATED_VIDEO=1 dolly edit`. See
+[Installation and compatibility](docs/INSTALL.md#editor-preview).
 
 ## Developers
 

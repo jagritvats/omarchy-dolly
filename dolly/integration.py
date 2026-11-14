@@ -1,11 +1,12 @@
 """Dolly's place in Omarchy: one menu entry, the hotkeys, the `dolly` command.
 
-Omarchy plugins have no install or update hooks, so Dolly keeps three user-level
+Omarchy plugins have no install or update hooks, so Dolly keeps four user-level
 things itself, each inside its own marked block or link and nothing else:
 
   menu      ~/.config/omarchy/extensions/omarchy-menu.jsonc   "// >>> dolly" block
   hotkeys   ~/.config/hypr/bindings.lua                        "-- >>> dolly" block
   command   ~/.local/bin/dolly                                 a link to bin/dolly
+  desktop   $XDG_DATA_HOME/applications/io.github.jagritvats.dolly.desktop
 
 `apply()` writes them (Set up, a changed shortcut, the first run after an update),
 `undo()` removes them, `status()` reports what is there and which hotkeys something
@@ -15,7 +16,7 @@ to something else is never taken.
 
 After `omarchy plugin update` nothing of the plugin runs, so `auto_apply()` compares the
 installed version with the one Set up was last applied for (state/setup.json) and
-refreshes the three things by itself: no password, no terminal, and only for someone
+refreshes these things by itself: no password, no terminal, and only for someone
 who ran Set up and did not undo it.
 """
 from __future__ import annotations
@@ -30,6 +31,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_ID = "io.github.jagritvats.dolly"
+INTEGRATION_REVISION = 1                 # migrate integration even within a local version
 
 MOD_BITS = {"SHIFT": 1, "CTRL": 4, "ALT": 8, "SUPER": 64}
 MOD_ORDER = ("SUPER", "CTRL", "ALT", "SHIFT")
@@ -102,6 +104,11 @@ def _write_stamp(d: dict):
         fsutil.atomic_write_json(stamp_file(), d, durable=False)
     except OSError:
         pass
+
+
+def current_stamp() -> bool:
+    st = stamp()
+    return st.get("version") == version() and st.get("integration_revision") == INTEGRATION_REVISION
 
 
 def _block(p: Path) -> str | None:
@@ -216,12 +223,14 @@ def conflicts(binds: list[dict], live: list[dict] | None) -> list[dict]:
 
 
 def status(check_live: bool = True) -> dict:
+    from . import desktop_entry
     menu = _block(menu_file()) is not None
     binds = dolly_binds()
     clash = conflicts(binds, live_binds()) if check_live and binds else []
-    return {"menu": menu, "binds": binds, "conflicts": clash,
-            "set_up": menu or bool(binds),
-            "files": {"menu": str(menu_file()), "bindings": str(bindings_file())}}
+    desktop = desktop_entry.status(str(launcher()))
+    return {"menu": menu, "binds": binds, "conflicts": clash, "desktop": desktop,
+            "set_up": menu or bool(binds) or desktop_entry.ours(str(launcher())),
+            "files": {"menu": str(menu_file()), "bindings": str(bindings_file()), "desktop": desktop["path"]}}
 
 
 def shortcut_view(check_live: bool = True) -> list[dict]:
@@ -253,17 +262,15 @@ def shortcut_view(check_live: bool = True) -> list[dict]:
 
 # ------------------------------------------------------------------ the menu block
 def menu_rows(dolly: str) -> list[tuple[str, dict]]:
-    """One entry under Trigger > Capture, like Omarchy's own "Screenrecord": "Demo" with
-    everything inside it. While a take is running the entry is "Stop demo recording"
-    instead, so stopping stays one step. Guards are pure shell file tests (dolly/guards.py).
-    Labels stay under 18 characters: the menu cuts longer ones off."""
+    """One identifiable Dolly Screen Recorder submenu under Trigger > Capture.
+    While a take runs, stopping stays one step. Guards are pure shell file tests."""
     from .guards import GUARDS as G
     rows = [
-        ("trigger.capture.dolly-stop", {"icon": "󰓛", "label": "Stop demo", "description": "Dolly: stop recording and open the editor",
-                                        "aliases": ["stop demo recording", "dolly stop"], "when": G["recording"],
+        ("trigger.capture.dolly-stop", {"icon": "󰓛", "label": "Stop Dolly Screen Recorder", "description": "Dolly: stop recording and open the editor",
+                                        "aliases": ["stop dolly", "stop screen recorder", "stop screencast", "stop demo recording", "dolly stop"], "when": G["recording"],
                                         "action": f"{dolly} stop"}),
-        ("trigger.capture.dolly", {"icon": "󰑊", "label": "Demo", "description": "Dolly: record with auto-zoom, edit, share",
-                                   "aliases": ["dolly", "demo", "record demo"], "when": G["not_recording"]}),
+        ("trigger.capture.dolly", {"icon": "󰑊", "label": "Dolly Screen Recorder", "description": "Dolly: record with auto-zoom, edit, share",
+                                   "aliases": ["dolly", "screen recorder", "screencast", "demo", "record demo"], "when": G["not_recording"]}),
         ("trigger.capture.dolly.window", {"icon": "󰖯", "label": "Record a window",
                                           "when": G["not_recording"],
                                           "action": f"{dolly} record --mode window"}),
@@ -447,9 +454,9 @@ def _apply_link(dolly: str) -> dict:
     return {"state": "linked", "path": str(link)}
 
 
-def apply(parts: tuple[str, ...] = ("menu", "binds", "link"), reload: bool = True) -> dict:
-    """Write Dolly's menu entry, hotkeys and command link. Idempotent; touches only Dolly's
-    own blocks and link. -> what happened to each part."""
+def apply(parts: tuple[str, ...] = ("menu", "binds", "link", "desktop"), reload: bool = True) -> dict:
+    """Write Dolly's menu, hotkeys, command link and application entry. Idempotent;
+    touches only Dolly's own blocks, link and managed desktop file."""
     dolly = str(launcher())
     res: dict = {"version": version(), "previous": stamp().get("version"), "changed": []}
     if "menu" in parts:
@@ -481,13 +488,20 @@ def apply(parts: tuple[str, ...] = ("menu", "binds", "link"), reload: bool = Tru
         res["link"] = _apply_link(dolly)
         if res["link"]["state"] == "linked":
             res["changed"].append("link")
-    _write_stamp({"version": version(), "at": time.time(), "set_up": True, "changed": res["changed"],
+    if "desktop" in parts:
+        from . import desktop_entry
+        res["desktop"] = desktop_entry.apply(dolly)
+        if res["desktop"]["state"] == "written":
+            res["changed"].append("desktop")
+    revision = INTEGRATION_REVISION if "desktop" in parts else stamp().get("integration_revision")
+    _write_stamp({"version": version(), "integration_revision": revision,
+                  "at": time.time(), "set_up": True, "changed": res["changed"],
                   "summary": summary(res)})
     return res
 
 
 def undo() -> dict:
-    """Remove what apply() wrote: the two blocks and the link (only if it is Dolly's)."""
+    """Remove Dolly's blocks, command link and desktop entry (only if ours)."""
     res: dict = {"changed": []}
     for name, f, cut in (("menu", menu_file(), _menu_with), ("binds", bindings_file(), _binds_with)):
         try:
@@ -501,7 +515,11 @@ def undo() -> dict:
     if link.is_symlink() and os.readlink(link) == str(launcher()):
         link.unlink(missing_ok=True)
         res["changed"].append("link")
-    _write_stamp({"version": version(), "at": time.time(), "set_up": False})
+    from . import desktop_entry
+    if desktop_entry.undo(str(launcher())):
+        res["changed"].append("desktop")
+    _write_stamp({"version": version(), "integration_revision": INTEGRATION_REVISION,
+                  "at": time.time(), "set_up": False})
     return res
 
 
@@ -512,6 +530,9 @@ def _ours() -> bool | None:
     (`apply()`) may point them somewhere new; nothing automatic ever does."""
     blocks = [b for b in (_block(menu_file()), _block(bindings_file())) if b]
     if not blocks:
+        from . import desktop_entry
+        if desktop_entry.managed():
+            return desktop_entry.ours(str(launcher()))
         return None
     mine = str(launcher())
     return any(mine in b for b in blocks)
@@ -529,15 +550,18 @@ def auto_apply() -> dict | None:
     do (same version, never set up, or undone). Safe to call from several processes."""
     cur = version()
     st = stamp()
-    if st.get("version") == cur:
+    if current_stamp():
         reload_if_pending()
         return None
     ours = _ours()
     if ours is None:
-        _write_stamp({"version": cur, "at": time.time(), "set_up": False})     # ask the files only once per version
+        _write_stamp({"version": cur, "integration_revision": INTEGRATION_REVISION,
+                      "at": time.time(), "set_up": False})     # ask the files only once per version/revision
         return None
     if not ours:
         return None                                    # another copy's entries: not this one's to refresh
+    if _recording():
+        return None                                    # retry after the take, without touching config
     import fcntl
     lock = stamp_file().with_name("setup.lock")
     try:
@@ -546,11 +570,11 @@ def auto_apply() -> dict | None:
                 fcntl.flock(lf, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError:
                 return None                                    # another Dolly process is doing it
-            if stamp().get("version") == cur:
+            if current_stamp():
                 return None
             parts = tuple(n for n, f in (("menu", menu_file()), ("binds", bindings_file())) if _block(f) is not None)
             before = st.get("at")
-            res = apply(parts=parts + ("link",))
+            res = apply(parts=parts + ("link", "desktop"))
             res["ui_stale"] = ui_stale(before)
             return res
     except OSError:
@@ -596,13 +620,13 @@ def summary(res: dict | None) -> str:
     """One line for a person: what apply() changed."""
     if not res:
         return "nothing to refresh"
-    names = {"menu": "the menu entry", "link": "the dolly command"}
+    names = {"menu": "the menu entry", "link": "the dolly command", "desktop": "the application launcher"}
     bits = [names[c] for c in res.get("changed", []) if c in names]
     if "binds" in res.get("changed", []):
         n = sum(1 for b in res.get("binds") or [] if b["state"] == "applied")
         bits.insert(1 if bits[:1] == ["the menu entry"] else 0, f"{n} hotkey{'s' if n != 1 else ''}")
     if not bits:
-        return "menu entry, hotkeys and the dolly command were already current"
+        return "menu entry, hotkeys, command and application launcher were already current"
     return "refreshed " + (", ".join(bits[:-1]) + " and " + bits[-1] if len(bits) > 1 else bits[0])
 
 
@@ -611,7 +635,7 @@ def _print_apply(res: dict):
     """The lines bin/dolly-setup shows."""
     m = res.get("menu")
     if m:
-        print(f"menu: one \"Demo\" entry under Trigger > Capture ({m}; {menu_file()})")
+        print(f"menu: one \"Dolly Screen Recorder\" entry under Trigger > Capture ({m}; {menu_file()})")
     if res.get("binds_file") == "missing":
         print(f"keybind: {bindings_file()} not found; skipped (bind '{launcher()} toggle' yourself)")
     for b in res.get("binds") or []:
@@ -624,6 +648,11 @@ def _print_apply(res: dict):
             print(f"keybind: {keys} is already bound, skipped ({b['label']}; used by {', '.join(b['others'])})")
     if res.get("binds"):
         print("keybind: window rule for the live camera bubble (DollyCam)")
+    desktop = res.get("desktop")
+    if desktop:
+        print(f"application: {desktop['state']} ({desktop['path']})")
+        if desktop["state"] == "foreign":
+            print("application: existing file is not Dolly's; left alone")
     ln = res.get("link")
     if ln:
         if ln["state"] in ("linked", "unchanged"):
@@ -659,6 +688,9 @@ def main(argv=None) -> int:
               else f"keybind: no Dolly hotkeys in {bindings_file()}")
         if "link" in res["changed"]:
             print(f"command: removed {link_file()}")
+        if "desktop" in res["changed"]:
+            from . import desktop_entry
+            print(f"application: removed {desktop_entry.path()}")
         return 0
     st = status()
     if a.json:
@@ -666,6 +698,7 @@ def main(argv=None) -> int:
         return 0
     print(f"menu entry: {'yes' if st['menu'] else 'no'} ({st['files']['menu']})")
     print(f"hotkeys:    {len(st['binds'])} ({st['files']['bindings']})")
+    print(f"application: {st['desktop']['state']} ({st['files']['desktop']})")
     for b in st["binds"]:
         print(f"  {b['combo']:<24} {b['description']}")
     for c in st["conflicts"]:

@@ -196,6 +196,23 @@ def cmd_library(a):
                 sys.exit(1)
 
 
+def cmd_launch(a):
+    """Application launch only opens UI; it must never toggle/start a take."""
+    import shutil
+    import subprocess
+    shell = shutil.which("omarchy-shell")
+    if shell:
+        try:
+            r = subprocess.run([shell, "io.github.jagritvats.dolly", "open"],
+                               capture_output=True, text=True, timeout=5)
+            if r.returncode == 0:
+                return
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    from .editor.server import serve
+    return serve(None, port=0, open_browser=True, view="library")
+
+
 def cmd_config(a):
     from . import config as cfgmod
     if a.cfg_cmd == "get":
@@ -371,7 +388,7 @@ def _after_update(argv: list[str]):
         return
     try:
         from . import integration
-        if integration.stamp().get("version") == integration.version():
+        if integration.current_stamp():
             return
         _say_refreshed(integration.auto_apply())
     except Exception:
@@ -558,6 +575,7 @@ def main(argv=None):
 def _main(argv=None):
     ap = argparse.ArgumentParser(prog="dolly", description="Polished demo recordings for Omarchy")
     sub = ap.add_subparsers(dest="cmd", required=True, metavar="<command>")
+    sub.add_parser("launch", help="open the recorder panel (Library if the Omarchy shell is unavailable)")
 
     r = sub.add_parser("record", help="start a recording (defaults: Settings > Capture, ~/.config/dolly/config.json)")
     r.add_argument("--mode", choices=["screen", "region", "window"], default=None)
@@ -694,9 +712,9 @@ def _main(argv=None):
     doc.add_argument("--json", action="store_true")
     doc.add_argument("--report", action="store_true",
                      help="write a text file to attach to a bug report (no video, no typed keys)")
-    it = sub.add_parser("integration", help="the menu entry and hotkeys Dolly added; hotkey conflicts")
+    it = sub.add_parser("integration", help="Dolly's menu, hotkeys, command and application launcher; conflicts")
     it.add_argument("action", nargs="?", choices=["status", "apply", "undo", "auto"], default="status",
-                    help="apply: write the menu entry, hotkeys and the dolly command again (no password); "
+                    help="apply: write the menu entry, hotkeys, command and application launcher (no password); "
                          "undo: remove them; auto: apply only after an update")
     it.add_argument("--json", action="store_true")
     sub.add_parser("setup", help="add Dolly's menu entry and hotkeys, install missing packages (opens a terminal)")
@@ -719,7 +737,9 @@ def _main(argv=None):
     lg.add_argument("--replay", type=int, default=0)
 
     a = ap.parse_args(argv)
-    if a.cmd == "record":
+    if a.cmd == "launch":
+        cmd_launch(a)
+    elif a.cmd == "record":
         from . import headless
         if headless.wanted(a):
             headless.record(a)

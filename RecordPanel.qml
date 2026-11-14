@@ -4,6 +4,7 @@ import Quickshell.Io
 import qs.Commons
 import qs.Commons as Commons
 import qs.Ui
+import "." as Compat
 
 // The Dolly panel under the bar button.
 //
@@ -31,7 +32,7 @@ Panel {
   readonly property string dolly: hostWidget ? hostWidget.dolly : ""
   property var cfg: ({})              // Settings (config.json), loaded each time the panel opens
 
-  Commons.Translations { id: tr; directory: Qt.resolvedUrl("i18n") }
+  Compat.DollyTranslations { id: tr; directory: Qt.resolvedUrl("i18n") }
 
   // config.json is the source of truth; the widget's shell.json values are the fallback
   property string mode: (cfg.capture && cfg.capture.mode) || (hostWidget ? hostWidget.setting("mode", "window") : "window")
@@ -111,7 +112,7 @@ Panel {
   }
   function fmtDate(ts) {
     var d = new Date(Number(ts || 0) * 1000)
-    return d.toLocaleString(Qt.locale(Commons.I18n.formatLocale), "d MMM · HH:mm")
+    return d.toLocaleString(Qt.locale(tr.formatLocale), "d MMM · HH:mm")
   }
 
   function open() { root.controller.show(); refreshAll() }
@@ -204,23 +205,22 @@ Panel {
     }
   }
 
-  KeyboardPanel {
+  Compat.DollyKeyboardPanel {
     id: panel
     anchorItem: root.anchorItem
     owner: root.barIdentity
     bar: root.bar
     open: root.opened
     centerOnBar: false
-    focusTarget: panel.loadedContent
+    focusTarget: panel.bodyItem
     contentWidth: panel.fittedContentWidth(Style.space(380))
-    contentHeight: panel.fittedContentHeight(panel.loadedContentHeight)
+    contentHeight: panel.fittedContentHeight(panel.bodyHeight)
 
-    content: PanelKeyCatcher {
+    body: PanelKeyCatcher {
       anchors.fill: parent
       implicitHeight: col.implicitHeight
       onCloseRequested: root.close()
       onActivateRequested: if (!root.recording) root.start()
-      onReturnRequested: if (!root.recording) root.start()
       onTabRequested: function(direction) { root.switchPanel(direction) }
 
       Column {
