@@ -12,7 +12,9 @@ searchable application naming and an oversized hover tooltip.
 - Base: v0.7.3, `d9f547a1134d2d21f6898087acc447e3a7cf3b26`.
 - Source: `/home/jagrit/Projects/omarchy-dolly`.
 - Installed: `~/.config/omarchy/plugins/io.github.jagritvats.dolly`.
-- Fixes are **local and uncommitted, not published**. No PR, push or release.
+- Fixes are proposed in [draft PR #5](https://github.com/jagritvats/omarchy-dolly/pull/5),
+  **not merged or released**. Jagrit will test the 4.5 VM and review separately.
+  See `PR-TESTING.md` for exact-commit non-release artifacts and installation.
 
 ## Actual environment
 
@@ -115,8 +117,8 @@ Python 3.14.8 was tested on the existing 4.0.4 desktop, not a 4.5 desktop.
   multiple/rotated monitors; long takes; recovery/lock/suspend.
 - Mic/system audio, real camera, replay and remote sharing were deliberately
   not tested. No guarantee for future Python/Omarchy/browser/driver versions.
-- Preserve/review local changes and release only when authorized. A normal
-  upstream update currently does not contain these repairs.
+- Jagrit to complete the 4.5 VM check and review the draft PR. A normal stable
+  upstream update currently does not contain these repairs; no release is authorized.
 
 Final desktop state: no recording/replay/jobs, original capture defaults restored,
 DND off; healthy Dolly editor available on workspace 2 and user focus restored to

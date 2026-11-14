@@ -162,18 +162,22 @@ def test_the_capture_menu_has_one_dolly_entry_at_a_time(home):
     dolly = {k: v for k, v in rows.items() if "dolly" in k}
     top = [k for k in dolly if k.count(".") == 2]                     # trigger.capture.<row>
     assert sorted(top) == ["trigger.capture.dolly", "trigger.capture.dolly-stop"]
-    assert not any(k.startswith("trigger.share.") for k in dolly)     # sharing lives inside Demo now
+    assert not any(k.startswith("trigger.share.") for k in dolly)     # sharing lives inside Dolly now
     from dolly.guards import GUARDS
-    assert rows["trigger.capture.dolly"]["when"].endswith(GUARDS["not_recording"])       # idle: "Demo"
+    assert rows["trigger.capture.dolly"]["when"].endswith(GUARDS["not_recording"])       # idle: Dolly
     assert rows["trigger.capture.dolly-stop"]["when"].endswith(GUARDS["recording"])      # recording: Stop, one step
     assert rows["trigger.capture.dolly-stop"]["action"].endswith("bin/dolly stop")
-    assert rows["trigger.capture.dolly"]["label"] == "Demo" and "action" not in rows["trigger.capture.dolly"]
+    assert rows["trigger.capture.dolly"]["label"] == "Dolly Screen Recorder"
+    assert rows["trigger.capture.dolly-stop"]["label"] == "Stop Dolly Screen Recorder"
+    assert "action" not in rows["trigger.capture.dolly"]
+    assert {"dolly", "screen recorder", "screencast"} <= set(rows["trigger.capture.dolly"]["aliases"])
     inside = {k.split(".", 3)[3] for k in dolly if k.startswith("trigger.capture.dolly.")}
     assert {"window", "region", "screen", "last", "library", "settings", "share", "share.github",
             "replay-on", "replay-save", "replay-off"} <= inside
     for k, v in dolly.items():
         assert v["when"].startswith("[ -x "), k                      # gone with the plugin
-        assert len(v["label"]) <= 18, (k, v["label"])                 # Omarchy's menu cuts longer labels off
+        if k.count(".") > 2:
+            assert len(v["label"]) <= 18, (k, v["label"])             # keep action labels compact
         if ".dolly." in k and "record --mode" in v.get("action", ""):
             assert GUARDS["not_recording"] in v["when"], k            # search must not offer a second take
 

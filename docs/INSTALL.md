@@ -3,10 +3,12 @@
 Checked 2026-11-14. Project: <https://github.com/jagritvats/omarchy-dolly>.
 Marketplace: <https://plugins.omarchy.org/plugin.html?id=io.github.jagritvats.dolly>.
 
-**Publication status:** the fixes described here are local, uncommitted changes
-on top of v0.7.3 (`d9f547a1134d2d21f6898087acc447e3a7cf3b26`), deployed on the
-verification machine. They have **not** been pushed or released. Installing the
-current GitHub release does not include them yet. In particular, stock 0.7.3's
+**Publication status:** these fixes are proposed in
+[draft PR #5](https://github.com/jagritvats/omarchy-dolly/pull/5), on top of
+v0.7.3 (`d9f547a1134d2d21f6898087acc447e3a7cf3b26`). They are deployed on the
+verification machine but are **not merged or released**. Current stable GitHub
+installation does not include them. For this development build, use the
+[PR artifact/branch installation instructions](PR-TESTING.md). Stock 0.7.3's
 widget fails to load on the verified Omarchy 4.0.4 installation.
 
 ## 1. Prerequisites
@@ -166,9 +168,10 @@ compatibility qualification step; no desktop upgrade was done in this session.
 ## Updates and removal
 
 Once these patches are released: `dolly update` refreshes setup and may restart
-the shell when QML changed. **For the current locally patched installation,
-do not update until the fixes are preserved/released**; Git may refuse a dirty
-checkout, and replacing it can lose fixes.
+the shell when QML changed. **Do not replace the current locally patched
+installation with stable 0.7.3**; it lacks these fixes. A PR artifact installation
+uses a temporary local Git origin: obtain a new artifact to test later commits.
+Preserve any local edits before changing an existing installation.
 
 ```bash
 dolly cancel                          # only if you want to discard a running take
