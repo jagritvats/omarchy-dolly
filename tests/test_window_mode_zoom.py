@@ -9,8 +9,6 @@ the camera returns to; it is not something a shot has to fit, follow or wait for
 import sys
 from pathlib import Path
 
-import numpy as np
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from dolly.aoi import AOITrack  # noqa: E402
 from dolly.events import Timeline  # noqa: E402
@@ -27,7 +25,7 @@ def take(win, mode="window"):
     """A window sits still; a command is typed into its first line from T0 to T1."""
     line = (win[0], win[1] + 6, win[0] + 420, win[1] + 70)
     caret = (win[0] + 400, win[1] + 38)
-    t = np.round(np.arange(0, 12, 0.1), 3)
+    t = [round(0.1 * i, 3) for i in range(120)]             # 12 s, a sample every 0.1 s
     rect, kind, foc, idle = [], [], [], []
     for ti in t:
         if T0 <= ti < T1 + 1.0:
@@ -94,7 +92,7 @@ def test_the_camera_rests_on_the_window_again_afterwards():
 
 def test_the_window_at_rest_is_marked_and_does_not_block_what_comes_next():
     tl, aoi, _, line = take(TILED)
-    sim_t = np.round(np.arange(0, 12, 0.05), 3)
+    sim_t = [round(0.05 * i, 3) for i in range(240)]
     cx, cy = smooth_cursor(tl, sim_t, 0.05)
     subj = subject_track(tl, aoi, sim_t, cx, cy, ZoomConfig())
     at = lambda t: int(round(t / 0.05))

@@ -188,6 +188,12 @@ def summary(pdir: Path, target: dict | None = None) -> dict:
         warnings.append("no sync marker or clock estimate: events are timed from the logger start")
     if meta.get("stop_reason"):
         warnings.append(f"stopped early: {meta['stop_reason']}")
+    with contextlib.suppress(Exception):
+        from . import deps
+        lacking = deps.python_missing()
+        if lacking:
+            warnings.append(f"no styled export here: it needs {deps.how(lacking)}; "
+                            "`dolly export` gives the plain recording until then")
     if (target or {}).get("note"):
         warnings.append(target["note"])
     return {"ok": True, "recording": False, "dir": str(pdir), "raw": str(raw) if raw else None,
@@ -351,19 +357,22 @@ def export_json(run, a) -> None:
     try:
         with contextlib.redirect_stdout(io.StringIO()):
             out = Path(run())
-        from .render import probe
+        from . import deps
+        from .ff import probe
+        plain = bool(getattr(a, "plain", False) or deps.python_missing())
         info = probe(out)
         v = next((s for s in info.get("streams", []) if s.get("codec_type") == "video"), {})
         w, h = v.get("width"), v.get("height")
         _emit({"ok": True, "output": str(out), "bytes": out.stat().st_size,
                "duration": round(float((info.get("format") or {}).get("duration") or 0), 3),
                "width": w, "height": h, "aspect": getattr(a, "aspect", None) or _aspect(w, h),
-               "format": out.suffix.lstrip("."), "engine": getattr(a, "engine", None) or "compositor"})
+               "format": out.suffix.lstrip("."), "engine": "plain" if plain else (getattr(a, "engine", None) or "compositor")})
     except SystemExit as e:
         msg = e.code if isinstance(e.code, str) else "export failed"
         raise fail("export-failed", msg.removeprefix("dolly: ")) from None
     except Exception as e:
-        raise fail("export-failed", f"{type(e).__name__}: {e}") from None
+        from .project import EmptyTrim
+        raise fail("export-failed", str(e) if isinstance(e, EmptyTrim) else f"{type(e).__name__}: {e}") from None
 
 
 def _aspect(w, h) -> str | None:

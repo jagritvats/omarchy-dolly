@@ -7,8 +7,6 @@ card's height; and the dialog a click opened was cut at its right edge, button i
 import sys
 from pathlib import Path
 
-import numpy as np
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from dolly import aoi as aoimod  # noqa: E402
 from dolly.aoi import AOITrack  # noqa: E402
@@ -24,7 +22,7 @@ FPS = 30
 
 
 def track(spans, duration=12.0, transitions=()):
-    t = np.round(np.arange(0, duration, 0.1), 3)
+    t = [round(0.1 * i, 3) for i in range(round(duration * 10))]
     rect, kind, foc = [None] * len(t), [None] * len(t), [None] * len(t)
     for i, ti in enumerate(t):
         for a, b, k, r, f in spans:
@@ -68,7 +66,7 @@ def click(t, x, y):
 def test_a_whole_window_is_not_letterboxed():
     """A window that just opened (1.7 strips wide): the strip shows a part of it, full height."""
     p = crop(timeline(), track([(2.0, 3.5, "layout", WIN, None)]))
-    assert p.cw.max() <= STRIP * 1.02
+    assert max(p.cw) <= STRIP * 1.02
     x0, x1 = span(p, 3.4)
     assert WIN[0] - 8 <= x0 and x1 <= WIN[2] + 8          # the crop lies on the window
 
@@ -76,7 +74,7 @@ def test_a_whole_window_is_not_letterboxed():
 def test_output_wider_than_the_strip_is_shown_from_the_start_of_its_lines():
     out = (362.0, 172.0, 1462.0, 932.0)
     p = crop(timeline(windows=[window(rect=out, cls="foot")]), track([(2.0, 4.0, "output", out, None)]))
-    assert p.cw.max() <= STRIP * 1.02
+    assert max(p.cw) <= STRIP * 1.02
     x0, _ = span(p, 3.8)
     assert abs(x0 - out[0]) <= 0.06 * STRIP               # the left edge of the text, with its margin
 
@@ -86,7 +84,7 @@ def test_a_dialog_a_little_wider_than_the_strip_is_shown_whole():
     p = crop(timeline(), track([(2.0, 5.0, "output", dialog, None)]))
     x0, x1 = span(p, 4.0)
     assert x0 <= dialog[0] and dialog[2] <= x1
-    assert STRIP < p.cw.max() <= STRIP * LETTERBOX_MAX + 1
+    assert STRIP < max(p.cw) <= STRIP * LETTERBOX_MAX + 1
 
 
 def test_what_a_click_changed_never_widens_the_crop():
@@ -97,7 +95,7 @@ def test_what_a_click_changed_never_widens_the_crop():
                  (2.1, 2.8, "pointer", (427.0, 236.0, 1128.0, 416.0), (577.0, 326.0)),
                  (2.8, 3.3, "pointer", (467.0, 236.0, 687.0, 416.0), (577.0, 326.0))])
     p = crop(timeline(ev), aoi)
-    assert p.cw.max() <= STRIP * 1.02
+    assert max(p.cw) <= STRIP * 1.02
     x0, x1 = span(p, 2.6)
     assert x0 <= 577 - 150 and 577 + 150 <= x1            # the click and what is around it
 
@@ -109,8 +107,8 @@ def test_a_pointer_flying_across_the_screen_is_followed_calmly():
               (1700 - 87.5 * i - 110.0, 210.0, 1700 - 87.5 * i + 110.0, 390.0), None) for i in range(17)]
     p = crop(timeline(ev, start=(1700.0, 300.0)), track(spans))
     assert not p.cuts
-    speed = np.abs(np.diff(p.cx)) * FPS / p.cw[1:]        # crop widths a second
-    assert speed.max() <= POINTER_PAN * 1.05
+    speed = [abs(b - a) * FPS / w for a, b, w in zip(p.cx, p.cx[1:], p.cw[1:])]      # crop widths a second
+    assert max(speed) <= POINTER_PAN * 1.05
 
 
 def test_a_far_jump_is_a_cut_that_lands_settled():
@@ -122,7 +120,7 @@ def test_a_far_jump_is_a_cut_that_lands_settled():
     assert any(2.4 <= c <= 3.4 for c in cuts), cuts
     c = next(c for c in p.cuts if 2.4 <= c / FPS <= 3.4)
     after = p.cx[c + 1:c + 1 + FPS]                       # the second after the cut: no drift
-    assert np.ptp(after) <= 0.03 * STRIP
+    assert max(after) - min(after) <= 0.03 * STRIP
     x0, x1 = span(p, 4.0)
     assert x0 <= right[0] and right[2] <= x1
 
@@ -161,7 +159,7 @@ def test_a_low_contrast_dialog_is_what_the_click_opened():
     blobs = [[] for _ in range(n)]
     blobs[23] = [(*dialog, 0.0082)]                       # appears 0.3 s after the click
     blobs[48] = [(*dialog, 0.0082)]                       # ... and goes 0.2 s after the click on OK
-    act = aoimod.Activity(t=np.round(np.arange(n) * 0.1, 3), frac=np.array([sum(b[4] for b in bl) for bl in blobs]),
+    act = aoimod.Activity(t=[round(0.1 * i, 3) for i in range(n)], frac=[sum(b[4] for b in bl) for bl in blobs],
                           blobs=blobs, w=W, h=H, reactions=[(2.0, None), (4.6, None)])
     tr = aoimod.build_aoi(tl, act)
     r, kind, _ = tr.at(2.6)

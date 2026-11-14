@@ -208,21 +208,23 @@ def test_audio_tracks_are_mka_files_only():
 def test_export_checks_the_background_picture_again(home, tmp_path_factory, monkeypatch):  # noqa: F811
     """project.json names the picture. The editor checks it when it is picked; a project from
     someone else never went through the editor."""
-    from PIL import Image
-
+    from dolly import gfx
     from dolly.render import build_background, make_layout
+    red = gfx.new(320, 180)
+    gfx.fill_rect(red, 0, 0, 320, 180, gfx.rgb((220, 20, 20)))
     elsewhere = tmp_path_factory.mktemp("not-home") / "red.png"
-    Image.new("RGB", (320, 180), (220, 20, 20)).save(elsewhere)
+    gfx.save(red, elsewhere)
     inside = home / "Pictures" / "red.png"
     inside.parent.mkdir()
-    Image.new("RGB", (320, 180), (220, 20, 20)).save(inside)
+    gfx.save(red, inside)
     monkeypatch.delenv("DOLLY_IMAGE_ROOTS", raising=False)
 
     def corner(path):
         style = {"background": {"type": "wallpaper", "path": str(path), "blur": 0}, "padding": 0.06, "shadow": 0,
                  "radius": 0, "output": {"width": 640, "height": 360}}
         img = build_background(make_layout(640, 400, style), style)
-        b, g, r = (int(x) for x in img[2, 2])
+        # a gfx frame; in a tree where the renderer is not moved to gfx yet, its BGR array
+        r, g, b = gfx.pixel(img, 2, 2) if hasattr(img, "get_width") else (int(x) for x in img[2, 2][::-1])
         return r > 180 and g < 60 and b < 60
     assert corner(inside)
     assert not corner(elsewhere)                    # outside the home folder: not opened, a gradient instead

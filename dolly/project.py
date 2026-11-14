@@ -207,6 +207,11 @@ def latest_project() -> Path | None:
     return max(cands, key=lambda p: p.stat().st_mtime) if cands else None
 
 
+class EmptyTrim(ValueError):
+    """The selected trim leaves no video to export. The message is written for the person
+    at the keyboard and is shown as it stands (no error type in front of it)."""
+
+
 class UnsafeFolder(ValueError):
     """A recording folder with symbolic links inside. Dolly writes into a recording folder by
     name (a thumbnail, the share history, a log, exports) and moves its raw files to the

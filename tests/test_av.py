@@ -12,22 +12,24 @@ the video shows *when* each burst was heard, and the system track, after
 finalize's alignment, must put each burst onset on the same frame (within 1).
 
 Covers: all four audio modes on both backends (tracks exist, none dropped),
-alignment within one frame, the export mix containing both tones (FFT),
+alignment within one frame, the export mix containing both tones (read off the samples),
 muting the mic mid-way (silence in that span, the system tone still there),
 the wf-recorder single-device bug, and the camera (test pattern feed): edit
 mode records webcam.mkv aligned to the video, the export composites the
 bubble; shapes, free position and camera-only ranges in the compositor.
 """
+import array
 import json
+import math
 import os
 import shutil
 import stat
+import statistics
 import subprocess
 import sys
 import time
 from pathlib import Path
 
-import numpy as np
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -42,7 +44,6 @@ FPS = 30
 RECORDER = r'''#!/usr/bin/env python3
 # stub screen recorder: marker on request, white square while system audio is loud
 import os, subprocess, sys, time, signal
-import numpy as np
 a = sys.argv[1:]
 out = a[a.index("-f") + 1] if sys.argv[0].endswith("wf-recorder") else a[a.index("-o") + 1]
 W, H, FPS = 640, 400, 30
@@ -58,6 +59,9 @@ def h(*_):
     global stop
     stop = True
 signal.signal(signal.SIGINT, h); signal.signal(signal.SIGTERM, h)
+def box(img, x0, y0, x1, y1, bgr):                  # fill columns x0..x1-1 of rows y0..y1-1
+    for y in range(y0, y1):
+        img[(y * W + x0) * 3:(y * W + x1) * 3] = bytes(bgr) * (x1 - x0)
 t0 = time.monotonic(); i = 0; level = 0.0
 while not stop:
     try:
@@ -65,18 +69,18 @@ while not stop:
     except Exception:
         buf = None
     if buf:
-        x = np.frombuffer(buf[: len(buf) // 2 * 2], np.int16)
+        x = memoryview(buf[: len(buf) // 2 * 2]).cast("h")[-160:]      # the last 10 ms, 16-bit samples
         if len(x):
-            level = float(np.abs(x[-160:]).max()) / 32768
-    img = np.full((H, W, 3), 40, np.uint8)
+            level = max(abs(v) for v in x) / 32768
+    img = bytearray(bytes([40]) * (W * H * 3))
     if os.path.exists(flag):
-        img[0:40, 0:40] = (255, 0, 255); img[10:30, 10:30] = (0, 255, 0)
+        box(img, 0, 0, 40, 40, (255, 0, 255)); box(img, 10, 10, 30, 30, (0, 255, 0))
     if level > 0.05:
-        img[150:250, 270:370] = 255
+        box(img, 270, 150, 370, 250, (255, 255, 255))
     if i % 15 == 0:
         with open(out + ".frames", "a") as fl:          # ground truth: wall-clock time of frame i
             fl.write(f"{i} {time.time():.6f}\n")
-    enc.stdin.write(img.tobytes()); enc.stdin.flush()
+    enc.stdin.write(img); enc.stdin.flush()
     i += 1
     d = t0 + i / FPS - time.monotonic()
     if d > 0:
@@ -199,24 +203,42 @@ def record(env, backend, audio, seconds=4.6, camera="off", mute_at=None):
     return pdir
 
 
-def decode_audio(f: Path, sr=16000, start=None) -> np.ndarray:
+def decode_audio(f: Path, sr=16000, start=None) -> list:
+    """The file's sound as one channel of samples in -1..1."""
     args = ["ffmpeg", "-v", "error", "-i", str(f), "-ac", "1", "-ar", str(sr), "-f", "s16le", "-"]
     out = subprocess.run(args, capture_output=True).stdout
-    return np.frombuffer(out, np.int16).astype(np.float32) / 32768
+    x = array.array("h")
+    x.frombytes(out[: len(out) // 2 * 2])
+    return [v / 32768 for v in x]
+
+
+TONES = (440, 1000)          # the two feeds: system audio and the "voice"
+
+
+def _tone(x, sr, f0):
+    """How strong the tone f0 is in the samples x: the largest value of their spectrum
+    (smoothly windowed) within a few hertz of f0. The tracks' clocks differ a little."""
+    n = len(x)
+    xw = [v * (0.5 - 0.5 * math.cos(2 * math.pi * i / (n - 1))) for i, v in enumerate(x)]
+    best = 0.0
+    for k in range(-8, 9):
+        w = 2 * math.pi * (f0 + 0.5 * k) / sr
+        re = math.sumprod(xw, [math.cos(w * i) for i in range(n)])
+        im = math.sumprod(xw, [math.sin(w * i) for i in range(n)])
+        best = max(best, math.hypot(re, im))
+    return best
 
 
 def band(x, sr, f0):
+    """0..1: the tone f0 against the stronger of the two tones the feeds play."""
     if len(x) < 256:
         return 0.0
-    sp = np.abs(np.fft.rfft(x * np.hanning(len(x))))
-    fr = np.fft.rfftfreq(len(x), 1 / sr)
-    return float(sp[(fr > f0 - 25) & (fr < f0 + 25)].max() / (sp.max() + 1e-9))
+    return _tone(x, sr, f0) / (max(_tone(x, sr, f) for f in TONES) + 1e-9)
 
 
 def onsets(env_curve, t, thresh):
-    on = env_curve > thresh
-    idx = np.nonzero(on[1:] & ~on[:-1])[0] + 1
-    return t[idx]
+    """The times at which the curve rises above the threshold."""
+    return [t[i] for i in range(1, len(env_curve)) if env_curve[i] > thresh and not env_curve[i - 1] > thresh]
 
 
 @pytest.mark.parametrize("backend", ["gsr", "wf-recorder"])
@@ -251,10 +273,9 @@ def test_tracks_aligned_within_a_frame_and_mixed(env, backend):
     for i, wall in frames[2:-2]:
         v_pred = tr["system"]["offset"] + (wall - st) * tr["system"]["scale"]
         errs.append(v_pred - i / FPS)
-    errs = np.array(errs)
     if os.environ.get("DOLLY_TEST_DEBUG"):
         print("PDIR", pdir)
-    assert np.abs(errs).max() <= 1.0 / FPS, errs                   # within one frame
+    assert max(abs(e) for e in errs) <= 1.0 / FPS, errs            # within one frame
     assert abs(tr["mic"]["offset"] - tr["system"]["offset"] - (start_time(pdir / tr["mic"]["file"]) - st)
                * tr["mic"]["scale"]) < 1e-3                         # both tracks on the same clock
     # 2. the real signal agrees: bursts in the system track land where the stub showed them
@@ -262,13 +283,13 @@ def test_tracks_aligned_within_a_frame_and_mixed(env, backend):
     #    so the video is late by that latency; allow it, plus one frame)
     out = subprocess.run(["ffmpeg", "-v", "error", "-i", str(pdir / "raw.mkv"), "-vf", "crop=20:20:310:190",
                           "-f", "rawvideo", "-pix_fmt", "gray", "-"], capture_output=True).stdout
-    v = np.frombuffer(out, np.uint8).reshape(-1, 400).mean(axis=1)
-    vid_on = onsets(v, np.arange(len(v)) / FPS, 128)
+    v = [sum(out[i:i + 400]) / 400 for i in range(0, len(out) - 399, 400)]       # the 20 x 20 crop of every frame
+    vid_on = onsets(v, [i / FPS for i in range(len(v))], 128)
     sr = 16000
     x = decode_audio(pdir / tr["system"]["file"], sr)
     hop = sr // 200
-    envl = np.array([np.abs(x[i:i + hop]).max() for i in range(0, len(x) - hop, hop)])
-    aud_on = onsets(envl, tr["system"]["offset"] + np.arange(len(envl)) * hop / sr * tr["system"]["scale"], 0.05)
+    envl = [max(abs(s) for s in x[i:i + hop]) for i in range(0, len(x) - hop, hop)]
+    aud_on = onsets(envl, [tr["system"]["offset"] + i * hop / sr * tr["system"]["scale"] for i in range(len(envl))], 0.05)
     lag = [v_ - max([a for a in aud_on if a <= v_ + 0.05], default=-9) for v_ in vid_on if v_ > aud_on[0] and v_ > 0.5]       # (the first frames may start mid-burst)
     assert len(lag) >= 3 and all(-1.0 / FPS <= d <= 0.2 for d in lag), (lag, vid_on, aud_on)
     # mix: both tones; mic silent while muted (a span, not a cut: the length is unchanged)
@@ -286,8 +307,8 @@ def test_tracks_aligned_within_a_frame_and_mixed(env, backend):
         for nm in ("mic", "system"):
             z = decode_audio(pdir / tr[nm]["file"], sr)
             o = tr[nm]["offset"]
-            print("TRK", nm, o, [round(float(np.abs(z[max(0, int((k / 2 - o) * sr)):max(0, int(((k + 1) / 2 - o) * sr))]).max(initial=0)), 3) for k in range(20)])
-        print("ENV", [round(float(np.abs(y[k * sr // 2:(k + 1) * sr // 2]).max()), 3) for k in range(int(len(y) / sr * 2))])
+            print("TRK", nm, o, [round(max((abs(s) for s in z[max(0, int((k / 2 - o) * sr)):max(0, int(((k + 1) / 2 - o) * sr))]), default=0), 3) for k in range(20)])
+        print("ENV", [round(max(abs(s) for s in y[k * sr // 2:(k + 1) * sr // 2]), 3) for k in range(int(len(y) / sr * 2))])
     inside = y[int((a + 0.2) * sr):int((b - 0.2) * sr)]          # >= 1.5 s: holds a system burst
     assert band(pre, sr, 1000) > 0.2 and band(pre, sr, 440) > 0.05
     assert band(inside, sr, 1000) < 0.05 and band(inside, sr, 440) > 0.5
@@ -322,20 +343,23 @@ def test_camera_edit_mode_records_aligned_and_composites(env):
     # ground truth: the wall time of the camera's first frame on the stub's frame clock
     from dolly.audio import start_time
     cam_wall = start_time(pdir / "webcam.mkv")                     # lavfi feed: wall-clock pts
-    fr = np.array([tuple(map(float, l.split())) for l in (pdir / "raw.mkv.frames").read_text().splitlines()])
-    expected = float(np.interp(cam_wall, fr[:, 1], fr[:, 0])) / FPS
+    from dolly import num
+    fr = [tuple(map(float, l.split())) for l in (pdir / "raw.mkv.frames").read_text().splitlines()]
+    expected = num.interp(cam_wall, [wall for _, wall in fr], [i for i, _ in fr]) / FPS
     # 0.1 s: lavfi's wall-clock pts jitter on a loaded VM (seen: 80 ms on a 4 vCPU VirtualBox VM);
     # real cameras are checked by hand within +-0.3 s (AGENTS.md test 16)
     assert abs(off - expected) <= max(1.5 / FPS, 0.1), (off, expected, cam_wall, fr[:2], json.loads((pdir / 'capture.json').read_text()).get('webcam_clock'))
     out = Path(dolly(env, "export", str(pdir), "--quality", "draft", "-q").stdout.strip().splitlines()[-1])
+    from dolly import gfx
     fr = subprocess.run(["ffmpeg", "-v", "error", "-ss", "1.5", "-i", str(out), "-frames:v", "1", "-f", "rawvideo",
-                         "-pix_fmt", "rgb24", "-"], capture_output=True).stdout
+                         "-pix_fmt", "bgr0", "-"], capture_output=True).stdout
     probe = json.loads(subprocess.run(["ffprobe", "-v", "error", "-show_streams", "-of", "json", str(out)],
                                       capture_output=True, text=True).stdout)["streams"][0]
-    img = np.frombuffer(fr, np.uint8).reshape(probe["height"], probe["width"], 3)
-    h, w = img.shape[:2]
-    corner = img[int(h * 0.72):int(h * 0.95), int(w * 0.03):int(w * 0.2)]
-    assert corner.std() > 25          # the test pattern bubble (colour bars), not flat background
+    w, h = probe["width"], probe["height"]
+    corner = gfx.crop(gfx.frame_from(bytearray(fr), w, h), int(w * 0.03), int(h * 0.72),
+                      int(w * 0.2) - int(w * 0.03), int(h * 0.95) - int(h * 0.72))
+    values = b"".join(gfx.plane(corner, ch) for ch in "rgb")
+    assert statistics.pstdev(values) > 25          # the test pattern bubble (colour bars), not flat background
 
 
 def test_bubble_shapes_position_and_camera_only_ranges():
@@ -356,10 +380,11 @@ def test_bubble_shapes_position_and_camera_only_ranges():
     assert g[5] == 1 and (g[2], g[3]) == (OW, OH)                  # camera only: full frame
     mid = comp.cam_geometry(3.8)
     assert 0 < mid[5] < 1 and w < mid[2] < OW                       # eased transition, no jump
-    cam = np.zeros((480, 854, 3), np.uint8)
-    cam[:, :, 1] = 200
-    out = comp.compose_at(5.0, np.zeros((400, 640, 3), np.uint8), cam)
-    assert out[OH // 2, OW // 2, 1] > 150 and out[5, 5, 1] > 150
+    from dolly import gfx
+    cam = gfx.new(854, 480)
+    gfx.fill_rect(cam, 0, 0, 854, 480, gfx.rgb((0, 200, 0)))
+    out = comp.compose_at(5.0, gfx.new(640, 400), cam)
+    assert gfx.pixel(out, OW // 2, OH // 2)[1] > 150 and gfx.pixel(out, 5, 5)[1] > 150
     st2 = projmod.deep_merge(st, {"webcam": {"shape": "circle", "pos": None, "corner": "top-right", "full": []}})
     c2 = Compositor(tl, st2, [], ZoomConfig(), 0, 10)
     x0, y0, w, h, r, u = c2.cam_geometry(1.0)

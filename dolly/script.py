@@ -56,7 +56,9 @@ class Recorder:
         cmd = [sys.executable, "-m", "dolly.cli", "record", "--mode", mode, "--countdown", "0",
                "--audio", "none", "--camera", "off"]
         if pick:
-            cmd += ["--pick", pick]          # merge note: becomes --window / --region (work/agent)
+            # Named storyboard windows must keep their identity across workspaces;
+            # a geometry-only pick can match an unrelated tiled window elsewhere.
+            cmd += ["--window", pick] if mode == "window" and pick.startswith("address:") else ["--pick", pick]
         r = subprocess.run(cmd, env=self._env(), capture_output=True, text=True, timeout=90)
         last = (r.stdout.strip().splitlines() or [""])[-1]
         if r.returncode != 0 or not self.active() or not Path(last).is_dir():
@@ -374,7 +376,7 @@ class Runner:
             self.desk.focus(addr)
             (x, y), (w, h) = win["at"], win["size"]
         self.area = (x, y, w, h)
-        return kind, f"{x},{y} {w}x{h}"
+        return kind, f"address:{addr}" if kind == "window" else f"{x},{y} {w}x{h}"
 
     def after_take(self, res: dict, export: bool, progress):
         """Title, captions from `say`, exports. `res["outputs"]` = [{"aspect"|"preset", "file"}]."""
@@ -460,10 +462,14 @@ def check_report() -> dict:
     """What `dolly run --check` and `dolly doctor` say about this machine."""
     from .inject import capabilities
     c = capabilities()
-    ok = not c["problems"]
+    problems = list(c["problems"])
+    from . import deps
+    lacking = deps.python_missing()
+    if lacking:                   # the zoom, the captions and the export of a storyboard are all drawn
+        problems.append(f"a scripted demo needs {deps.how(lacking)}")
     notes = [n for n in (c["click_note"], c["quiet_note"]) if n]
-    return {"ok": ok, "keys": c["keys"], "pointer": c["pointer"], "click": c["click"], "quiet": c["quiet"],
-            "problems": c["problems"], "notes": notes}
+    return {"ok": not problems, "keys": c["keys"], "pointer": c["pointer"], "click": c["click"], "quiet": c["quiet"],
+            "problems": problems, "notes": notes}
 
 
 def cmd_run(a) -> int:
@@ -503,6 +509,11 @@ def cmd_run(a) -> int:
             text += "\n" + ("This machine can run it." if rep["ok"] else
                             "This machine cannot run it: " + "; ".join(chk["problems"] or chk["notes"][:1]))
         return emit(rep, text, 0 if rep["ok"] else 1)
+    from . import deps
+    lacking = deps.python_missing()
+    if lacking:
+        why = f"a scripted demo needs {deps.how(lacking)}: its captions and its export are drawn"
+        return emit({"ok": False, "error": {"where": "setup", "why": why}}, f"dolly run: {why}", 1)
     from .inject import Desktop, Feed
     feed = Feed()
     say = (lambda m: None) if a.json else (lambda m: print(m, file=sys.stderr, flush=True))

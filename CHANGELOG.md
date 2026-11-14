@@ -1,5 +1,86 @@
 # Changelog
 
+## 0.7.4 (2026-11-14)
+
+Dolly now runs entirely on what a stock Omarchy ships, and installs nothing. Checked with
+the test suite, the benchmark recordings and by hand on the desktop of an Omarchy 4.5.0
+virtual machine (an update from 0.7.3, and a fresh install without NumPy and Pillow); not
+yet on real hardware.
+
+Until 0.7.3 the editor, the automatic zoom and the styled export needed `python-numpy` and
+`python-pillow`, which a fresh Omarchy does not have, and Dolly offered to install them.
+
+No extra packages
+- Drawing is done with cairo (`python-cairo`), text with Pango (`python-gobject`), and
+  reading, scaling and writing video with ffmpeg; the planning maths is plain Python.
+  NumPy, Pillow and OpenCV are not used anywhere, tests included.
+- Recording, the zoom plan, the editor and the styled export work right after
+  `omarchy plugin add`.
+
+Dolly installs nothing
+- Dolly never runs a package manager, pip, sudo or pkexec, and never opens a terminal that
+  asks for a password. `dolly deps --install`, the Install buttons on cards and in the
+  panel, and the installing step of `bin/dolly-setup` are gone.
+- Where something is missing, Dolly names the package and says that Omarchy's package
+  installer adds it (Omarchy menu > Install > Package). `dolly deps` lists what is
+  missing; `bin/dolly-setup` reports the same.
+- On a machine without `python-cairo`, Dolly still records, makes the zoom plan and gives
+  the plain export (the take cut to its range, private areas covered, the sound mixed;
+  `--json` says `"engine": "plain"`). The editor and the styled export say that
+  `python-cairo` is missing. Without Pango, text is drawn in cairo's own simple font.
+- In a virtual machine a recording still needs `wf-recorder`, as before.
+- `dolly doctor` shows rows for cairo and Pango instead of NumPy and Pillow, and no longer
+  looks for a left-over `python-opencv`.
+- A transcriber for captions is still yours to add; `docs/captions.md` says how.
+- If Set up on 0.7.3 or earlier made a private Python environment
+  (`~/.local/share/dolly/venv`, for NumPy and Pillow), Dolly now passes it over, because
+  the system's cairo cannot be seen from inside it, and runs the system Python.
+  `dolly doctor` names the folder; delete it, or see `docs/captions.md` if a transcriber
+  lives in it.
+- The first export or idle detection of a recording made with an older version works out
+  its speed-up analysis once more: that cache was a NumPy file and is now JSON.
+
+Picture and speed, against 0.7.3 on the benchmark recordings
+- Stills: lowest mean SSIM 0.991 over 12 sets, lowest single still 0.981. The card edge
+  now sits where the layout puts it (0.7.3 was up to a pixel inside), and the chapter and
+  speed badges have smooth corners.
+- The `fast` quality takes 0.55 to 0.66 of the CPU time 0.7.3 took; `high` 0.95 to 1.16.
+  `high` and `best` enlarge with a sharp filter (Catmull-Rom); `draft` and `fast` are a
+  little softer than 0.7.3 on small text while zoomed in.
+- Memory: the whole export of a 28 second take peaks within -5 to +6 % of 0.7.3 (eight
+  timed exports, 1629 MB against 1632 on average; most of it is ffmpeg). In a 10 minute
+  export the Python processes are smaller than on 0.7.3: 143 to 160 MB for the process
+  that starts it and 97 to 152 MB a worker, against 228 to 235 MB each.
+- Export workers are handed the finished camera path instead of working it out again
+  each, which takes about 50 MB off every worker of a 10 minute export.
+
+Fixes found on a real Omarchy 4.0.4 desktop (on a build based on 0.7.3), checked again in
+this release on Omarchy 4.5.0 in a virtual machine
+- The bar button and the panel work on Omarchy 4.0.4, whose shell has no IPC registry,
+  translation catalog or lazy panels. From 4.5 on the shell's own are used.
+- Window mode follows the window you picked. Two windows of the same size on different
+  workspaces were confused, and a storyboard's named window could be swapped for another.
+- Going to another workspace during a window take no longer counts as the window leaving
+  the monitor.
+- A terminal started with `--app-id` is still recognised as a terminal (typing zoom,
+  I-beam cursor).
+- An empty or reversed trim gives one clear line instead of an ffmpeg error.
+- The editor preview no longer shows black video on some GPU drivers: the editor window
+  uses its own browser profile with hardware video decoding off.
+  `DOLLY_EDITOR_ACCELERATED_VIDEO=1` turns it back on.
+- Dolly runs with `/usr/bin/python3` by itself when the first `python3` on PATH comes from
+  mise or pyenv and cannot see the system's `python-cairo`. `dolly --print-python` shows
+  which Python was picked.
+
+Name and launcher
+- Dolly Recorder is in the application launcher after Set up (search "dolly" or "screen
+  recorder"). Opening it shows the panel and never starts a take; Library and Settings
+  are its actions. `dolly launch` does the same from a terminal.
+- The Omarchy menu entry is named Dolly Recorder (it was Demo), and Stop Dolly while a
+  take is running. The panel title and the bar tooltip say Dolly Recorder as well.
+- After the update Dolly rewrites its own menu entry and adds the launcher entry by
+  itself, once.
+
 ## 0.7.3 (2026-11-14)
 
 More security fixes, from a marketplace review of 0.7.2 and another pass of our own. If you

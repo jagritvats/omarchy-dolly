@@ -26,12 +26,9 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 
-import numpy as np
-from PIL import Image, ImageDraw, ImageFont
-
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
-from dolly import imgops  # noqa: E402
+from dolly import gfx  # noqa: E402
 MONO = str(HERE / "fonts" / "jetbrains-mono-latin-400-normal.woff2")
 MONO_B = str(HERE / "fonts" / "jetbrains-mono-latin-700-normal.woff2")
 
@@ -57,62 +54,57 @@ def ease_out_quint(u):
     return 1 - (1 - u) ** 5
 
 
+@lru_cache(maxsize=256)
+def rgb(bgr):
+    """The colours above are BGR, as the frames once were; drawing takes RGB in 0..1."""
+    return gfx.rgb((bgr[2], bgr[1], bgr[0]))
+
+
 @lru_cache(maxsize=16)
 def font(path, px):
-    return ImageFont.truetype(path, int(px))
+    return gfx.font(path, int(px), bold=path == MONO_B)
 
 
 @lru_cache(maxsize=4096)
 def text_img(text: str, px: int, color: tuple, bold: bool = False):
-    """Rendered text as (premultiplied float BGR, alpha) arrays."""
+    """Rendered text as a sprite (premultiplied, transparent around the letters)."""
     f = font(MONO_B if bold else MONO, px)
-    w = max(1, int(math.ceil(f.getlength(text))) + 2)
+    w = max(1, int(math.ceil(gfx.text_width(text, f))) + 2)
     h = int(px * 1.35)
-    im = Image.new("L", (w, h), 0)
-    ImageDraw.Draw(im).text((1, int(px * 0.12)), text, font=f, fill=255)
-    a = np.asarray(im, np.float32)[..., None] / 255.0
-    col = np.array(color, np.float32)[None, None, :]
-    return col * a, a
+    s = gfx.new(w, h, alpha=True)
+    gfx.draw_text(s, text, 1, int(px * 0.12), f, rgb(color))
+    return s
 
 
 def blit_text(img, x, y, text, px, color, bold=False, clip=None):
     if not text:
         return
-    prem, a = text_img(text, int(px), tuple(color), bold)
-    h, w = a.shape[:2]
-    x, y = int(round(x)), int(round(y))
-    H, W = img.shape[:2]
-    cx0, cy0, cx1, cy1 = clip if clip else (0, 0, W, H)
-    x0, y0, x1, y1 = max(x, cx0, 0), max(y, cy0, 0), min(x + w, cx1, W), min(y + h, cy1, H)
-    if x1 <= x0 or y1 <= y0:
-        return
-    roi = img[y0:y1, x0:x1].astype(np.float32)
-    pa = a[y0 - y:y1 - y, x0 - x:x1 - x]
-    pp = prem[y0 - y:y1 - y, x0 - x:x1 - x]
-    img[y0:y1, x0:x1] = (pp + roi * (1 - pa)).astype(np.uint8)
+    sprite = text_img(text, int(px), tuple(color), bold)
+    c = gfx.context(img)
+    if clip:
+        c.rectangle(clip[0], clip[1], clip[2] - clip[0], clip[3] - clip[1])
+        c.clip()
+    gfx.place(c, sprite, 1, 1, int(round(x)), int(round(y)))
 
 
 def arc(img, cx, cy, r, start, sweep, color, width):
-    """A circular arc drawn into the frame: `sweep` degrees clockwise from `start` (0 = 3 o'clock)."""
-    H, W = img.shape[:2]
-    pad = int(r + width + 2)
-    x0, y0, x1, y1 = max(0, int(cx) - pad), max(0, int(cy) - pad), min(W, int(cx) + pad), min(H, int(cy) + pad)
-    if x1 <= x0 or y1 <= y0:
-        return
-    tile = Image.fromarray(np.ascontiguousarray(img[y0:y1, x0:x1]))
-    ImageDraw.Draw(tile).arc([cx - r - x0, cy - r - y0, cx + r - x0, cy + r - y0], start, start + sweep,
-                             fill=tuple(int(c) for c in color), width=int(width))
-    img[y0:y1, x0:x1] = np.asarray(tile)
+    """A circular arc drawn into the frame: `sweep` degrees clockwise from `start` (0 = 3 o'clock),
+    `width` pixels inside the circle of radius `r` (as Pillow drew it)."""
+    c = gfx.context(img)
+    c.set_source_rgb(*rgb(tuple(color)))
+    c.set_line_width(width)
+    c.arc(cx + 0.5, cy + 0.5, max(0.5, r - width / 2), math.radians(start), math.radians(start + sweep))
+    c.stroke()
 
 
-def fill(img, r, color, clip=None):
-    H, W = img.shape[:2]
+def fill(img, r, color, clip=None, alpha=1.0):
+    W, H = img.get_width(), img.get_height()
     x0, y0, x1, y1 = [int(round(v)) for v in r]
     if clip:
         x0, y0, x1, y1 = max(x0, clip[0]), max(y0, clip[1]), min(x1, clip[2]), min(y1, clip[3])
     x0, y0, x1, y1 = max(0, x0), max(0, y0), min(W, x1), min(H, y1)
     if x1 > x0 and y1 > y0:
-        img[y0:y1, x0:x1] = color
+        gfx.fill_rect(img, x0, y0, x1 - x0, y1 - y0, rgb(tuple(color)), alpha)
 
 
 # ------------------------------------------------------------------ content
@@ -318,11 +310,10 @@ class Scene:
     def _wallpaper(self):
         p = HERE / "wall.jpg"
         if p.exists():
-            img = np.ascontiguousarray(np.asarray(Image.open(p).convert("RGB"))[..., ::-1])      # BGR, like the frames
-        else:
-            img = np.zeros((self.H, self.W, 3), np.uint8)
-            img[:] = (60, 40, 30)
-        return imgops.resize(img, (self.W, self.H))
+            return gfx.resize(gfx.load(p), self.W, self.H)         # stretched, as before
+        img = gfx.new(self.W, self.H)
+        fill(img, (0, 0, self.W, self.H), (60, 40, 30))
+        return img
 
     def L(self, v):
         return v * self.s
@@ -343,7 +334,7 @@ class Scene:
         return int(t)
 
     def render(self, t):
-        img = self.wall.copy()
+        img = gfx.copy(self.wall)
         tr = self.transition(t)
         if tr is not None:
             a, b, u = tr
@@ -376,8 +367,7 @@ class Scene:
                 u = ease_out_quint((t - a) / 0.3)
             elif b <= t < b + 0.2:
                 u = 1 - (t - b) / 0.2
-        dim = (img.astype(np.float32) * (1 - 0.35 * u)).astype(np.uint8)
-        img[:] = dim
+        fill(img, (0, 0, self.W, self.H), (0, 0, 0), alpha=0.35 * u)     # dimmed by 35 %
         focus = self.focus_at(t)
         for w in self.wins:
             if w.ws == "special" and (w.visible(t) or not on):
@@ -408,7 +398,7 @@ class Scene:
         if a <= 0.01:
             return
         X0, Y0, X1, Y1 = self.R((x + dx, y + dy, ww, hh))
-        layer = img if a >= 0.999 else img.copy()
+        layer = img if a >= 0.999 else gfx.copy(img)
         b = max(1, round(BORDER * self.s))
         fill(layer, (X0, Y0, X1, Y1), ACTIVE if focused else INACTIVE)
         inner = (X0 + b, Y0 + b, X1 - b, Y1 - b)
@@ -419,13 +409,13 @@ class Scene:
         elif isinstance(w.content, App):
             self._draw_app(layer, t, w, inner, clip)
         if layer is not img:
-            img[...] = imgops.mix(img, layer, a)
+            gfx.place(img, layer, 1, 1, 0, 0, alpha=a)                  # cross-fade
 
     # terminal metrics (video px)
     def term_metrics(self):
         px = int(round(13 * self.s))
         lh = int(round(17 * self.s))
-        cw = font(MONO, px).getlength("M")
+        cw = gfx.text_width("M", font(MONO, px))
         pad = 8 * self.s
         return px, lh, cw, pad
 
@@ -495,9 +485,7 @@ class Scene:
             u = ease_out_quint((t - d["t0"]) / 0.2)
             rx, ry, rw, rh = d["rect"]
             D = (X0 + rx * s, Y0 + ry * s, X0 + (rx + rw) * s, Y0 + (ry + rh) * s)
-            sh = img.copy()
-            fill(sh, (X0, Y0, X1, Y1), (0, 0, 0), clip)
-            img[...] = imgops.mix(img, sh, 0.35 * u)
+            fill(img, (X0, Y0, X1, Y1), (0, 0, 0), clip, alpha=0.35 * u)   # the window dims behind it
             fill(img, D, (0x44, 0x30, 0x2c), clip)
             fill(img, (D[0], D[1], D[2], D[1] + 3 * s), ACTIVE, clip)
             blit_text(img, D[0] + 18 * s, D[1] + 16 * s, d["title"], int(15 * s), FG, bold=True, clip=clip)

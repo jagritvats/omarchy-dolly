@@ -26,7 +26,9 @@ ap.add_argument("out")
 ap.add_argument("--aspect")
 ap.add_argument("--n", type=int, default=40)
 ap.add_argument("--at", default="", help="extra source times, comma separated (e.g. just after a click)")
+ap.add_argument("--quality", help="draw as an export of this quality does (default: as a still, which is `best`)")
 a = ap.parse_args()
+how = {"quality": a.quality} if a.quality else {}        # a checkout from before 0.7.4 has no such choice
 proj = projmod.Project(a.take)
 data = proj.load()
 tl = Timeline.load(proj.events)
@@ -37,7 +39,7 @@ times = [t0 + (t1 - t0) * (i + 0.5) / a.n for i in range(a.n)]
 times += [float(x) for x in a.at.split(",") if x.strip()]
 w0, c0 = time.perf_counter(), time.process_time()
 for i, t in enumerate(times):
-    render_still(a.take, t, out / f"still_{i + 1:03d}.png", aspect=a.aspect)
+    render_still(a.take, t, out / f"still_{i + 1:03d}.png", aspect=a.aspect, **how)
 (out / "times.json").write_text(json.dumps(times))
 print(json.dumps({"root": str(ROOT), "stills": len(times), "wall_s": round(time.perf_counter() - w0, 1),
                   "cpu_s_this_process": round(time.process_time() - c0, 1),

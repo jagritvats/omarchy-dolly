@@ -1,27 +1,29 @@
-"""What Dolly still needs on this machine, and installing it the way Omarchy does.
+"""What Dolly still needs on this machine. Dolly installs nothing itself.
 
-Omarchy plugins have no install hooks, and `omarchy plugin add` only clones and
-enables. A fresh Omarchy lacks python-numpy and python-pillow, and in a VM
-gpu-screen-recorder cannot capture ("unknown gpu vendor"), so wf-recorder is
-needed. `missing()` names the Arch packages; `install()` opens a floating terminal
-running `omarchy-pkg-add` (Omarchy's own helper: installs only what is missing,
-asks for the sudo password in that terminal), like omarchy-agent-local does.
+A stock Omarchy has everything Dolly uses: ffmpeg, gpu-screen-recorder, Python's cairo
+module (python-cairo) and Pango through python-gobject. Two things can still be missing:
+- python-cairo, on a machine where it was removed: Dolly then records and gives the plain
+  export (dolly/plain.py); the editor and the styled export say that it is missing;
+- a screen recorder that works: in a VM gpu-screen-recorder cannot capture ("unknown gpu
+  vendor"), so wf-recorder is needed.
+`missing()` names the Arch packages and why. Dolly says so in plain words and leaves the
+installing to the user, with Omarchy's package installer (`HOW`).
 
 No third-party imports here: this module must work exactly when they are missing.
 """
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
-import shlex
 import shutil
 import subprocess
 import time
 from pathlib import Path
 from . import fsutil
 
-PY_PACKAGES = (("numpy", "python-numpy"), ("PIL", "python-pillow"))
+DRAW_PACKAGE = "python-cairo"
+# where Omarchy's own menu offers its package installer (omarchy-menu.jsonc: Install > Package)
+HOW = "Omarchy menu > Install > Package"
 # gpu-screen-recorder messages that mean "this GPU cannot capture at all" (any encoder)
 GSR_FATAL = ("unknown gpu vendor", "failed to load opengl", "failed to get egl display",
              "no gpu found", "failed to find a gpu")
@@ -79,49 +81,82 @@ def gsr_unusable() -> str | None:
     return reason
 
 
+PY_WHY = "the editor and the styled export (zoom, background, cursor, captions)"
+
+
+def python_missing() -> list[str]:
+    """[DRAW_PACKAGE] when Python's cairo module cannot be imported, else []. Recording,
+    stopping, the zoom plan and the plain export (dolly/plain.py) work without it; the
+    editor and the styled export (everything that draws) do not."""
+    from . import gfx
+    return [] if gfx.available() else [DRAW_PACKAGE]
+
+
+def text_layout_missing() -> bool:
+    """True when Pango cannot be used (no python-gobject or pango): text is then drawn with
+    cairo's own simple font, and nothing else changes."""
+    from . import gfx
+    return gfx.text_engine() == "cairo"
+
+
+def how(pkgs) -> str:
+    """'wf-recorder (install it with Omarchy menu > Install > Package)'."""
+    pkgs = list(pkgs)
+    return f"{', '.join(pkgs)} (install {'it' if len(pkgs) == 1 else 'them'} with {HOW})"
+
+
 def missing(capture: bool = True) -> dict:
-    """{"packages": [...], "why": {pkg: reason}} - Arch package names Dolly still needs."""
-    pkgs, why = [], {}
-    for mod, pkg in PY_PACKAGES:
-        if importlib.util.find_spec(mod) is None:
-            pkgs.append(pkg)
-            why[pkg] = "editor, export and sync markers"
+    """{"packages": [...], "why": {pkg: reason}, "blocking": [...]} - Arch package names
+    Dolly still needs. "blocking" are the ones a recording cannot start without (a screen
+    recorder that works here, ffmpeg); python-cairo only holds back what draws."""
+    pkgs, why, blocking = [], {}, []
+    for pkg in python_missing():
+        pkgs.append(pkg)
+        why[pkg] = PY_WHY
     if not shutil.which("ffmpeg"):
         pkgs.append("ffmpeg")
-        why["ffmpeg"] = "export"
+        blocking.append("ffmpeg")
+        why["ffmpeg"] = "recording and export"
     if capture and not shutil.which("wf-recorder"):
         bad = gsr_unusable()
         if bad:
             pkgs.append("wf-recorder")
+            blocking.append("wf-recorder")
             why["wf-recorder"] = ("no screen recorder installed" if bad == "not installed"
                                   else f"gpu-screen-recorder cannot capture here ({bad})")
-    return {"packages": pkgs, "why": why}
+    return {"packages": pkgs, "why": why, "blocking": blocking}
 
 
-def install_command(pkgs: list[str]) -> str:
-    q = " ".join(shlex.quote(p) for p in pkgs)
-    if shutil.which("omarchy-pkg-add"):
-        return f"omarchy-pkg-add {q}"
-    return f"sudo pacman -S --needed {q}"
+def passed_over_environment() -> Path | None:
+    """The private Python environment bin/dolly does not use, or None. Set up made one up
+    to 0.7.3 for NumPy and Pillow, without the system's packages: no cairo inside, so the
+    launcher runs the system Python instead (the same rule as in bin/dolly)."""
+    if os.environ.get("DOLLY_VENV"):
+        return None
+    venv = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") / "dolly" / "venv"
+    if not os.access(venv / "bin" / "python", os.X_OK):
+        return None
+    try:
+        cfg = (venv / "pyvenv.cfg").read_text(errors="replace")
+    except OSError:
+        cfg = ""
+    sees_system = any(ln.split("=", 1)[0].strip().lower() == "include-system-site-packages"
+                      and ln.split("=", 1)[-1].strip().lower() == "true" for ln in cfg.splitlines())
+    return None if sees_system else venv
 
 
-def install(pkgs: list[str] | None = None, then: str | None = None) -> dict:
-    """Open a floating terminal that installs `pkgs` (default: what is missing) and then
-    runs `dolly doctor`. Returns {"packages", "command", "launched"}; with nothing to do,
-    launched is False and command empty."""
-    pkgs = list(pkgs) if pkgs is not None else missing()["packages"]
-    if not pkgs:
-        return {"packages": [], "command": "", "launched": False}
-    dolly = str(Path(__file__).resolve().parent.parent / "bin" / "dolly")
-    after = then or f"{shlex.quote(dolly)} doctor"
-    cmd = f"{install_command(pkgs)} && {after}"
-    term = shutil.which("omarchy-launch-floating-terminal-with-presentation")
-    launched = False
-    if term:
+def ask_for_python(what: str) -> list[str]:
+    """`what` (the editor, a styled export) was asked for and python-cairo is missing: a
+    card that says so and where it can be installed. Returns what is missing ([] when
+    nothing is, and then nothing is shown)."""
+    lacking = python_missing()
+    if lacking:
         try:
-            subprocess.Popen([term, cmd], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL, start_new_session=True)
-            launched = True
-        except OSError:
-            pass
-    return {"packages": pkgs, "command": cmd, "launched": launched}
+            from .capture import notify
+            from .i18n import t
+            notify(t("notify.needsPython", what), t("notify.needsPythonBody", ", ".join(lacking)),
+                   urgency="normal", timeout=0)
+        except Exception:
+            from . import log
+            log.swallowed("needs-python card")
+    return lacking

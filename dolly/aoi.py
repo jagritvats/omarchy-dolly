@@ -27,13 +27,16 @@ freshest change, e.g. the caret) and the transition intervals.
 from __future__ import annotations
 
 import math
+import statistics
+import struct
 import subprocess
+from bisect import bisect_left, bisect_right
+from collections import Counter
 from dataclasses import dataclass, field
+from itertools import compress
 from pathlib import Path
 
-import numpy as np
-
-from . import imgops
+from . import grid, num
 from .events import Timeline
 
 TERMINAL_CLASSES = {"alacritty", "foot", "footclient", "kitty", "ghostty", "com.mitchellh.ghostty",
@@ -70,109 +73,143 @@ class AOIConfig:
 @dataclass
 class Activity:
     """Per-sample blobs from frame differences."""
-    t: np.ndarray                                # sample times (s)
-    frac: np.ndarray                             # changed fraction of the whole frame
+    t: list                                      # sample times (s)
+    frac: list                                   # changed fraction of the whole frame
     blobs: list = field(default_factory=list)    # per sample: [(x0, y0, x1, y1, area_frac), ...] video px
     w: int = 0
     h: int = 0
     reactions: list = field(default_factory=list)  # [(t_click, rect | None)]: solid region a click changed
 
 
-def _color_frame(raw: Path, t: float, pw: int, ph: int):
-    from .render import ffmpeg_bin
+def _single(x: float) -> float:
+    """`x` rounded to single precision (see _dimmed)."""
+    return struct.unpack("f", struct.pack("f", x))[0]
+
+
+def _dimmed(now: bytes, before: bytes, changed: bytes, need: int, share: float, rnd=float):
+    """A modal backdrop or a fade dims (or brightens) everything by one factor: that is not
+    activity, the dialog on top of it is. When more than `need` of the changed pixels were
+    brighter than grey 20 and more than `share` of those moved by one common factor, the
+    mask of the pixels that moved by about that factor; otherwise None.
+
+    The factors are sorted into 46 bins and one that lies on the edge of a bin has to fall
+    where it always fell, so `rnd` rounds as the NumPy code this replaces did: double
+    precision between two samples, single precision for a click."""
+    both = grid.pairs(now, before)
+    seen = Counter(compress(both, changed))         # of the changed pixels: how many went from which grey to which
+    edges = [rnd(v) for v in num.linspace(0.2, 2.5, 47)]
+    hist, factor, total = [0] * 46, {}, 0
+    for code, n in seen.items():
+        was = code >> 8
+        if was <= 20:
+            continue
+        total += n
+        f = factor[code] = rnd(((code & 255) + 1.0) / (was + 1.0))
+        if edges[0] <= f <= edges[-1]:
+            hist[min(45, bisect_right(edges, f) - 1)] += n
+    if total <= need:
+        return None
+    k = hist.index(max(hist))
+    mode = rnd(edges[k] + edges[k + 1]) / 2
+    if not (hist[k] > share * total and abs(rnd(mode - 1.0)) > rnd(0.12)):
+        return None
+    drop = bytearray(65536)
+    for code, f in factor.items():
+        if abs(rnd(f - mode)) < rnd(0.07):
+            drop[code] = grid.SET
+    return grid.look_up(drop, both)
+
+
+def _color_changed(raw: Path, ta: float, tb: float, pw: int, ph: int, level: float):
+    """Mask of the proxy pixels whose red, green or blue differs by more than `level` between
+    the frames at ta and tb; None when ffmpeg did not give it (luminance alone still finds
+    most dialogs). One ffmpeg call: it seeks to ta, decodes on to tb and compares the two."""
+    from .ff import ffmpeg_bin
+    ta, tb = round(max(0.0, ta), 3), round(tb, 3)
+    over = f"gt(val,{level})*255"
+    vf = (f"select='eq(n,0)+gte(t,{tb - ta - 0.0005:.4f})',scale={pw}:{ph}:flags=area,format=rgb24,format=gbrp,"
+          f"tblend=all_mode=difference,lut=r='{over}':g='{over}':b='{over}'")
     try:
-        out = subprocess.run([ffmpeg_bin(), "-v", "error", "-ss", f"{max(0.0, t):.3f}", "-i", str(raw), "-frames:v",
-                              "1", "-vf", f"scale={pw}:{ph}:flags=area", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+        out = subprocess.run([ffmpeg_bin(), "-v", "error", "-filter_threads", "1", "-ss", f"{ta:.3f}", "-i", str(raw),
+                              "-vf", vf, "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gbrp", "-"],
                              timeout=30, capture_output=True).stdout
     except (OSError, subprocess.TimeoutExpired):
-        return None              # luminance alone still finds most dialogs
-    if len(out) < pw * ph * 3:
         return None
-    return np.frombuffer(out[: pw * ph * 3], np.uint8).reshape(ph, pw, 3)
+    size = pw * ph
+    if len(out) < 3 * size:
+        return None
+    return grid.either(grid.either(out[:size], out[size:2 * size]), out[2 * size:3 * size])
 
 
-def click_reactions(frames: np.ndarray, fps: float, W: int, H: int, clicks, thresh: int = 14, raw=None) -> list:
+def _reaction(fa: bytes, fb: bytes, pw: int, ph: int, thresh: int, raw, ta: float, tb: float):
+    """The solid region (x0, y0, x1, y1 in proxy pixels) that differs between the grey
+    pictures `fa` and `fb`, taken at ta and tb, or None."""
+    changed = grid.differ(fb, fa, thresh)
+    if raw is not None:      # colour catches dark-on-dark dialogs that luminance misses
+        tint = _color_changed(raw, ta, tb, pw, ph, thresh * 0.6)
+        if tint is not None:
+            changed = grid.either(changed, tint)
+    # a modal backdrop dims everything by one factor: drop pixels that just got darker by
+    # the dominant ratio, so only the dialog itself remains
+    dim = _dimmed(fb, fa, changed, 50, 0.25, _single)
+    if dim is not None:
+        changed = grid.without(changed, dim)
+    stats = grid.regions(grid.close_gaps(changed, pw, ph, 2), pw, ph)
+    best = None
+    for x, y, w, h, area in stats:
+        frac = area / (pw * ph)
+        if frac < 0.006 or frac > 0.3 or area / max(w * h, 1) < 0.5:
+            continue
+        if best is None or area > best[4]:
+            best = (x, y, w, h, area)
+    if best is None:
+        return None
+    # parts of the same panel (title bar, field rows) split by unchanged pixels
+    bx0, by0, bx1, by1 = best[0], best[1], best[0] + best[2], best[1] + best[3]
+    grown = True
+    while grown:
+        grown = False
+        for x, y, w, h, area in stats:
+            if area < 4:
+                continue
+            if bx0 <= x and x + w <= bx1 and by0 <= y and y + h <= by1:
+                continue
+            ovx = min(x + w, bx1) - max(x, bx0)
+            ovy = min(y + h, by1) - max(y, by0)
+            gapx = max(bx0 - (x + w), x - bx1, 0)
+            gapy = max(by0 - (y + h), y - by1, 0)
+            # rows above/below within the panel's columns, or columns beside it on its rows
+            stacked = ovx > 0.5 * w and x >= bx0 - 3 and x + w <= bx1 + 3 and gapy <= max(6, 0.6 * (by1 - by0))
+            beside = ovy > 0.5 * h and y >= by0 - 3 and y + h <= by1 + 3 and gapx <= 6 and area / max(w * h, 1) > 0.4
+            if stacked or beside:
+                bx0, by0, bx1, by1 = min(bx0, x), min(by0, y), max(bx1, x + w), max(by1, y + h)
+                grown = True
+    return bx0, by0, bx1, by1
+
+
+def click_reactions(frames: dict, n: int, pw: int, ph: int, fps: float, W: int, H: int, clicks,
+                    thresh: int = 14, raw=None) -> list:
     """For each click: the solid region that differs between just before and 0.6 s after
     (a dialog, menu or dropdown it opened, or closed). Dimming overlays barely pass the
-    threshold; text-only changes are not solid, so both are ignored."""
-    n = len(frames)
+    threshold; text-only changes are not solid, so both are ignored.
+
+    `frames`: grey proxy pictures (pw * ph bytes) by sample number; those of
+    _click_frame_indices and the last of the `n` samples are all it reads."""
     if n == 0:
         return []
-    ph, pw = frames.shape[1:]
     sx, sy = W / pw, H / ph
-    out = []
+    out, done = [], {}
     for t in clicks:
-        a = int(np.clip(round((t - 0.1) * fps), 0, n - 1))
-        b = int(np.clip(round((t + 0.6) * fps), 0, n - 1))
+        a = min(max(round((t - 0.1) * fps), 0), n - 1)
+        b = min(max(round((t + 0.6) * fps), 0), n - 1)
         if b <= a:
             out.append((t, None))
             continue
-        fa, fb = frames[a].astype(np.float32), frames[b].astype(np.float32)
-        changed = np.abs(fb - fa) > thresh
-        if raw is not None:      # colour catches dark-on-dark dialogs that luminance misses
-            ca, cb = _color_frame(raw, a / fps, pw, ph), _color_frame(raw, b / fps, pw, ph)
-            if ca is not None and cb is not None:
-                changed |= (np.abs(cb.astype(np.int16) - ca.astype(np.int16)).max(axis=2) > thresh * 0.6)
-        # a modal backdrop dims everything by one factor: drop pixels that just got darker by
-        # the dominant ratio, so only the dialog itself remains
-        ratio = (fb + 1) / (fa + 1)
-        rc = ratio[changed & (fa > 20)]
-        if rc.size > 50:
-            hist, edges = np.histogram(rc, bins=46, range=(0.2, 2.5))
-            k = int(np.argmax(hist))
-            mode = (edges[k] + edges[k + 1]) / 2
-            if hist[k] > 0.25 * rc.size and abs(mode - 1.0) > 0.12:
-                changed &= ~((np.abs(ratio - mode) < 0.07) & (fa > 20))
-        m = changed.astype(np.uint8)
-        m = imgops.close_gaps(m, 5)
-        nl, _, stats = imgops.regions(m)
-        best = None
-        for j in range(1, nl):
-            x, y, w, h, area = stats[j]
-            frac = area / (pw * ph)
-            if frac < 0.006 or frac > 0.3 or area / max(w * h, 1) < 0.5:
-                continue
-            if best is None or area > best[4]:
-                best = (x, y, w, h, area)
-        if best is not None:
-            # parts of the same panel (title bar, field rows) split by unchanged pixels
-            bx0, by0, bx1, by1 = best[0], best[1], best[0] + best[2], best[1] + best[3]
-            grown = True
-            while grown:
-                grown = False
-                for j in range(1, nl):
-                    x, y, w, h, area = stats[j]
-                    if area < 4:
-                        continue
-                    if bx0 <= x and x + w <= bx1 and by0 <= y and y + h <= by1:
-                        continue
-                    ovx = min(x + w, bx1) - max(x, bx0)
-                    ovy = min(y + h, by1) - max(y, by0)
-                    gapx = max(bx0 - (x + w), x - bx1, 0)
-                    gapy = max(by0 - (y + h), y - by1, 0)
-                    # rows above/below within the panel's columns, or columns beside it on its rows
-                    stacked = ovx > 0.5 * w and x >= bx0 - 3 and x + w <= bx1 + 3 and gapy <= max(6, 0.6 * (by1 - by0))
-                    beside = ovy > 0.5 * h and y >= by0 - 3 and y + h <= by1 + 3 and gapx <= 6 and area / max(w * h, 1) > 0.4
-                    if stacked or beside:
-                        bx0, by0, bx1, by1 = min(bx0, x), min(by0, y), max(bx1, x + w), max(by1, y + h)
-                        grown = True
-            best = (bx0, by0, bx1 - bx0, by1 - by0, best[4])
-        out.append((t, None if best is None else (best[0] * sx, best[1] * sy, (best[0] + best[2]) * sx,
-                                                   (best[1] + best[3]) * sy)))
+        if (a, b) not in done:              # clicks in quick succession look at the same two pictures
+            done[a, b] = _reaction(frames[a], frames[b], pw, ph, thresh, raw, a / fps, b / fps)
+        r = done[a, b]
+        out.append((t, None if r is None else (r[0] * sx, r[1] * sy, r[2] * sx, r[3] * sy)))
     return out
-
-
-class _SparseFrames:
-    """Just the proxy frames click_reactions reads, by index (it only needs len/shape/[])."""
-
-    def __init__(self, keep: dict, n: int, ph: int, pw: int):
-        self._keep, self._n, self.shape = keep, n, (n, ph, pw)
-
-    def __len__(self):
-        return self._n
-
-    def __getitem__(self, i):
-        return self._keep[int(i)]
 
 
 def _click_frame_indices(clicks, fps: float) -> set:
@@ -183,96 +220,78 @@ def _click_frame_indices(clicks, fps: float) -> set:
     return want
 
 
-def _stream_proxy(raw: Path, fps: float, pw: int, ph: int):
-    """Gray proxy frames of the recording, one at a time (never the whole file in memory).
-    No timeout: it covers the whole recording; ffmpeg ends at the end of the file."""
-    from .render import ffmpeg_bin
-    cmd = [ffmpeg_bin(), "-v", "error", "-i", str(raw), "-vf", f"fps={fps},scale={pw}:{ph}:flags=area",
-           "-f", "rawvideo", "-pix_fmt", "gray", "-"]
+def _stream_proxy(raw: Path, fps: float, pw: int, ph: int, thresh: int):
+    """The recording as small grey pictures, `fps` of them a second, one at a time (never
+    the whole file in memory), each with the mask of what changed since the one before:
+    (picture, changed), pw * ph bytes each.
+
+    ffmpeg does the per-pixel work and writes three planes a sample: the picture, the
+    picture with the one before taken off it and cut at `thresh`, and a spare copy (the
+    grey picture is spread over three planes because tblend can treat planes, not parts
+    of one, differently). tpad repeats the first picture, so that it has one before it
+    too and comes out with nothing changed."""
+    from .ff import ffmpeg_bin
+    vf = (f"fps={fps},scale={pw}:{ph}:flags=area,format=gray,tpad=start=1:start_mode=clone,format=gbrp,"
+          f"tblend=c1_mode=difference,lut=b='gt(val,{int(thresh)})*255'")
+    # one filter thread: on pictures this small, handing out rows costs more than it saves
+    cmd = [ffmpeg_bin(), "-v", "error", "-filter_threads", "1", "-i", str(raw), "-vf", vf,
+           "-f", "rawvideo", "-pix_fmt", "gbrp", "-"]
     size = pw * ph
-    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    n = 0
-    try:
-        while True:
-            buf = p.stdout.read(size)
-            if len(buf) < size:
-                break
-            n += 1
-            yield np.frombuffer(buf, np.uint8).reshape(ph, pw)
-    finally:
-        p.stdout.close()
-        err = p.stderr.read()
-        p.stderr.close()
-        rc = p.wait()
-    if rc != 0 and n == 0:
-        raise subprocess.CalledProcessError(rc, cmd, stderr=err)
+    for buf in grid.read(cmd, 3 * size):
+        yield buf[:size], buf[size:2 * size]
+
+
+def _with_changes(frames, size: int, thresh: int):
+    """What _stream_proxy gives, for pictures that are already here."""
+    prev = None
+    for f in frames:
+        f = bytes(f)
+        if len(f) != size:
+            raise ValueError(f"a proxy picture is {size} bytes, not {len(f)}")
+        yield f, bytes(size) if prev is None else grid.differ(f, prev, thresh)
+        prev = f
 
 
 def compute_activity(raw: Path, W: int, H: int, cfg: AOIConfig | None = None, frames=None, clicks=()) -> Activity:
-    """`frames` (iterable of gray proxy images) overrides decoding (tests)."""
+    """`frames` (grey proxy pictures as bytes, cfg.proxy_w wide, one a sample) stands in for
+    the decoding (tests)."""
     cfg = cfg or AOIConfig()
     pw = cfg.proxy_w
     ph = max(2, int(round(pw * H / W / 2)) * 2)
     decoded = frames is None
-    if frames is None:
-        source = _stream_proxy(raw, cfg.fps, pw, ph)
+    if decoded:
+        source = _stream_proxy(raw, cfg.fps, pw, ph, cfg.diff_thresh)
     else:
-        frames = np.stack(list(frames))
-        ph, pw = frames.shape[1:]
-        source = iter(frames)
+        source = _with_changes(frames, pw * ph, cfg.diff_thresh)
     sx, sy = W / pw, H / ph
-    kern = (1, 5)  # 1 row x 5 columns, horizontal only: glyphs merge into words/lines, lines stay apart
+    area = pw * ph
     want = _click_frame_indices(clicks, cfg.fps)
     keep: dict = {}
     fracs: list = []
     blobs: list = []
     prev = None
-    last_raw = None
-    n = 0
-    for i, f in enumerate(source):
-        n = i + 1
-        last_raw = f
+    for i, (cur, ch) in enumerate(source):
         if i in want:
-            keep[i] = f.copy()
-        cur = f.astype(np.int16)
-        if prev is None:
-            fracs.append(0.0)
-            blobs.append([])
-            prev = cur
-            continue
-        ch = np.abs(cur - prev) > cfg.diff_thresh
-        if ch.mean() > 0.05:
-            # a modal backdrop / fade dims (or brightens) everything by one factor: that is not
-            # activity, the dialog on top of it is
-            ratio = (cur + 1.0) / (prev + 1.0)
-            rc = ratio[ch & (prev > 20)]
-            if rc.size > 200:
-                hist, edges = np.histogram(rc, bins=46, range=(0.2, 2.5))
-                k = int(np.argmax(hist))
-                mode = (edges[k] + edges[k + 1]) / 2
-                if hist[k] > 0.4 * rc.size and abs(mode - 1.0) > 0.12:
-                    ch &= ~((np.abs(ratio - mode) < 0.07) & (prev > 20))
-        m = ch.astype(np.uint8)
-        prev = cur
-        fr = float(m.mean())
-        fracs.append(fr)
+            keep[i] = cur
+        changed = ch.count(grid.SET)
+        if changed / area > 0.05:
+            dim = _dimmed(cur, prev, ch, 200, 0.4)
+            if dim is not None:
+                ch = grid.without(ch, dim)
+                changed = ch.count(grid.SET)
+        fracs.append(changed / area)
         row = []
-        if fr:
-            md = imgops.dilate(m, kern, iterations=2)
-            nl, _, stats = imgops.regions(md)
-            for j in range(1, nl):
-                x, y, w, h, a = stats[j]
-                real = int(m[y:y + h, x:x + w].sum())
-                row.append((x * sx, y * sy, (x + w) * sx, (y + h) * sy, real / (pw * ph)))
+        if changed:
+            # 4 pixels to each side, horizontal only: glyphs merge into words/lines, lines stay apart
+            for x, y, w, h, _ in grid.regions(ch, pw, ph, reach=4):
+                row.append((x * sx, y * sy, (x + w) * sx, (y + h) * sy, grid.count(ch, pw, x, y, w, h) / area))
         blobs.append(row)
-    # click_reactions clips indices past the end to the last frame
-    if n and last_raw is not None:
-        keep[n - 1] = last_raw.copy()
-        for i in list(want):
-            if i >= n:
-                keep.setdefault(n - 1, last_raw.copy())
-    act = Activity(np.arange(n) / cfg.fps, np.array(fracs, dtype=float), blobs, W, H)
-    act.reactions = click_reactions(_SparseFrames(keep, n, ph, pw), cfg.fps, W, H, clicks, cfg.diff_thresh,
+        prev = cur
+    n = len(fracs)
+    if n:
+        keep[n - 1] = prev            # click_reactions clips indices past the end to the last picture
+    act = Activity([i / cfg.fps for i in range(n)], fracs, blobs, W, H)
+    act.reactions = click_reactions(keep, n, pw, ph, cfg.fps, W, H, clicks, cfg.diff_thresh,
                                     raw if decoded else None)
     return act
 
@@ -296,8 +315,8 @@ def activity_from_doc(doc) -> Activity:
         if len(out) != n:
             raise ValueError("wrong length")
         return out
-    t = np.array([float(v) for v in doc["t"]], dtype=float)
-    frac = np.array([float(v) for v in doc["frac"]], dtype=float)
+    t = [float(v) for v in doc["t"]]
+    frac = [float(v) for v in doc["frac"]]
     blobs = [[nums(b, 5) for b in row] for row in doc["blobs"]]
     if not (len(t) == len(frac) == len(blobs)):
         raise ValueError("lengths differ")
@@ -357,12 +376,16 @@ def estimate_line_h(tl: Timeline, act: Activity, cfg: AOIConfig) -> float:
             if lo <= d <= hi and abs(a[0] - b[0]) <= 2 * tol and (a[3] - a[1]) < d and (b[3] - b[1]) < d:
                 pitches.append(d)
     if len(pitches) >= 6:
-        h, edges = np.histogram(pitches, bins=np.arange(lo, hi + 2 * scale, 2 * scale))
+        edges = num.arange(lo, hi + 2 * scale, 2 * scale)
+        h = [0] * (len(edges) - 1)
+        for p in pitches:                   # bins [edge, next edge); the last one takes its upper edge too
+            if edges[0] <= p <= edges[-1]:
+                h[min(len(h) - 1, bisect_right(edges, p) - 1)] += 1
         # the lowest strong peak: rows that skipped a line in a sample show up at 2x the pitch
-        strong = np.nonzero(h >= 0.25 * h.max())[0]
-        k = int(strong[0]) if len(strong) else int(np.argmax(h))
+        strong = 0.25 * max(h)
+        k = next(i for i, v in enumerate(h) if v >= strong)
         near = [p for p in pitches if edges[max(0, k - 1)] <= p <= edges[min(len(edges) - 1, k + 2)]]
-        return float(np.median(near))
+        return float(statistics.median(near))
     keys = sorted(k["t"] for k in tl.keys)
     hs = []
     j = 0
@@ -379,7 +402,7 @@ def estimate_line_h(tl: Timeline, act: Activity, cfg: AOIConfig) -> float:
     if len(hs) < 5:
         return 18.0 * scale
     # the caret (a full cell in most terminals) dominates what changes while typing
-    return float(np.clip(np.percentile(hs, 75), 10 * scale, 48 * scale))
+    return float(num.clip(num.percentile(hs, 75), 10 * scale, 48 * scale))
 
 
 # ------------------------------------------------------------------ helpers
@@ -471,7 +494,7 @@ def _clip(r, W, H):
 
 @dataclass
 class AOITrack:
-    t: np.ndarray
+    t: list               # sample times (s), rising
     rect: list            # per sample (x0, y0, x1, y1) or None
     kind: list            # per sample str | None
     focus: list           # per sample (x, y) or None: freshest change (caret / newest output)
@@ -479,10 +502,14 @@ class AOITrack:
     line_h: float         # text line height estimate (video px)
     idle: list | None = None   # per sample: only the followed window is named (window mode, nothing happening)
 
+    def _sample(self, t: float) -> int:
+        """The last sample at or before t (the first one for an earlier t)."""
+        return min(max(bisect_right(self.t, t) - 1, 0), len(self.t) - 1)
+
     def at(self, t: float):
         if len(self.t) == 0:
             return None, None, None
-        i = int(np.clip(np.searchsorted(self.t, t, side="right") - 1, 0, len(self.t) - 1))
+        i = self._sample(t)
         return self.rect[i], self.kind[i], self.focus[i]
 
     def idle_at(self, t: float) -> bool:
@@ -490,8 +517,7 @@ class AOITrack:
         That is where the camera rests, not something a shot has to show."""
         if not self.idle or len(self.t) == 0:
             return False
-        i = int(np.clip(np.searchsorted(self.t, t, side="right") - 1, 0, len(self.t) - 1))
-        return bool(self.idle[i])
+        return bool(self.idle[self._sample(t)])
 
     def in_transition(self, t: float, pad: float = 0.0) -> bool:
         return any(a - pad <= t <= b + pad for a, b in self.transitions)
@@ -508,7 +534,7 @@ def build_aoi(tl: Timeline, act: Activity | None, cfg: AOIConfig | None = None) 
     scale = float(tl.capture.get("scale", 1.0) or 1.0)
     line_h = estimate_line_h(tl, act, cfg) if act is not None else 18.0 * scale
     if act is None:
-        return AOITrack(np.zeros(0), [], [], [], [], line_h)
+        return AOITrack([], [], [], [], [], line_h)
     terms = {c.lower() for c in (tl.capture.get("terminals") or [])} | TERMINAL_CLASSES
     # wf-recorder bakes the pointer into the video; Omarchy hides it on every key press
     baked = bool(tl.capture.get("cursor_baked"))
@@ -538,8 +564,8 @@ def build_aoi(tl: Timeline, act: Activity | None, cfg: AOIConfig | None = None) 
             merged.append((a, b))
     trans = merged
     # typing = plain keys (Shift allowed); Super+Return, Ctrl+S... are commands, not typing
-    keys = np.array(sorted(k["t"] for k in tl.keys if not (set(k.get("mods", [])) & {"ctrl", "alt", "super"})))
-    clicks = np.array(sorted(c["t"] for c in tl.clicks))
+    keys = sorted(k["t"] for k in tl.keys if not (set(k.get("mods", [])) & {"ctrl", "alt", "super"}))
+    clicks = sorted(c["t"] for c in tl.clicks)
     # pointer activity instants: real movement (> 6 px) or clicks
     pmoves = []
     lx = ly = None
@@ -549,15 +575,11 @@ def build_aoi(tl: Timeline, act: Activity | None, cfg: AOIConfig | None = None) 
         elif abs(x - lx) + abs(y - ly) > 10 * scale:   # a resting hand jitters a few px
             pmoves.append(t)
             lx, ly = x, y
-    pmoves = np.array(pmoves)
-    layout_t = np.array(sorted(c["t"] for c in tl.layout_changes if c["reason"] in ("close", "move", "resize",
-                                                                                    "fullscreen")))
-    open_t = np.array(sorted(c["t"] for c in tl.layout_changes if c["reason"] == "open"))
+    layout_t = sorted(c["t"] for c in tl.layout_changes if c["reason"] in ("close", "move", "resize", "fullscreen"))
+    open_t = sorted(c["t"] for c in tl.layout_changes if c["reason"] == "open")
 
     def recent(arr, t, span):
-        if len(arr) == 0:
-            return False
-        i = np.searchsorted(arr, t, side="right")
+        i = bisect_right(arr, t)
         return i > 0 and t - arr[i - 1] <= span
 
     target = tl.capture.get("target") if tl.capture.get("mode") == "window" else None
@@ -615,7 +637,7 @@ def build_aoi(tl: Timeline, act: Activity | None, cfg: AOIConfig | None = None) 
         toasts = [l["rect"] for l in _open_layers(tl, t) if not l["keyboard"]] + _toast_rects(tl, t)
         # gather recent blobs (lookback depends on mode) that pass the filters
         span = cfg.typing_lookback if typing else 0.6
-        lo = np.searchsorted(act.t, t - span)
+        lo = bisect_left(act.t, t - span)
         kept, freshest, fresh_h, big = [], None, 0.0, False
         now_area, now_rows, now_y0, now_y1 = 0.0, 0, float("inf"), float("-inf")
         for j in range(lo, i + 1):
@@ -725,14 +747,14 @@ def build_aoi(tl: Timeline, act: Activity | None, cfg: AOIConfig | None = None) 
                     rects[-1], kinds[-1] = pr, "output"
     # scrolling must be sustained: one or two big redraws (a modal popping in over a
     # dimmed page, a page switch) are not a scrolling log
-    bf = np.array(bigflags + [False] * (len(kinds) - len(bigflags)), bool)
+    bf = bigflags + [False] * (len(kinds) - len(bigflags))
     i = 0
     while i < len(kinds):
         if kinds[i] == "scroll":
             j = i
             while j < len(kinds) and kinds[j] == "scroll":
                 j += 1
-            if bf[i:j].sum() < 3:
+            if sum(bf[i:j]) < 3:
                 for k in range(i, j):
                     rects[k], kinds[k], foci[k] = None, None, None
             i = j

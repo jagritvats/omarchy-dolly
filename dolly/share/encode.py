@@ -15,7 +15,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from ..render import ffmpeg_bin, probe
+from ..ff import ffmpeg_bin, probe
 
 MB = 1_000_000
 # bits per pixel per frame below which screen recordings start to look smeary

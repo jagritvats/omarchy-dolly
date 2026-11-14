@@ -20,10 +20,10 @@ the canvas.
 from __future__ import annotations
 
 import math
+from bisect import bisect_left, bisect_right
 from dataclasses import asdict, dataclass, field
 
-import numpy as np
-
+from . import num
 from .events import Timeline
 
 
@@ -208,7 +208,7 @@ def last_caret(aoi, t: float, horizon: float = 8.0, ahead: float = 2.0):
     of a key appear a moment after it), else the most recent within `horizon` s, else None."""
     if aoi is None or not len(aoi.t):
         return None
-    i0 = int(np.searchsorted(aoi.t, t, side="right")) - 1
+    i0 = bisect_right(aoi.t, t) - 1
     i = max(i0, 0)
     while i < len(aoi.t) and float(aoi.t[i]) - t <= ahead:
         if aoi.kind[i] == "typing" and aoi.focus[i] is not None:
@@ -468,9 +468,9 @@ def build_segments(tl: Timeline, cfg: ZoomConfig | None = None, aoi=None) -> lis
                 z = max(z, min(legible_zoom(tl, cfg, aoi.line_h), cfg.zoom_max))
             if z < 1.08:
                 continue      # the subject is (nearly) the whole screen: stay wide
-            z = float(np.clip(z, 1.0, cfg.zoom_max))
+            z = float(num.clip(z, 1.0, cfg.zoom_max))
         else:
-            z = float(np.clip(z, cfg.zoom_min, cfg.zoom_max))
+            z = float(num.clip(z, cfg.zoom_min, cfg.zoom_max))
         first, last = cl[0], cl[-1]
         hold = cfg.hold_typing if last.kind in ("type", "scroll", "layout", "output") else cfg.hold_click
         start = max(take_start(tl), first.t - cfg.lead)
@@ -516,7 +516,7 @@ def build_segments(tl: Timeline, cfg: ZoomConfig | None = None, aoi=None) -> lis
                     continue
                 prev.end = max(prev.end, s.end)
                 zmin = 1.0 if aoi is not None else cfg.zoom_min
-                prev.zoom = float(np.clip(min(prev.zoom, s.zoom, z), zmin, cfg.zoom_max))
+                prev.zoom = float(num.clip(min(prev.zoom, s.zoom, z), zmin, cfg.zoom_max))
                 prev.reason = _merge_reason(prev.reason, s.reason)
                 continue
             prev.end = s.start
@@ -789,9 +789,9 @@ def glides(tl: Timeline, a: Segment, b: Segment, fa, fb, cfg: ZoomConfig, aoi=No
         px, py = tl.cursor_at(ta)
         was_here = tl.cursor_inside(ta)
         away = 0.0
-        for t in np.arange(a.end, b.start, 0.1):
-            x, y = tl.cursor_at(float(t))
-            if not tl.cursor_inside(float(t)):
+        for t in num.arange(a.end, b.start, 0.1):
+            x, y = tl.cursor_at(t)
+            if not tl.cursor_inside(t):
                 if was_here:
                     away += 0.1                 # left for another monitor: nothing to show here,
                     if away > 1.5:              # unless it stays away
@@ -806,7 +806,7 @@ def glides(tl: Timeline, a: Segment, b: Segment, fa, fb, cfg: ZoomConfig, aoi=No
 
 # ---------------------------------------------------------------- camera path
 def smoothstep(x):
-    x = np.clip(x, 0.0, 1.0)
+    x = num.clip(x, 0.0, 1.0)
     return x * x * (3 - 2 * x)
 
 
@@ -817,7 +817,7 @@ def _softclamp(x, lo, hi, w):
     w = max(min(w, (hi - lo) / 4), 1e-6)
 
     def sp(v):
-        return w * np.logaddexp(0.0, v / w)
+        return w * num.logaddexp(0.0, v / w)
     return lo + sp(x - lo) - sp(x - hi)
 
 
@@ -850,8 +850,8 @@ class CameraGeometry:
             cx = _softclamp(cx, x0 + vw / 2, x1 - vw / 2, 0.05 * vw)
             cy = _softclamp(cy, y0 + vh / 2, y1 - vh / 2, 0.05 * vh)
         else:
-            cx = float(np.clip(cx, x0 + vw / 2, max(x0 + vw / 2, x1 - vw / 2)))
-            cy = float(np.clip(cy, y0 + vh / 2, max(y0 + vh / 2, y1 - vh / 2)))
+            cx = float(num.clip(cx, x0 + vw / 2, max(x0 + vw / 2, x1 - vw / 2)))
+            cy = float(num.clip(cy, y0 + vh / 2, max(y0 + vh / 2, y1 - vh / 2)))
             if x1 - x0 < vw:
                 cx = (x0 + x1) / 2
             if y1 - y0 < vh:
@@ -869,47 +869,46 @@ def _spring_step(x, v, target, omega, dt):
     return x_new, v_new
 
 
-def _gauss_smooth(arr: np.ndarray, sigma_samples: float) -> np.ndarray:
-    if sigma_samples < 0.5 or len(arr) < 3:
-        return arr
-    r = int(math.ceil(3 * sigma_samples))
-    k = np.exp(-0.5 * (np.arange(-r, r + 1) / sigma_samples) ** 2)
-    k /= k.sum()
-    pad = np.pad(arr, r, mode="edge")
-    return np.convolve(pad, k, mode="valid")
-
-
-def smooth_cursor(tl: Timeline, times: np.ndarray, sigma: float, pin_sigma: float = 0.09):
-    """Zero-phase smoothed cursor at `times`, pinned exactly onto click points."""
+def smooth_cursor(tl: Timeline, times, sigma: float, pin_sigma: float = 0.09):
+    """Zero-phase smoothed cursor at `times` (two lists, x and y), pinned exactly onto click points."""
     sim_dt = 1 / 240
-    t0, t1 = float(times.min()) - 1.0, float(times.max()) + 1.0
-    grid = np.arange(t0, t1 + sim_dt, sim_dt)
-    raw = np.array([tl.cursor_at(t) for t in grid])
-    sx = _gauss_smooth(raw[:, 0], sigma / sim_dt)
-    sy = _gauss_smooth(raw[:, 1], sigma / sim_dt)
+    t0, t1 = float(min(times)) - 1.0, float(max(times)) + 1.0
+    grid = num.arange(t0, t1 + sim_dt, sim_dt)
+    raw = [tl.cursor_at(t) for t in grid]
+    sx = num.gauss_smooth([p[0] for p in raw], sigma / sim_dt)
+    sy = num.gauss_smooth([p[1] for p in raw], sigma / sim_dt)
+    # a click pulls the track onto itself with a Gaussian weight around its time. More than
+    # 39 pin_sigma away that weight is exactly 0.0 (exp underflows), so only the samples
+    # within that reach are visited: the same numbers as weighting the whole track for
+    # every click, at a fraction of the work
+    reach = int(39 * pin_sigma / sim_dt) + 2
     for c in tl.clicks:
-        if not (t0 <= c["t"] <= t1):
+        ct = c["t"]
+        if not (t0 <= ct <= t1):
             continue
-        i = int(round((c["t"] - t0) / sim_dt))
+        i = int(round((ct - t0) / sim_dt))
         i = min(max(i, 0), len(grid) - 1)
         dx, dy = c["x"] - sx[i], c["y"] - sy[i]
-        w = np.exp(-0.5 * ((grid - c["t"]) / pin_sigma) ** 2)
-        sx += dx * w
-        sy += dy * w
-    return np.interp(times, grid, sx), np.interp(times, grid, sy)
+        for j in range(max(0, i - reach), min(len(grid), i + reach + 1)):
+            d = (grid[j] - ct) / pin_sigma
+            w = math.exp(-0.5 * (d * d))
+            sx[j] += dx * w
+            sy[j] += dy * w
+    return num.interp(times, grid, sx), num.interp(times, grid, sy)
 
 
 @dataclass
 class CameraPath:
+    """Per output frame, as plain lists of floats."""
     fps: float
     t0: float
-    z: np.ndarray
-    cx: np.ndarray
-    cy: np.ndarray
-    cur_x: np.ndarray = field(default=None)
-    cur_y: np.ndarray = field(default=None)
+    z: list
+    cx: list
+    cy: list
+    cur_x: list = field(default=None)
+    cur_y: list = field(default=None)
     cuts: list = field(default_factory=list)   # output frame indices where the camera cuts
-    glide: np.ndarray = field(default=None)    # 0..1 per frame: gliding between joined shots
+    glide: list = field(default=None)          # 0..1 per frame: gliding between joined shots
 
     def to_json(self, decimals=2) -> dict:
         r = lambda a: [round(float(v), decimals) for v in a]
@@ -923,34 +922,34 @@ class CameraPath:
 @dataclass
 class SubjectTrack:
     """Per simulation step: the rect that must stay in view (or NaN) and an anchor point."""
-    x0: np.ndarray
-    y0: np.ndarray
-    x1: np.ndarray
-    y1: np.ndarray
-    ax: np.ndarray      # anchor (caret / newest output); NaN = none
-    ay: np.ndarray
+    x0: list
+    y0: list
+    x1: list
+    y1: list
+    ax: list            # anchor (caret / newest output); NaN = none
+    ay: list
     kind: list
-    idle: np.ndarray | None = None   # the step only names the followed window (window mode at rest)
+    idle: list | None = None   # the step only names the followed window (window mode at rest)
 
 
 READ_HOLD = 0.5     # s a finished subject (command output, typed line) stays framed for reading
 
 
-def subject_track(tl: Timeline, aoi, sim_t: np.ndarray, curx, cury, cfg: ZoomConfig,
+def subject_track(tl: Timeline, aoi, sim_t, curx, cury, cfg: ZoomConfig,
                   lookahead: float | None = None) -> SubjectTrack:
     n = len(sim_t)
-    x0, y0, x1, y1 = (np.full(n, np.nan) for _ in range(4))
-    ax, ay = np.full(n, np.nan), np.full(n, np.nan)
+    x0, y0, x1, y1 = ([math.nan] * n for _ in range(4))
+    ax, ay = [math.nan] * n, [math.nan] * n
     kinds: list = [None] * n
-    idle = np.zeros(n, dtype=bool)
+    idle = [False] * n
     idle_at = getattr(aoi, "idle_at", None)
     s = float(tl.capture.get("scale", 1.0) or 1.0)
     bx, by = 40 * s, 34 * s
     # anticipation: pointer travel that leads to typing / output elsewhere (the mouse
     # parked out of the way) frames the upcoming subject, not the travelling pointer
     acts = [a for a in _cached_actions(tl, cfg, aoi) if a.rect is not None]
-    act_t = np.array([a.t for a in acts]) if acts else np.zeros(0)
-    click_t = np.array(sorted(c["t"] for c in tl.clicks)) if tl.clicks else np.zeros(0)
+    act_t = [a.t for a in acts]
+    click_t = sorted(c["t"] for c in tl.clicks)
     la = cfg.aoi_lookahead if lookahead is None else lookahead
     last_real = -9.0
     held, held_t = None, -9.0          # last real subject, kept READ_HOLD s for reading
@@ -962,8 +961,8 @@ def subject_track(tl: Timeline, aoi, sim_t: np.ndarray, curx, cury, cfg: ZoomCon
         rest = bool(idle_at(t + la)) if idle_at else False
         if kind in ("typing", "scroll", "layout", "output") and not rest:
             last_real = t
-        if (kind in ("pointer", None) or rest) and len(act_t):
-            j = int(np.searchsorted(act_t, t))
+        if (kind in ("pointer", None) or rest) and act_t:
+            j = bisect_left(act_t, t)
             # leave the last result on screen ~1 s (reading time) before moving to what's next
             # (a moving pointer is already on its way: follow where it is going)
             horizon = 2.0 if (kind == "pointer" or t - last_real > cfg.hold_typing * 0.8) else 0.6
@@ -971,7 +970,7 @@ def subject_track(tl: Timeline, aoi, sim_t: np.ndarray, curx, cury, cfg: ZoomCon
                 r, kind, foc = acts[j].rect, "pointer", None      # frame the click target before it happens
                 rest = False
             elif j < len(acts) and acts[j].t - t < horizon and acts[j].kind in ("type", "scroll", "layout", "output"):
-                kc = int(np.searchsorted(click_t, t))
+                kc = bisect_left(click_t, t)
                 if kc >= len(click_t) or click_t[kc] > acts[j].t:
                     r, kind, foc = acts[j].rect, "typing" if acts[j].kind == "type" else acts[j].kind, None
                     rest = False
@@ -989,7 +988,7 @@ def subject_track(tl: Timeline, aoi, sim_t: np.ndarray, curx, cury, cfg: ZoomCon
                 real_since = t + la
         was_real = fresh_real
         if r is not None and kind in ("typing", "scroll", "layout", "pointer", "output"):
-            x0[i], y0[i], x1[i], y1[i] = r
+            x0[i], y0[i], x1[i], y1[i] = float(r[0]), float(r[1]), float(r[2]), float(r[3])
             kinds[i] = kind
             idle[i] = rest
             if kind == "pointer":
@@ -997,7 +996,7 @@ def subject_track(tl: Timeline, aoi, sim_t: np.ndarray, curx, cury, cfg: ZoomCon
                 x0[i], y0[i] = min(x0[i], cx - bx), min(y0[i], cy - by)
                 x1[i], y1[i] = max(x1[i], cx + bx), max(y1[i], cy + by)
             if foc is not None and kind == "typing":
-                ax[i], ay[i] = foc
+                ax[i], ay[i] = float(foc[0]), float(foc[1])
         elif tl.cursor_inside(t) and not aoi.in_transition(t):
             # the pointer, while it was active a moment ago. One that has not moved since a
             # dialog or output appeared elsewhere stays where the click left it: it is not
@@ -1025,12 +1024,9 @@ def _dead_zone_rect(c: float, lo: float, hi: float, half: float, anchor: float =
     return c
 
 
-def _running_max(a: np.ndarray, w: int) -> np.ndarray:
-    if w <= 1:
-        return a
-    from numpy.lib.stride_tricks import sliding_window_view
-    pad = np.pad(a, (w // 2, w - 1 - w // 2), mode="edge")
-    return sliding_window_view(pad, w).max(axis=1)
+def _span(times, t0: float, t1: float) -> range:
+    """The steps of the rising `times` with t0 <= time < t1."""
+    return range(bisect_left(times, t0), bisect_left(times, t1))
 
 
 def camera_path(tl: Timeline, segments: list[Segment], geom: CameraGeometry,
@@ -1068,14 +1064,14 @@ def camera_path(tl: Timeline, segments: list[Segment], geom: CameraGeometry,
         if k is not None and segs[k].start < sim_t0 and bridged[min(k + 1, len(segs) - 1)]:
             sim_t0 = max(0.0, segs[k].start - 0.5, t_start - lead_in - 60.0)
     n_sim = int(math.ceil((t_end - sim_t0) / sim_dt)) + 2
-    sim_t = sim_t0 + np.arange(n_sim) * sim_dt
+    sim_t = [sim_t0 + i * sim_dt for i in range(n_sim)]
     curx, cury = smooth_cursor(tl, sim_t, cursor_sigma)
     subj = subject_track(tl, aoi, sim_t, curx, cury, cfg) if aoi is not None else None
 
     # ---- base framing (z=1 full screen, or a followed window)
-    bz = np.ones(n_sim)
-    bxc = np.full(n_sim, geom.W / 2)
-    byc = np.full(n_sim, geom.H / 2)
+    bz = [1.0] * n_sim
+    bxc = [geom.W / 2] * n_sim
+    byc = [geom.H / 2] * n_sim
     if base is not None:
         padf = 1 + 2 * (geom.px / max(geom.W, 1))
         for i, t in enumerate(sim_t):
@@ -1087,38 +1083,43 @@ def camera_path(tl: Timeline, segments: list[Segment], geom: CameraGeometry,
             bxc[i], byc[i] = (r[0] + r[2]) / 2, (r[1] + r[3]) / 2
 
     # ---- target track (z, cx, cy) per sim step, with dead-zone follow
-    tz = bz.copy()
-    tcx = bxc.copy()
-    tcy = byc.copy()
-    seg_idx = np.full(n_sim, -1)
-    in_gap = np.zeros(n_sim, dtype=bool)
+    tz = list(bz)
+    tcx = list(bxc)
+    tcy = list(byc)
+    seg_idx = [-1] * n_sim
+    in_gap = [False] * n_sim
     # dynamic zoom (AOI): the subject must fit; a segment only ever zooms *out* to make it fit
     zneed = None
     if subj is not None:
-        sw = np.where(np.isnan(subj.x0), 1.0, subj.x1 - subj.x0)
-        sh = np.where(np.isnan(subj.y0), 1.0, subj.y1 - subj.y0)
-        zneed = np.minimum(cfg.aoi_fill * geom.CW / np.maximum(sw, 1), cfg.aoi_fill * geom.CH / np.maximum(sh, 1))
+        fit_w, fit_h = cfg.aoi_fill * geom.CW, cfg.aoi_fill * geom.CH
         zleg = legible_zoom(tl, cfg, aoi.line_h)
-        typing = np.array([k == "typing" for k in subj.kind])
-        zneed = np.where(typing, np.maximum(zneed, zleg), zneed)
-        zneed = _running_max(zneed, int(0.3 / sim_dt))         # ignore dips shorter than 0.3 s
+        zneed = []
+        for a0, b0, a1, b1, kind in zip(subj.x0, subj.y0, subj.x1, subj.y1, subj.kind):
+            sw, sh = (1.0, 1.0) if a0 != a0 else (a1 - a0, b1 - b0)       # NaN: no subject at this step
+            zn = min(fit_w / max(sw, 1), fit_h / max(sh, 1))
+            zneed.append(max(zn, zleg) if kind == "typing" else zn)
+        win = int(0.3 / sim_dt)                                 # ignore dips shorter than 0.3 s
+        zneed = num.running_max(zneed, win // 2, win - 1 - win // 2)
+        # the steps whose subject a shot may have to fit. Window mode: the followed window
+        # at rest asks for nothing; it is where the camera returns to (it held every typing
+        # shot at about 1.0x)
+        asks = [k in ("typing", "scroll", "layout", "output", "pointer") for k in subj.kind]
+        if subj.idle is not None:
+            asks = [a and not rest for a, rest in zip(asks, subj.idle)]
 
     # A pause whose subject needs a wider view than the shot (a window being moved or
     # resized, output scrolling past) is not held zoomed: the camera pulls back for it.
     if cfg.glide and zneed is not None:
-        big = np.array([k in ("typing", "scroll", "layout", "output", "pointer") for k in subj.kind])
-        if subj.idle is not None:
-            big &= ~subj.idle                 # the followed window at rest asks for nothing
         for j in range(1, len(segs)):
             if not bridged[j]:
                 continue
-            m = (sim_t >= segs[j - 1].end) & (sim_t < segs[j].start) & big
-            if m.sum() * sim_dt > 0.3 and np.percentile(zneed[m], 10) < 0.8 * min(segs[j - 1].zoom, segs[j].zoom):
+            need = [zneed[i] for i in _span(sim_t, segs[j - 1].end, segs[j].start) if asks[i]]
+            if len(need) * sim_dt > 0.3 and num.percentile(need, 10) < 0.8 * min(segs[j - 1].zoom, segs[j].zoom):
                 bridged[j] = False
     exts = [seg_extent(tl, s, cfg, aoi) for s in segs]
     # A long hop inside a joined run breathes out a little while the pointer travels
     # (never all the way to the whole screen) so both ends stay readable.
-    zscale = np.ones(n_sim)
+    zscale = [1.0] * n_sim
     if cfg.glide:
         for j in range(1, len(segs)):
             if not bridged[j]:
@@ -1130,20 +1131,25 @@ def camera_path(tl: Timeline, segments: list[Segment], geom: CameraGeometry,
                 continue
             # from when the pointer sets off toward b (or just before b) until it has arrived
             p0 = tl.cursor_at(a.end)
-            dep = next((float(t) for t in np.arange(a.end, b.start, 1 / 30)
-                        if math.hypot(*np.subtract(tl.cursor_at(float(t)), p0)) > 0.12 * geom.W / z), b.start - 0.3)
+            dep = b.start - 0.3
+            for t in num.arange(a.end, b.start, 1 / 30):
+                x, y = tl.cursor_at(t)
+                if math.hypot(x - p0[0], y - p0[1]) > 0.12 * geom.W / z:
+                    dep = t
+                    break
             w0, w1 = max(a.end - 0.4, dep - 0.15), b.start + cfg.lead + 0.35
             f = max(0.62, 1.0 / (1.0 + 0.55 * (hop - 0.4)))
-            zscale[(sim_t >= w0) & (sim_t < w1)] = np.minimum(zscale[(sim_t >= w0) & (sim_t < w1)], f)
+            for i in _span(sim_t, w0, w1):
+                zscale[i] = min(zscale[i], f)
     # short gaps (the round-3 bridge) pan early to the next shot, as before; only the longer
     # pauses that glide adds hold the shot we are in
     short = [False] + [segs[j].start - segs[j - 1].end < cfg.bridge_gap and
                        math.hypot(foci[j][0] - foci[j - 1][0], foci[j][1] - foci[j - 1][1])
                        < cfg.jump_dip * geom.W / max(min(segs[j].zoom, segs[j - 1].zoom), 1.0)
                        for j in range(1, len(segs))]
-    starts = np.array([s.start for s in segs]) if segs else np.zeros(0)
+    starts = [s.start for s in segs]
     for i, t in enumerate(sim_t):
-        k = int(np.searchsorted(starts, t, side="right")) - 1
+        k = bisect_right(starts, t) - 1
         if k >= 0 and t < segs[k].end:
             seg_idx[i] = k
         elif k + 1 < len(segs) and bridged[k + 1] and k >= 0:
@@ -1159,32 +1165,32 @@ def camera_path(tl: Timeline, segments: list[Segment], geom: CameraGeometry,
     # (offline, so the future is known) -> no zoom changes inside a segment
     seg_fit = {}
     if zneed is not None:
-        subj_kinds = np.array([k in ("typing", "scroll", "layout", "pointer", "output") for k in subj.kind])
-        if subj.idle is not None:
-            # window mode: the followed window at rest is where the camera returns to, not
-            # something this shot has to fit (it held every typing shot at about 1.0x)
-            subj_kinds &= ~subj.idle
-        for j in range(len(segs)):
-            m = (seg_idx == j) & subj_kinds & ~in_gap     # the pause never widens the shot
+        shown = [[] for _ in segs]                        # per shot: the steps it has to fit
+        for i, j in enumerate(seg_idx):
+            if j >= 0 and asks[i] and not in_gap[i]:      # the pause never widens the shot
+                shown[j].append(i)
+        for j, steps in enumerate(shown):
             # nor does what is still on screen from the shot before, during this one's
             # lead-in or a bridged gap (the window that just opened, the last output)
             own = _seg_actions(tl, segs[j], cfg, aoi)
             if own and segs[j].source == "auto":
-                m &= sim_t >= min(a.t for a in own) - 0.15
-            if m.any():
-                seg_fit[j] = max(1.0, float(np.percentile(zneed[m], 3)))
-                if any(subj.kind[i] == "typing" for i in np.nonzero(m)[0][::24]):
+                t_own = min(a.t for a in own) - 0.15
+                steps = [i for i in steps if sim_t[i] >= t_own]
+            if steps:
+                seg_fit[j] = max(1.0, num.percentile([zneed[i] for i in steps], 3))
+                if any(subj.kind[i] == "typing" for i in steps[::24]):
                     seg_fit[j] = max(seg_fit[j], min(zleg, segs[j].zoom))
 
     la = min(0.45, 2.0 / (cfg.omega_pan * cfg.motion_factor))
-    lax, lay = smooth_cursor(tl, sim_t + la, cursor_sigma) if cfg.glide and any(bridged) else (curx, cury)
+    lax, lay = smooth_cursor(tl, [t + la for t in sim_t], cursor_sigma) if cfg.glide and any(bridged) else (curx, cury)
     follow_c = None
     glide_goal = None
-    glide_on = np.zeros(n_sim)
+    glide_on = [0.0] * n_sim
     glide_hold = -1.0
     prev_j = -2
+    ptr_move = 10 * float(tl.capture.get("scale", 1.0) or 1.0)   # px: less is a resting hand
     for i in range(n_sim):
-        j = int(seg_idx[i])
+        j = seg_idx[i]
         if j < 0:
             prev_j = j
             follow_c = None
@@ -1209,15 +1215,16 @@ def camera_path(tl: Timeline, segments: list[Segment], geom: CameraGeometry,
         if glide_goal is not None:
             mx, my = cfg.glide_speed * vw * sim_dt, cfg.glide_speed * vh * sim_dt
             dx, dy = glide_goal[0] - follow_c[0], glide_goal[1] - follow_c[1]
-            follow_c = [follow_c[0] + float(np.clip(dx, -mx, mx)), follow_c[1] + float(np.clip(dy, -my, my))]
+            follow_c = [follow_c[0] + num.clip(dx, -mx, mx), follow_c[1] + num.clip(dy, -my, my)]
             if abs(dx) <= mx and abs(dy) <= my:
                 glide_goal = None
                 glide_hold = sim_t[i] + 0.6          # let the springs land before calling it settled
         prev_j = j
         gliding = in_gap[i] or glide_goal is not None
-        glide_on[i] = gliding or sim_t[i] < glide_hold
-        if s.follow and cfg.follow and gliding and tl.cursor_inside(float(sim_t[i])) \
-                and float(sim_t[i]) - tl.last_pointer_before(float(sim_t[i]), 10 * float(tl.capture.get("scale", 1.0) or 1.0)) < 1.5:
+        if gliding or sim_t[i] < glide_hold:
+            glide_on[i] = 1.0
+        if s.follow and cfg.follow and gliding and tl.cursor_inside(sim_t[i]) \
+                and sim_t[i] - tl.last_pointer_before(sim_t[i], ptr_move) < 1.5:
             # (a pointer parked out of the way while typing is not a subject)
             # between joined shots, follow where the pointer is about to be: the pan
             # spring trails a moving target by ~2/omega, and offline we know the future
@@ -1246,22 +1253,20 @@ def camera_path(tl: Timeline, segments: list[Segment], geom: CameraGeometry,
     cut_steps: list[int] = []
     if aoi is not None and cfg.cut_transitions:
         for (a, b) in aoi.transitions:
-            m = (sim_t >= a) & (sim_t <= b)
-            tz[m] = bz[m]
-            tcx[m] = bxc[m]
-            tcy[m] = byc[m]
-            k = int(np.searchsorted(sim_t, a))
+            k = bisect_left(sim_t, a)
+            k1 = max(k, bisect_right(sim_t, b))                 # the steps from a to b, both included
+            tz[k:k1], tcx[k:k1], tcy[k:k1] = bz[k:k1], bxc[k:k1], byc[k:k1]
             if 0 < k < n_sim:
                 cut_steps.append(k)
 
     # Follow targets move in small steps; low-pass them so the pan spring sees
     # a smooth target rather than a staircase (piecewise between cuts).
     def piecewise(arr, sigma):
-        out = arr.copy()
+        out = list(arr)
         bounds = [0] + cut_steps + [n_sim]
         for a, b in zip(bounds, bounds[1:]):
             if b - a > 2:
-                out[a:b] = _gauss_smooth(arr[a:b], sigma)
+                out[a:b] = num.gauss_smooth(arr[a:b], sigma)
         return out
     tcx = piecewise(tcx, 0.12 / sim_dt)
     tcy = piecewise(tcy, 0.12 / sim_dt)
@@ -1271,9 +1276,7 @@ def camera_path(tl: Timeline, segments: list[Segment], geom: CameraGeometry,
     lz, vz = math.log(max(tz[0], 1.0)), 0.0
     cx, cy = tcx[0], tcy[0]
     vx = vy = 0.0
-    out_z = np.empty(n_sim)
-    out_x = np.empty(n_sim)
-    out_y = np.empty(n_sim)
+    out_z, out_x, out_y = [], [], []
     cut_set = set(cut_steps)
     for i in range(n_sim):
         tlz = math.log(tz[i])
@@ -1288,33 +1291,36 @@ def camera_path(tl: Timeline, segments: list[Segment], geom: CameraGeometry,
         cx, vx = _spring_step(cx, vx, tcx[i], cfg.omega_pan * mf, sim_dt)
         cy, vy = _spring_step(cy, vy, tcy[i], cfg.omega_pan * mf, sim_dt)
         lz = max(lz, 0.0)
-        out_z[i], out_x[i], out_y[i] = lz, cx, cy
+        out_z.append(lz)
+        out_x.append(cx)
+        out_y.append(cy)
 
-    zz = np.exp(out_z)
+    zz = [math.exp(v) for v in out_z]
     # soft clamp to the allowed bounds for the *current* zoom
-    fx_ = np.empty(n_sim)
-    fy_ = np.empty(n_sim)
-    for i in range(n_sim):
-        fx_[i], fy_[i] = geom.clamp(zz[i], out_x[i], out_y[i], cfg.edge_margin, soft=True)
+    fx_, fy_ = [], []
+    for z, cx, cy in zip(zz, out_x, out_y):
+        cx, cy = geom.clamp(z, cx, cy, cfg.edge_margin, soft=True)
+        fx_.append(cx)
+        fy_.append(cy)
     # final zero-phase polish (never across a cut)
     sig = cfg.final_smooth / sim_dt
-    zz = np.exp(piecewise(np.log(zz), sig))
+    zz = [math.exp(v) for v in piecewise([math.log(z) for z in zz], sig)]
     fx_ = piecewise(fx_, sig)
     fy_ = piecewise(fy_, sig)
 
     n_out = int(round((t_end - t_start) * fps))
-    times = t_start + np.arange(n_out) / fps
+    times = [t_start + i / fps for i in range(n_out)]
     # cuts are applied below: no output frame interpolates between two shots
-    path = CameraPath(fps, t_start, np.interp(times, sim_t, zz), np.interp(times, sim_t, fx_),
-                      np.interp(times, sim_t, fy_))
+    path = CameraPath(fps, t_start, num.interp(times, sim_t, zz), num.interp(times, sim_t, fx_),
+                      num.interp(times, sim_t, fy_))
     for k in cut_steps:
-        tc = sim_t[k]
-        jj = int(np.searchsorted(times, tc))
+        jj = bisect_left(times, sim_t[k])
+        k1 = min(k + 1, n_sim - 1)
         if 0 < jj < n_out:
             path.cuts.append(jj)
-            for arr, src in ((path.z, zz), (path.cx, fx_), (path.cy, fy_)):
-                arr[jj] = src[min(k + 1, n_sim - 1)] if times[jj] < sim_t[min(k + 1, n_sim - 1)] else arr[jj]
-    path.cur_x = np.interp(times, sim_t, curx)
-    path.cur_y = np.interp(times, sim_t, cury)
-    path.glide = np.interp(times, sim_t, _gauss_smooth(glide_on, 0.25 / sim_dt))
+            if times[jj] < sim_t[k1]:
+                path.z[jj], path.cx[jj], path.cy[jj] = zz[k1], fx_[k1], fy_[k1]
+    path.cur_x = num.interp(times, sim_t, curx)
+    path.cur_y = num.interp(times, sim_t, cury)
+    path.glide = num.interp(times, sim_t, num.gauss_smooth(glide_on, 0.25 / sim_dt))
     return path

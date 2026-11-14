@@ -1,5 +1,5 @@
 """Export worker count. No third-party imports: `dolly doctor` uses it when
-NumPy and Pillow are missing."""
+python-cairo is missing."""
 import os
 
 

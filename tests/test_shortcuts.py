@@ -162,12 +162,15 @@ def test_the_capture_menu_has_one_dolly_entry_at_a_time(home):
     dolly = {k: v for k, v in rows.items() if "dolly" in k}
     top = [k for k in dolly if k.count(".") == 2]                     # trigger.capture.<row>
     assert sorted(top) == ["trigger.capture.dolly", "trigger.capture.dolly-stop"]
-    assert not any(k.startswith("trigger.share.") for k in dolly)     # sharing lives inside Demo now
+    assert not any(k.startswith("trigger.share.") for k in dolly)     # sharing lives inside Dolly now
     from dolly.guards import GUARDS
-    assert rows["trigger.capture.dolly"]["when"].endswith(GUARDS["not_recording"])       # idle: "Demo"
+    assert rows["trigger.capture.dolly"]["when"].endswith(GUARDS["not_recording"])       # idle: Dolly
     assert rows["trigger.capture.dolly-stop"]["when"].endswith(GUARDS["recording"])      # recording: Stop, one step
     assert rows["trigger.capture.dolly-stop"]["action"].endswith("bin/dolly stop")
-    assert rows["trigger.capture.dolly"]["label"] == "Demo" and "action" not in rows["trigger.capture.dolly"]
+    assert rows["trigger.capture.dolly"]["label"] == "Dolly Recorder"
+    assert rows["trigger.capture.dolly-stop"]["label"] == "Stop Dolly"
+    assert "action" not in rows["trigger.capture.dolly"]
+    assert {"dolly", "screen recorder", "screencast"} <= set(rows["trigger.capture.dolly"]["aliases"])
     inside = {k.split(".", 3)[3] for k in dolly if k.startswith("trigger.capture.dolly.")}
     assert {"window", "region", "screen", "last", "library", "settings", "share", "share.github",
             "replay-on", "replay-save", "replay-off"} <= inside
@@ -210,13 +213,16 @@ def test_an_update_does_nothing_for_someone_who_never_ran_set_up(home):
 
 
 def test_undo_removes_it_all_and_an_update_does_not_bring_it_back(home):
+    from dolly import desktop_entry
     I.apply()
+    assert desktop_entry.path().is_file()                             # the launcher entry, under this test's home
     res = I.undo()
-    assert set(res["changed"]) == {"menu", "binds", "link"}
+    assert set(res["changed"]) == {"menu", "binds", "link", "desktop"}
     assert binds_text(home) == USER_BINDS and "dolly" not in json.dumps(menu_rows(home))
-    assert not (home / ".local/bin/dolly").is_symlink()
+    assert not (home / ".local/bin/dolly").is_symlink() and not desktop_entry.path().exists()
     (I.stamp_file()).write_text(json.dumps({"version": "0.0.1", "set_up": False}))        # then a new version arrives
     assert I.auto_apply() is None and binds_text(home) == USER_BINDS
+    assert not desktop_entry.path().exists()
 
 
 def test_a_dolly_command_that_is_not_ours_survives_apply_and_undo(home):

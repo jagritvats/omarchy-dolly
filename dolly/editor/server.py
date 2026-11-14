@@ -43,8 +43,6 @@ from __future__ import annotations
 import hmac
 import json
 import mimetypes
-
-import numpy as np
 import os
 import re
 import secrets
@@ -318,7 +316,7 @@ class Editor:
         }
 
     def has_audio(self) -> bool:
-        from ..render import probe
+        from ..ff import probe
         if any((self.proj.dir / t["file"]).exists() for t in (self.timeline().capture.get("audio_tracks") or [])):
             return True
         return any(s.get("codec_type") == "audio" for s in probe(self.proj.raw).get("streams", []))
@@ -340,7 +338,7 @@ class Editor:
         from ..render import Compositor
         comp = Compositor(tl, projmod.deep_merge(data["style"], {"output": {"fps": fps}}), segs, zcfg, 0.0,
                           tl.duration, aspect=aspect or "16:9", aoi=aoi)
-        times = np.arange(int(round(tl.duration * fps))) / fps
+        times = [i / fps for i in range(int(round(tl.duration * fps)))]
         cur_a = [round(comp.cursor_alpha(t), 2) for t in times]
         shapes = {}
         if comp.shapes:
@@ -1000,7 +998,7 @@ def save_style(name: str, style: dict):
 
 def ensure_webcam_preview(pdir: Path) -> Path | None:
     """A browser-friendly proxy of webcam.mkv for the bubble preview."""
-    from ..render import ffmpeg_bin
+    from ..ff import ffmpeg_bin
     cam = next((p for p in (pdir / "webcam.mkv", pdir / "webcam.mp4") if p.exists()), None)
     if not cam:
         return None
@@ -1015,7 +1013,7 @@ def ensure_webcam_preview(pdir: Path) -> Path | None:
 def ensure_preview(pdir: Path):
     """Browsers can't always decode the raw capture (e.g. 4:4:4, huge res,
     VFR). Make a light, seekable, all-keyframe-ish preview proxy once."""
-    from ..render import ffmpeg_bin
+    from ..ff import ffmpeg_bin
     prev = pdir / "preview.mp4"
     raw = projmod.Project(pdir).raw
     if prev.exists() and prev.stat().st_mtime >= raw.stat().st_mtime:
@@ -1120,6 +1118,32 @@ def editor_windows() -> list[dict]:
     return sorted(wins, key=lambda c: c.get("focusHistoryID", 1 << 30))
 
 
+def _editor_browser_mode() -> str:
+    return "accelerated-video" if os.environ.get("DOLLY_EDITOR_ACCELERATED_VIDEO") == "1" else "software-video"
+
+
+def _editor_profile() -> Path:
+    data = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share")
+    if not data.is_absolute():
+        data = Path.home() / ".local/share"
+    return data / "dolly" / ("editor-browser-" + _editor_browser_mode())
+
+
+def _editor_window_matches(window: dict) -> bool:
+    # Chromium --app uses a URL-derived Wayland class even with --class, and may
+    # flatten /proc argv for its process title. Its profile lock identifies the
+    # browser PID without parsing a path/URL out of that title (or logging auth).
+    try:
+        pid = int(window.get("pid", 0))
+        owner = int(os.readlink(_editor_profile() / "SingletonLock").rsplit("-", 1)[1])
+        if pid != owner:
+            return False
+        args = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").split()
+    except (OSError, ValueError, TypeError):
+        return False
+    return (b"--disable-accelerated-video-decode" in args) == (_editor_browser_mode() == "software-video")
+
+
 def serve(pdir: Path | None, port: int = 0, open_browser: bool = True, view: str = "edit",
           section: str | None = None):
     keep_focus = os.environ.get("DOLLY_KEEP_FOCUS") == "1"
@@ -1131,6 +1155,10 @@ def serve(pdir: Path | None, port: int = 0, open_browser: bool = True, view: str
             old = False
             if open_browser:
                 wins = editor_windows() if page_open else []
+                if not os.environ.get("DOLLY_BROWSER"):
+                    # A legacy/shared-profile window cannot acquire our launch flags.
+                    # Leave it alone, but reuse only this mode's dedicated app window.
+                    wins = [w for w in wins if _editor_window_matches(w)]
                 if not wins:
                     try:
                         launch(open_url())         # the server outlived its window: one new window
@@ -1202,7 +1230,15 @@ def launch(url: str):
     (Editor.launch_code), never the one with the token. After a recording
     (DOLLY_KEEP_FOCUS=1) the window must not steal focus: launch it with Hyprland's
     no_initial_focus exec rule, and if the browser still grabbed focus (an already
-    running browser owns the new window, so the rule cannot match), hand focus back."""
+    running browser owns the new window, so the rule cannot match), hand focus back.
+
+    Chromium can decode frames yet draw black video into a canvas on some GPU/driver
+    paths (observed on AMD + NVIDIA Wayland). Disable accelerated *video decoding*
+    only for Dolly; GPU compositing stays available. This is a compatibility default,
+    not hardware detection. DOLLY_EDITOR_ACCELERATED_VIDEO=1 opts out on working
+    platforms. Each mode has its own private profile/process so an existing browser
+    cannot silently ignore the changed flags. Explicit DOLLY_BROWSER wrappers retain
+    control of their own flags/profile."""
     if os.environ.get("DOLLY_NO_BROWSER"):
         return
     import shutil
@@ -1215,13 +1251,20 @@ def launch(url: str):
     cmd = None
     if os.environ.get("DOLLY_BROWSER"):            # e.g. a Chromium wrapper (test harness: Wayland flags)
         cmd = [os.environ["DOLLY_BROWSER"], f"--app={url}"]
-    elif shutil.which("omarchy-launch-webapp"):
-        cmd = ["omarchy-launch-webapp", url]
     else:
-        for b in ("chromium", "google-chrome-stable", "brave", "google-chrome"):
-            if shutil.which(b):
-                cmd = [b, f"--app={url}"]
-                break
+        from ..fsutil import private_dir
+        mode = _editor_browser_mode()
+        profile = private_dir(_editor_profile())
+        flags = [f"--user-data-dir={profile}", "--no-first-run", "--no-default-browser-check"]
+        if mode == "software-video":
+            flags.append("--disable-accelerated-video-decode")
+        if shutil.which("omarchy-launch-webapp"):
+            cmd = ["omarchy-launch-webapp", url, *flags]
+        else:
+            for b in ("chromium", "google-chrome-stable", "brave", "google-chrome"):
+                if shutil.which(b):
+                    cmd = [b, *flags, f"--app={url}"]
+                    break
     if cmd is None:
         webbrowser.open(url)
         return

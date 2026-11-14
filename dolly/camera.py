@@ -132,14 +132,14 @@ def explain(stderr: str, dev: str | None) -> str:
     if "busy" in s:
         return f"The camera {dev or ''} is busy (another app is using it). Close it and try again."
     if "permission" in s:
-        return f"No permission to open {dev or 'the camera'}: add yourself to the video group (sudo usermod -aG video $USER) and log in again."
+        return f"No permission to open {dev or 'the camera'}: your account needs to be in the video group (an administrator adds it), then log in again."
     if "no such file" in s or "no camera" in s:
         return "No camera found."
     return (stderr.strip().splitlines() or ["the camera could not be opened"])[-1][:200]
 
 
 def record_cmd(out: Path, dev: str | None = None) -> tuple[list[str], str]:
-    from .render import ffmpeg_bin
+    from .ff import ffmpeg_bin
     args, clock = input_args(dev)
     vf = ["-vf", "settb=AVTB,setpts=RTCTIME"] if clock == "wall" else []
     cmd = [ffmpeg_bin(), "-v", "error", "-nostdin", "-y", *args, *vf, "-copyts", "-an", "-c:v", "libx264",

@@ -20,7 +20,7 @@ class ClipboardUnavailable(RuntimeError):
 def _wl_copy(data: bytes, mime: str | None):
     exe = shutil.which("wl-copy")
     if not exe:
-        raise ClipboardUnavailable("wl-copy not found (sudo pacman -S wl-clipboard)")
+        raise ClipboardUnavailable("wl-copy not found (package wl-clipboard, which Omarchy ships)")
     cmd = [exe] + (["--type", mime] if mime else [])
     # wl-copy forks to serve the selection; it returns once it owns the clipboard
     subprocess.run(cmd, input=data, check=True, timeout=10,

@@ -14,14 +14,14 @@ interruptions, dual-monitor, window-mode, long-drift.
 from __future__ import annotations
 
 import argparse
+import bisect
 import hashlib
 import json
 import math
+import random
 import subprocess
 import sys
 from pathlib import Path
-
-import numpy as np
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -29,6 +29,7 @@ sys.path.insert(0, str(HERE.parent))
 
 from make_demo import Script  # noqa: E402
 from scene import App, Scene, Terminal, Win, tiles  # noqa: E402
+from dolly import gfx  # noqa: E402
 
 SHELL_HISTORY = [("~/app $ git pull", "fg"), ("Already up to date.", "dim"), ("", "fg"),
                  ("~/app $ bin/dev", "fg"), ("13:58:02 web.1  | Puma starting in single mode...", "dim"),
@@ -173,7 +174,7 @@ class Scenario:
 
     def cursor_at(self, t):
         mt = self._mt
-        i = int(np.searchsorted(mt, t, side="right"))
+        i = bisect.bisect_right(mt, t)
         i = min(max(i - 1, 0), len(mt) - 1)
         return self.s.moves[i][1], self.s.moves[i][2]
 
@@ -181,9 +182,9 @@ class Scenario:
     def write(self, out: Path):
         out.mkdir(parents=True, exist_ok=True)
         sc, fps = self.sc, self.fps
-        self._mt = np.array([m[0] for m in self.s.moves])
+        self._mt = [m[0] for m in self.s.moves]
         n = int(math.floor(self.duration * fps))
-        enc = subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgr24",
+        enc = subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgr0",
                                 "-s", f"{sc.W}x{sc.H}", "-r", str(fps), "-i", "-", "-c:v", "libx264",
                                 "-preset", "veryfast", "-crf", "16", "-pix_fmt", "yuv420p", "-r", str(fps),
                                 str(out / "raw.mp4")], stdin=subprocess.PIPE)
@@ -192,7 +193,7 @@ class Scenario:
         for i in range(n):
             t = i / fps
             img = sc.render(t)
-            enc.stdin.write(img.tobytes())
+            enc.stdin.write(gfx.data(img))
             truth.append(self.truth_at(t))
             if i % 90 == 0:
                 sys.stderr.write(f"\r  {self.name}: frame {i}/{n}")
@@ -319,13 +320,13 @@ class BuildLog(Scenario):
         s.x, s.y = 320, 700
         s.moves = [(0.0, s.x, s.y)]
         s.wait(1.0)
-        rng = np.random.default_rng(3)
+        rng = random.Random(3)
         mods = ["components/TaskList", "components/TaskForm", "lib/api", "pages/index", "pages/settings",
                 "hooks/useTasks", "lib/date", "styles/app", "components/Avatar", "lib/auth"]
         out = []
         for i in range(140):
             m = mods[i % len(mods)]
-            out.append((f"  transforming src/{m}.tsx ({int(rng.integers(2, 90))} kB) ...", "dim"))
+            out.append((f"  transforming src/{m}.tsx ({rng.randrange(2, 90)} kB) ...", "dim"))
         out += [("✓ 1402 modules transformed.", "green"), "dist/index.html       0.46 kB",
                 "dist/assets/index.css  8.12 kB", "dist/assets/index.js  412.70 kB", ("✓ built in 5.12s", "green"), ""]
         t0, te, tend = self.run_cmd(term, "npm run build", out, line_dt=0.035, after=1.0)

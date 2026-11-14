@@ -1,19 +1,65 @@
 #!/usr/bin/env bash
 # dolly launcher: runs the Python package that sits next to this script, with
-# the plugin's private venv when one exists (created by `dolly-setup`).
+# a private Python environment when you made one (docs/captions.md; DOLLY_VENV).
 set -euo pipefail
 SELF="$(readlink -f "${BASH_SOURCE[0]}")"
 ROOT="$(cd "$(dirname "$SELF")/.." && pwd)"
 VENV="${DOLLY_VENV:-${XDG_DATA_HOME:-$HOME/.local/share}/dolly/venv}"
-PY=python3
-if [[ -x "$VENV/bin/python" ]]; then
-  PY="$VENV/bin/python"
-fi
 export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
 # Never write into the plugin folder: Omarchy reloads a plugin whenever its folder
 # changes, so __pycache__ written next to the code reset the bar widget again and
 # again (VM, Nov 10: "Local plugin changed, reloading: io.github.jagritvats.dolly" x12).
 export PYTHONPYCACHEPREFIX="${PYTHONPYCACHEPREFIX:-${XDG_CACHE_HOME:-$HOME/.cache}/dolly/pycache}"
+# Which Python. Dolly draws with the system's python-cairo, which a Python from mise or
+# pyenv, or an environment that cannot see the system's packages, cannot import.
+# - DOLLY_VENV, when set, is used as it is.
+# - The environment at the usual place is a candidate only when its pyvenv.cfg says
+#   include-system-site-packages = true. The one Set up made up to 0.7.3 (for NumPy and
+#   Pillow) does not: inside it there is no cairo, so Dolly lost the editor and the styled
+#   export on a machine that has both (`dolly doctor` names the folder; docs/captions.md).
+# - Then PATH's python3 and /usr/bin/python3.
+# The first candidate that can import cairo is used; failing that, the first that is
+# Python 3.10 or newer, so that recording, the plain export and doctor still run and can
+# say what is missing.
+# probe: 0 = can draw, 1 = runs but has no cairo, anything else = not usable.
+probe() {
+  "$1" -c 'import sys
+if sys.version_info < (3, 10): sys.exit(2)
+import cairo' >/dev/null 2>&1
+}
+PY=""
+if [[ -n ${DOLLY_VENV:-} && -x $DOLLY_VENV/bin/python ]]; then
+  PY="$DOLLY_VENV/bin/python"
+else
+  OWN=""
+  if [[ -z ${DOLLY_VENV:-} && -x $VENV/bin/python ]] &&
+    grep -qi '^include-system-site-packages *= *true' "$VENV/pyvenv.cfg" 2>/dev/null; then
+    OWN="$VENV/bin/python"
+  fi
+  FALLBACK=""
+  TRIED=""
+  for candidate in "$OWN" "$(command -v python3 || true)" /usr/bin/python3; do
+    [[ -n $candidate && -x $candidate && $candidate != "$TRIED" ]] || continue
+    TRIED="$candidate"
+    rc=0
+    probe "$candidate" || rc=$?
+    if ((rc == 0)); then
+      PY="$candidate"
+      break
+    fi
+    if ((rc == 1)) && [[ -z $FALLBACK ]]; then FALLBACK="$candidate"; fi
+  done
+  PY="${PY:-$FALLBACK}"
+fi
+if [[ -z $PY ]]; then
+  printf '%s\n' 'dolly: needs Python 3.10 or newer (python3)' >&2
+  exit 1
+fi
+# Which Python was picked: for a look at a machine that misbehaves.
+if [[ ${1:-} == --print-python ]]; then
+  printf '%s\n' "$PY"
+  exit 0
+fi
 # TEST HARNESS ONLY: the headless Omarchy harness has no Hyprland input, camera or
 # Chromium; its walkthrough script writes DOLLY_* overrides (labelled test feeds) here.
 # The file lives in the private runtime dir and is never created by Dolly itself.

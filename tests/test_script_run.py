@@ -265,7 +265,7 @@ def test_a_window_take_records_that_window(tmp_path):
             '[[step]]\nmove = "10,10"\n')
     r, desk, rec, _ = make(tmp_path, text)
     assert r.run(export=False, keep_open=True)["ok"]
-    assert rec.started == [("window", "100,50 800x600")]
+    assert rec.started == [("window", "address:0x1")]        # the window itself, not its rectangle
     assert ("move", 110, 60) in [c[1:] for c in desk.calls]       # points measure from the recorded window
     assert "workspace" not in kinds(desk) and "close" not in kinds(desk)   # stage "here", --keep-open
 

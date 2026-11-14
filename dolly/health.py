@@ -630,7 +630,7 @@ def recorder_exit_kind(pdir) -> str:
     own) -> "stopped-outside"; a torn file -> "recorder-died"."""
     try:
         from .project import Project
-        from .render import probe
+        from .ff import probe
         raw = Project(pdir).raw
         dur = float(probe(raw).get("format", {}).get("duration", 0) or 0)
         return "stopped-outside" if dur > 0 else "recorder-died"

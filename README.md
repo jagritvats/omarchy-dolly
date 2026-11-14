@@ -76,10 +76,14 @@ From the Omarchy plugin marketplace, or:
 omarchy plugin add https://github.com/jagritvats/omarchy-dolly.git --enable
 ```
 
-The record button appears on the bar. Open it and click **Set up**: one terminal adds
-the hotkeys (Super+Alt+R to record) and Omarchy menu rows and installs the packages
-Dolly needs (about 9 MB to download, 55 MB on disk; it asks for your password once). That is the
-whole setup. Everything else has a default and can be changed later in Settings.
+The record button appears on the bar and works at once: recording, automatic zoom, the
+editor and the styled export all run on what Omarchy already ships. Nothing else is
+installed, and Dolly never asks for a password.
+
+Open the button and click **Set up** to add the hotkeys (Super+Alt+R to record) and the
+Omarchy menu rows. It changes only your own Omarchy and Hyprland files, and it reports
+anything this machine still lacks (in a virtual machine: `wf-recorder`). Everything else
+has a default and can be changed later in Settings.
 
 The same from a terminal:
 
@@ -91,6 +95,10 @@ dolly doctor                                                           # what wo
 Set up also puts `dolly` on your PATH (a link in `~/.local/bin`), so the commands
 below work in any terminal, script or agent shell.
 
+Set up also adds **Dolly Recorder** to the application launcher. Search for `dolly` or
+`screen recorder`; opening it shows the record panel and never starts a recording. Its
+actions open the Library and Settings. `dolly launch` does the same from a terminal.
+
 **Updating.** `dolly update` runs Omarchy's own `omarchy plugin update` and then
 refreshes what Set up wrote (the menu entry, the hotkeys, the `dolly` command): no
 password, no terminal. If you update with Omarchy's command directly, Dolly does the
@@ -99,11 +107,27 @@ same refresh by itself. A running Omarchy shell keeps the bar button it has load
 after Omarchy's own command the new button appears at the next shell start, and a card
 offers to restart it.
 
-Needs Omarchy 4.x (the Quattro shell).
+Needs Omarchy 4.x (the Quattro shell). Checked on Omarchy 4.0.4 (real hardware:
+recording and export) and on 4.5.0 (virtual machine: bar, panel, set up and update,
+screen and window takes, editor export). On shells older than 4.5 Dolly uses its own
+small stand-ins for the shell's IPC registry, translations and lazy panel; from 4.5 on
+the shell's own are used. "4.x" does not mean that every later release was tested.
 
-**Required packages** (not in Omarchy's base): `python-numpy` and `python-pillow`.
-In a virtual machine also `wf-recorder` (gpu-screen-recorder, which ships with
-Omarchy, cannot use a virtual GPU). `ffmpeg` ships with Omarchy.
+**Packages**: none beyond what Omarchy ships. Dolly draws with Python's cairo module
+(`python-cairo`), sets text with Pango (`python-gobject`, `pango`), and records, scales
+and encodes with `ffmpeg` and `gpu-screen-recorder`; all of them come with Omarchy.
+Dolly installs nothing and never asks for a password. If something is missing, Dolly
+and `dolly doctor` name the package; Omarchy's package installer adds it (Omarchy menu ›
+Install › Package):
+- without `python-cairo`, Dolly still records and exports the plain video, and the editor
+  and the styled export say that it is missing;
+- without Pango, text is drawn in cairo's own simple font;
+- in a virtual machine recording needs `wf-recorder` (gpu-screen-recorder cannot use a
+  virtual GPU).
+
+If the first `python3` on your PATH comes from mise or pyenv, it cannot see the system's
+`python-cairo`; Dolly then runs with `/usr/bin/python3` by itself. `dolly --print-python`
+shows which Python it picked.
 
 **Optional**: `tesseract` and `tesseract-data-eng` (scrub secrets), `rclone`
 (Drive/Dropbox/... links), whisper.cpp or faster-whisper (captions), a camera, `mpv`
@@ -115,7 +139,7 @@ Omarchy, cannot use a virtual GPU). `ffmpeg` ships with Omarchy.
 |---|---|
 | Bar button | click: the Dolly panel (capture mode, audio, camera, Start, recent recordings, **Settings**) · right-click: quick record · while recording: click stops, right-click shows pause / mute mic / stop / discard · Omarchy's `Super+Ctrl+<n>` opens the panel by its place in the bar's right section. The button watches Dolly's state files; nothing runs in the background while you are not recording · from the keyboard: Super+Ctrl+1 to 9 toggles the panel (the number is the button's place among the panels on the right of the bar) |
 | Hotkeys (after **Set up**) | Super+Alt+R record/stop · Super+Alt+P pause · Super+Alt+N mute mic · Super+Alt+M zoom here · Super+Alt+Shift+R save last 30 s (instant replay) · Super+Alt+L recordings (Omarchy 4.5 uses it, so it is skipped there). Change any of them, or switch one off, in **Settings › Shortcuts** (or `dolly config set shortcuts.toggle="SUPER + CTRL + D"`; empty = off); only Dolly's own marked block in `~/.config/hypr/bindings.lua` is rewritten. A combination that is already bound is never taken; if an Omarchy update later claims one, the panel says so and **Fix** gives those keys up. Omarchy's Super+K lists them |
-| Menu (Super+Space, after **Set up**) | Trigger → Capture → **Demo**: record a window, a region or the screen · open last · recordings · share last recording · instant replay · settings. While a take is running the entry is **Stop demo** |
+| Menu (Super+Space, after **Set up**) | Trigger → Capture → **Dolly Recorder**: record a window, a region or the screen · open last · recordings · share last recording · instant replay · settings. While a take is running the entry is **Stop Dolly** |
 | Editor | opens after you stop, without taking focus. Library · Editor · Settings. Timeline lanes for zoom, speed and privacy; 16:9 / 9:16 / 1:1 preview; In/Out trim; camera bubble shape, size and position (drag it); camera-only ranges; per-track volume and mute; blur boxes; Scrub secrets; captions; title card; **Share** (Ctrl+E) |
 | Settings | the editor's Settings view (also `dolly settings`): Capture, Audio, Camera, Look, Auto-zoom, Privacy, Export, Sharing, Storage. Stored in `~/.config/dolly/config.json`; the bar widget's own options stay in sync |
 | CLI | `dolly record [--mode screen|window|region] [--audio none|mic|system|both] [--camera off|edit|live] · stop · pause · mute · mark · replay · edit · library [--open] · settings · config get/set · export [--aspect 16:9|9:16|1:1|4:5] [--quality draft|fast|high|best] [--gif] · share … · run demo.toml [--dry-run] [--json] · recover · deps · setup · update · integration · doctor` |
@@ -242,6 +266,9 @@ dolly export "$DIR" --json --width 1280
   `folder-not-writable`, `disk-full`, `no-compositor`, `export-failed`.
 - Automatic zooms, cursor smoothing and the automatic privacy blurs apply as in a normal
   recording; `dolly edit DIR` opens it in the editor later.
+- `dolly export --plain` gives the recording as it was captured, cut to the take, with
+  private areas covered: no zoom, cursor effects or background. Without `python-cairo`
+  every export is that one, and the JSON says `"engine": "plain"`.
 
 ## Virtual machines
 
@@ -265,7 +292,7 @@ Tested on Omarchy 4.5 in VirtualBox 7.2 (VMSVGA, 3D on).
 ~/.config/omarchy/plugins/io.github.jagritvats.dolly/bin/dolly replay stop        # if instant replay is on
 ~/.config/omarchy/plugins/io.github.jagritvats.dolly/bin/dolly-setup --undo       # menu rows, hotkeys, camera window rule, the dolly command
 omarchy plugin remove io.github.jagritvats.dolly --yes
-rm -rf ~/.local/share/dolly ~/.cache/dolly ~/.local/state/dolly    # optional: venv, caches, state
+rm -rf ~/.local/share/dolly ~/.cache/dolly ~/.local/state/dolly    # optional: caches, state, a private Python environment
 ```
 
 If you remove the plugin without `--undo`, its hotkeys and menu rows switch
@@ -274,8 +301,11 @@ deletes the lines.
 
 Your recordings (`…/Videos/Dolly`) and `~/.config/dolly/` (settings, and
 `share.json` with any credentials you added) are kept; delete them yourself if
-you want them gone. Packages installed for Dolly stay installed; remove them with
-`sudo pacman -Rs` if nothing else uses them.
+you want them gone. Dolly 0.7.4 installs no packages. Versions up to 0.7.3 could
+add `python-numpy` and `python-pillow` through Set up, or make a private Python
+environment in `~/.local/share/dolly/venv`. Dolly no longer uses either: remove the
+packages yourself if nothing else needs them; the folder goes with the `rm -rf` line
+above. (`wf-recorder`, if Set up added it in a virtual machine, is still what records there.)
 
 ## Troubleshooting
 
@@ -288,6 +318,12 @@ you want them gone. Packages installed for Dolly stay installed; remove them wit
   `~/.local/state/dolly/dolly.log`. Please attach both to a bug report.
 - A recording's files are written safely: if one is damaged (power loss), Dolly
   restores the previous version and keeps the broken copy as `*.damaged`.
+
+The editor window uses its own browser profile with hardware **video decoding** off,
+because on some GPU drivers Chromium on Wayland shows the preview black. Your normal
+browser, its settings and GPU compositing are untouched. Decoding in software can use
+more CPU; where hardware decoding works, `DOLLY_EDITOR_ACCELERATED_VIDEO=1 dolly edit`
+turns it back on for that run.
 
 ## Developers
 

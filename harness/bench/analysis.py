@@ -36,6 +36,6 @@ segs = [s.to_dict() for s in build_segments(tl, cfg, track)]
 blobs = sum(len(r) for r in act.blobs) if hasattr(act, "blobs") else None
 res = {"root": str(ROOT), "take": take.name, "video_s": round(tl.duration, 2),
        "wall_s": round(best_w, 3), "cpu_s_this_process": round(best_c, 3), "samples": int(len(act.t)),
-       "blobs": blobs, "changed_fraction_sum": round(float(act.frac.sum()), 6), "segments": segs}
+       "blobs": blobs, "changed_fraction_sum": round(float(sum(act.frac)), 6), "segments": segs}
 out.write_text(json.dumps(res, indent=1))
 print(json.dumps({k: v for k, v in res.items() if k != "segments"} | {"segments": len(segs)}))

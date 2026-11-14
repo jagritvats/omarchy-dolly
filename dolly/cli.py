@@ -129,6 +129,7 @@ def cmd_library(a):
     from . import library
     act = a.lib_cmd or ("open" if a.open else "list")
     if act == "open":
+        _editor_or_ask()
         from .editor.server import serve
         return serve(None, port=0, open_browser=not a.no_browser, view="library")
     if act == "list":
@@ -194,6 +195,24 @@ def cmd_library(a):
             if r["failed"]:
                 print(f"{r['failed']} folders could not be rewritten (read-only, or the disk is full)")
                 sys.exit(1)
+
+
+def cmd_launch(a):
+    """Application launch only opens UI; it must never toggle/start a take."""
+    import shutil
+    import subprocess
+    shell = shutil.which("omarchy-shell")
+    if shell:
+        try:
+            r = subprocess.run([shell, "io.github.jagritvats.dolly", "open"],
+                               capture_output=True, text=True, timeout=5)
+            if r.returncode == 0:
+                return
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    _editor_or_ask()                    # no shell to show the panel: the library window, which draws
+    from .editor.server import serve
+    return serve(None, port=0, open_browser=True, view="library")
 
 
 def cmd_config(a):
@@ -371,7 +390,7 @@ def _after_update(argv: list[str]):
         return
     try:
         from . import integration
-        if integration.stamp().get("version") == integration.version():
+        if integration.current_stamp():
             return
         _say_refreshed(integration.auto_apply())
     except Exception:
@@ -432,8 +451,26 @@ def cmd_export(a):
         from . import headless
         a._json_inner, a.quiet = True, True
         return headless.export_json(lambda: cmd_export(a), a)
-    from .render import cli_progress, export
     d = _dir_or_last(a.dir)
+    from . import deps
+    lacking = deps.python_missing()
+    if lacking or getattr(a, "plain", False):
+        # no python-cairo (nothing can be drawn), or asked for: the take as it was
+        # recorded, by ffmpeg alone. What needs drawing says what is missing.
+        from . import plain
+        if a.aspect not in (None, "16:9"):
+            if not lacking:
+                raise SystemExit(f"dolly: --plain exports the picture as it was recorded; it cannot reframe to {a.aspect}")
+            deps.ask_for_python(t("notify.needsPythonAspect", a.aspect))
+            raise SystemExit(f"dolly: a {a.aspect} export follows the action, which needs {deps.how(lacking)}")
+        if lacking and not a.quiet:
+            print(f"dolly: plain export, the recording as it was captured; {plain.LEFT_OUT} need "
+                  f"{deps.how(lacking)}", file=sys.stderr)
+        out = plain.export(d, a.output, gif=a.gif, quality=a.quality, width=a.width, fps=a.fps,
+                           notify=not a.quiet, lacking=lacking)
+        print(out)
+        return out
+    from .render import cli_progress, export
     from . import analysis
     analysis.ensure(d, say=None if a.quiet else (lambda m: print(f"dolly: {m}", file=sys.stderr)))
     over = {}
@@ -453,7 +490,17 @@ def cmd_finalize(a):
     finalize(Path(a.dir))
 
 
+def _editor_or_ask():
+    """The editor draws (preview, zoom, backgrounds) with cairo. Asked for on a machine
+    without python-cairo, it says so and where to install it instead of failing on an import."""
+    from . import deps
+    lacking = deps.ask_for_python(t("notify.needsPythonEditor"))
+    if lacking:
+        raise SystemExit(f"dolly: the editor needs {deps.how(lacking)}")
+
+
 def cmd_edit(a):
+    _editor_or_ask()
     from .editor.server import serve
     serve(_dir_or_last(a.dir), port=a.port, open_browser=not a.no_browser, view=a.view)
 
@@ -505,13 +552,21 @@ def _known_error(e: BaseException) -> str | None:
     from .fsutil import DamagedFile
     if isinstance(e, DamagedFile):
         return str(e)
+    from .project import EmptyTrim
+    if isinstance(e, EmptyTrim):
+        return str(e)
+    from .gfx import Unavailable
+    if isinstance(e, Unavailable):
+        from . import deps                          # what draws was asked for and cannot draw here
+        return (f"this needs {deps.how(deps.python_missing() or [deps.DRAW_PACKAGE])}; "
+                "recording and `dolly export` work without it")
     if isinstance(e, OSError) and e.errno == errno.ENOSPC:
         where = f" ({e.filename})" if e.filename else ""
         return f"the disk is full{where}; free some space or choose another folder in Settings > Storage"
     if isinstance(e, PermissionError):
         return f"permission denied: {e.filename or e}; check the folder in Settings > Storage"
     if isinstance(e, FileNotFoundError) and e.filename and os.sep not in str(e.filename):
-        return f"{e.filename} is not installed; run `dolly deps --install` or `dolly doctor`"
+        return f"{e.filename} is not installed; `dolly doctor` says which package brings it"
     if isinstance(e, RuntimeError) and " not found" in str(e):
         return f"{e}; run `dolly doctor`"
     if isinstance(e, subprocess.TimeoutExpired):
@@ -558,6 +613,7 @@ def main(argv=None):
 def _main(argv=None):
     ap = argparse.ArgumentParser(prog="dolly", description="Polished demo recordings for Omarchy")
     sub = ap.add_subparsers(dest="cmd", required=True, metavar="<command>")
+    sub.add_parser("launch", help="open the recorder panel (Library if the Omarchy shell is unavailable)")
 
     r = sub.add_parser("record", help="start a recording (defaults: Settings > Capture, ~/.config/dolly/config.json)")
     r.add_argument("--mode", choices=["screen", "region", "window"], default=None)
@@ -621,6 +677,9 @@ def _main(argv=None):
     e.add_argument("--width", type=int, help="output width (16:9 height derived)")
     e.add_argument("--fps", type=int)
     e.add_argument("--aspect", choices=["16:9", "9:16", "1:1", "4:5"])
+    e.add_argument("--plain", action="store_true",
+                   help="the recording as it was captured, cut to the take: no zoom, cursor effects or background "
+                        "(what an export is on a machine without python-cairo)")
     e.add_argument("-q", "--quiet", action="store_true", help="no desktop notification")
     e.add_argument("--json", action="store_true", help="describe the exported file as one JSON object on stdout")
 
@@ -694,9 +753,9 @@ def _main(argv=None):
     doc.add_argument("--json", action="store_true")
     doc.add_argument("--report", action="store_true",
                      help="write a text file to attach to a bug report (no video, no typed keys)")
-    it = sub.add_parser("integration", help="the menu entry and hotkeys Dolly added; hotkey conflicts")
+    it = sub.add_parser("integration", help="Dolly's menu, hotkeys, command and application launcher; conflicts")
     it.add_argument("action", nargs="?", choices=["status", "apply", "undo", "auto"], default="status",
-                    help="apply: write the menu entry, hotkeys and the dolly command again (no password); "
+                    help="apply: write the menu entry, hotkeys, command and application launcher (no password); "
                          "undo: remove them; auto: apply only after an update")
     it.add_argument("--json", action="store_true")
     sub.add_parser("setup", help="add Dolly's menu entry and hotkeys, install missing packages (opens a terminal)")
@@ -706,8 +765,7 @@ def _main(argv=None):
     pn = sub.add_parser("panel")           # internal: what the bar panel shows, in one call
     pn.add_argument("--json", action="store_true")
     sub.add_parser("shell-start")          # internal: run by the bar widget when the shell loads the plugin
-    dp = sub.add_parser("deps", help="list missing packages; --install opens a terminal that installs them")
-    dp.add_argument("--install", action="store_true")
+    dp = sub.add_parser("deps", help="list the packages Dolly still needs here (it installs nothing)")
     dp.add_argument("--json", action="store_true")
     dm = sub.add_parser("demo")
     dm.add_argument("out", nargs="?")
@@ -719,7 +777,9 @@ def _main(argv=None):
     lg.add_argument("--replay", type=int, default=0)
 
     a = ap.parse_args(argv)
-    if a.cmd == "record":
+    if a.cmd == "launch":
+        cmd_launch(a)
+    elif a.cmd == "record":
         from . import headless
         if headless.wanted(a):
             headless.record(a)
@@ -741,6 +801,7 @@ def _main(argv=None):
     elif a.cmd == "library":
         cmd_library(a)
     elif a.cmd == "settings":
+        _editor_or_ask()
         from .editor.server import serve
         serve(None, port=0, open_browser=not a.no_browser, view="settings", section=a.section)
     elif a.cmd == "config":
@@ -781,31 +842,23 @@ def _main(argv=None):
         import shutil, shlex, subprocess as sp
         setup = Path(__file__).resolve().parent.parent / "bin" / "dolly-setup"
         term = shutil.which("omarchy-launch-floating-terminal-with-presentation")
-        # the button that runs this says what it installs, so setup does not ask again
+        # a terminal shows what setup did (menu entry, hotkeys, what is still missing); it asks nothing
         if term:
-            sp.Popen([term, f"DOLLY_SETUP_YES=1 {shlex.quote(str(setup))}"], stdin=sp.DEVNULL, stdout=sp.DEVNULL,
+            sp.Popen([term, shlex.quote(str(setup))], stdin=sp.DEVNULL, stdout=sp.DEVNULL,
                      stderr=sp.DEVNULL, start_new_session=True)
         else:
-            raise SystemExit(sp.call([str(setup)], env={**os.environ, "DOLLY_SETUP_YES": "1"}))
+            raise SystemExit(sp.call([str(setup)]))
     elif a.cmd == "deps":
         from . import deps
         m = deps.missing()
-        if a.install:
-            r = deps.install(m["packages"])
-            if a.json:
-                print(json.dumps({**m, **r}))
-            elif not r["packages"]:
-                print("Nothing to install: Dolly has everything it needs.")
-            elif r["launched"]:
-                print(f"Opened a terminal to install: {' '.join(r['packages'])}")
-            else:
-                print(f"Run this in a terminal:\n  {r['command']}")
-        elif a.json:
+        if a.json:
             print(json.dumps(m))
         else:
             for p in m["packages"]:
                 print(f"{p:16s} {m['why'].get(p, '')}")
-            if not m["packages"]:
+            if m["packages"]:
+                print(f"Dolly installs nothing itself: install these with Omarchy's package installer ({deps.HOW}).")
+            else:
                 print("Nothing missing.")
     elif a.cmd == "log-events":
         from .logger import run_logger

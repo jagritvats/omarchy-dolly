@@ -260,13 +260,11 @@ def health_warn_minutes() -> float:
 
 
 def _notify_missing(need: dict):
-    """'Dolly needs: wf-recorder (gpu-screen-recorder cannot capture here ...)' + Install."""
-    from . import deps
-    dolly = str(Path(__file__).resolve().parents[1] / "bin" / "dolly")
-    lines = [f"{p}: {need['why'].get(p, '')}" for p in need["packages"]]
-    body = t("notify.needsPackagesBody", "\n".join(lines), deps.install_command(need["packages"]))
-    notify(t("notify.needsPackages"), body, (t("notify.install"), dolly, "deps", "--install"),
-           urgency="critical", timeout=0)
+    """'wf-recorder: gpu-screen-recorder cannot capture here ...' and where it can be
+    installed. What holds the recording back comes first. Dolly installs nothing itself."""
+    first = [p for p in need["packages"] if p in need.get("blocking", ())]
+    lines = [f"{p}: {need['why'].get(p, '')}" for p in first + [p for p in need["packages"] if p not in first]]
+    notify(t("notify.needsPackages"), t("notify.needsPackagesBody", "\n".join(lines)), urgency="critical", timeout=0)
 
 
 def shell_refresh():
@@ -359,11 +357,25 @@ class Cancelled(Exception):
     """Esc in the region/window picker (or the countdown cancelled): nothing to clean up."""
 
 
-def window_at(geo_rect) -> dict | None:
-    """The Hyprland client whose geometry matches a picked rect (logical)."""
+def window_at(geo_rect, clients=None, mons=None) -> dict | None:
+    """The visible Hyprland client matching a picked rect (logical).
+
+    Tiled windows on inactive workspaces often have identical geometry. They
+    must not steal a pick made on the current workspace (including stage=clean).
+    """
     x, y, w, h = geo_rect
     best, err = None, 1e9
-    for c in hypr_json("clients") or []:
+    clients = clients if clients is not None else (hypr_json("clients") or [])
+    mons = mons if mons is not None else (hypr_json("monitors") or [])
+    visible_ws = {(m.get("activeWorkspace") or {}).get("id") for m in mons}
+    visible_ws.update((m.get("specialWorkspace") or {}).get("id") for m in mons)
+    visible_ws.discard(None)
+    visible_ws.discard(0)
+    for c in sorted(clients, key=lambda c: c.get("focusHistoryID", 1 << 30)):
+        if not c.get("mapped", True) or c.get("hidden"):
+            continue
+        if visible_ws and not c.get("pinned") and (c.get("workspace") or {}).get("id") not in visible_ws:
+            continue
         (cx, cy), (cw, ch) = c.get("at", (0, 0)), c.get("size", (0, 0))
         e = abs(cx - x) + abs(cy - y) + abs(cw - w) + abs(ch - h)
         if e < err:
@@ -635,15 +647,17 @@ def start(a):
         raise SystemExit("dolly: already recording; use `dolly stop` (or the record hotkey / bar timer)")
     _recover_stale()
     health.heal(key_repeat=False)            # whatever an earlier, killed recording left changed on the desktop
-    # a fresh Omarchy lacks the python packages, and a VM can't use gpu-screen-recorder:
-    # say what is missing, with an Install button, before any disk note, picker, countdown or DND
+    # a VM can't use gpu-screen-recorder: say what is missing and where to install it, before
+    # any disk note, picker, countdown or DND. A missing python-cairo does not hold a
+    # recording back: it is recorded, finalized and exported plain without it, and the
+    # editor says so when it is first opened (deps.ask_for_python).
     if not os.environ.get("DOLLY_BACKEND") and not os.environ.get("DOLLY_SKIP_DEPS"):
         from . import deps
         need = deps.missing()
-        if need["packages"]:
+        if need["blocking"]:
             health.set_phase("idle")
             _notify_missing(need)
-            raise SystemExit("dolly: missing packages: " + " ".join(need["packages"]) + " (dolly deps --install)")
+            raise SystemExit("dolly: missing packages: " + deps.how(need["blocking"]))
     root = projmod.videos_root()
     problem = _unwritable(root)
     if problem:
@@ -676,16 +690,18 @@ def start(a):
     if time.monotonic() - t_pick > 0.5:
         toasts_before = _toast_count()     # a pick by hand took a while: count again
     target_addr = None
-    if a.mode == "window" and tgt.kind == "region":
-        from .monitors import monitor_target
+    if a.mode == "window":
+        from .monitors import monitor_for_rect, monitor_target
         addr = getattr(a, "window_address", None)                # named with --window: no geometry guess
-        win = next((c for c in hypr_json("clients") or [] if c.get("address") == addr), None) if addr else None
-        win = win or window_at(tgt.region)
-        x, y, w, h = tgt.region
-        mon = monitor_of(x + w / 2, y + h / 2)
-        if win and mon:
-            target_addr = win.get("address")
-            tgt = monitor_target(mon)      # record the monitor, follow the window
+        win = (next((c for c in hypr_json("clients") or [] if c.get("address") == addr), None)
+               if addr else window_at(tgt.region))
+        if not win or not win.get("mapped", True) or win.get("hidden"):
+            raise SystemExit("dolly: the selected window is no longer visible; choose it again")
+        mon, _ = monitor_for_rect(hypr_json("monitors") or [], [*win["at"], *win["size"]])
+        if not mon:
+            raise SystemExit("dolly: the selected window is not on a connected monitor")
+        target_addr = win["address"]
+        tgt = monitor_target(mon)          # record the monitor, follow this exact window
     region, scale, monitor = tgt.region, tgt.scale, tgt.monitor
     pdir = root / time.strftime("%Y-%m-%d_%H-%M-%S")
     try:
@@ -766,7 +782,7 @@ def start(a):
         except OSError:
             reason = None
         need = deps.missing()
-        if reason and need["packages"]:
+        if reason and need["blocking"]:
             _notify_missing(need)
         else:
             notify(t("notify.cannotStart"), t("notify.cannotStartBody", f"{pdir}/recorder.log"),
@@ -810,7 +826,7 @@ def start(a):
             "camera_mode": cam_mode, "webcam_clock": cam_clock, "live_bubble": bool(bubble),
             "cursor_size": int(os.environ.get("HYPRCURSOR_SIZE") or os.environ.get("XCURSOR_SIZE") or 24),
             "notification_layers": _notification_layers(), "toasts_before": toasts_before,
-            "terminals": TERMINALS, "solid_windows": solid_on, "ttff_ms": round(ttff * 1000), "hotkey_to_first_frame_ms":
+            "terminals": terminal_classes(), "solid_windows": solid_on, "ttff_ms": round(ttff * 1000), "hotkey_to_first_frame_ms":
             round((time.time() - t_invoke) * 1000), "countdown": n_count,
             "webcam": bool(cam_proc), "webcam_launch_mono": cam_launch}
     fsutil.atomic_write_json(pdir / "capture.json", meta, indent=2)
@@ -920,6 +936,27 @@ def stop_bubble(p):
 
 
 TERMINALS = ["Alacritty", "com.mitchellh.ghostty", "kitty", "foot", "footclient", "org.wezfurlong.wezterm"]
+
+
+def terminal_classes() -> list[str]:
+    """Recognise terminal processes even when --app-id overrides their class.
+
+    Store only the class, not process arguments or titles. This metadata is
+    shared by typing AOI, reframing and the renderer's I-beam cursor.
+    """
+    classes = set(TERMINALS)
+    binaries = {"alacritty", "ghostty", "kitty", "foot", "footclient", "wezterm", "wezterm-gui"}
+    for client in hypr_json("clients") or []:
+        cls, pid = client.get("class") or client.get("initialClass"), client.get("pid")
+        if not cls or not isinstance(pid, int) or pid <= 0:
+            continue
+        try:
+            binary = Path(os.readlink(f"/proc/{pid}/exe")).name
+        except OSError:
+            continue
+        if binary in binaries:
+            classes.add(cls)
+    return sorted(classes)
 
 
 def _recover_stale():
@@ -1127,11 +1164,19 @@ def stop(_a=None, defer: bool | None = None):
     body = info if not reason or reason == "stopped-outside" else t("notify.savedUpToThere", info)
     if reason == "stopped-outside":
         body = info + "\n" + reason_text(reason)
-    notify(title, body,
-           (t("notify.edit"), dolly, "edit", str(pdir)), (t("notify.quickExport"), dolly, "export", str(pdir)),
+    from . import deps
+    lacking = deps.python_missing()
+    if lacking:
+        # no python-cairo: the take is safe and exports as it was recorded; the editor is
+        # not opened (it cannot draw) and the card says what brings it
+        body += "\n" + t("notify.recordedPlain")
+        actions = [(t("notify.quickExport"), dolly, "export", str(pdir))]
+    else:
+        actions = [(t("notify.edit"), dolly, "edit", str(pdir)), (t("notify.quickExport"), dolly, "export", str(pdir))]
+    notify(title, body, *actions,
            urgency="critical" if reason in ("recorder-died", "disk-full") else "normal", timeout=10000,
            image=_poster(pdir))
-    if os.environ.get("DOLLY_OPEN_EDITOR", "1") == "1" and reason not in ("suspend", "lock", "hyprland-exit"):
+    if not lacking and os.environ.get("DOLLY_OPEN_EDITOR", "1") == "1" and reason not in ("suspend", "lock", "hyprland-exit"):
         # the editor opens without taking focus: you keep typing where you were
         subprocess.Popen([dolly, "edit", str(pdir)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                          start_new_session=True, env=dict(os.environ, DOLLY_KEEP_FOCUS="1"))
@@ -1149,7 +1194,9 @@ def stop(_a=None, defer: bool | None = None):
     try:
         (pdir / "recorder.log").open("a").write(
             "stop: recorder and logger down after %.2f s, file safe after %.2f s, card after %.2f s%s\n"
-            % (t_recorder - t_stop, t_safe - t_stop, t_card - t_stop, " (zoom plan follows)" if defer else ""))
+            % (t_recorder - t_stop, t_safe - t_stop, t_card - t_stop,
+               f" (no zoom plan yet: it needs {', '.join(lacking)})" if lacking
+               else " (zoom plan follows)" if defer else ""))
     except OSError:
         pass
     print(pdir)
@@ -1413,7 +1460,7 @@ def _repair_raw(pdir: Path) -> bool:
     raw = projmod.Project(pdir).raw
     if video_info(raw).get("duration"):
         return False
-    from .render import ffmpeg_bin
+    from .ff import ffmpeg_bin
     fixed = pdir / "raw.recovered.mkv"
     # no timeout: a stream copy of the whole recording, its time grows with its length
     subprocess.run([ffmpeg_bin(), "-v", "error", "-y", "-err_detect", "ignore_err", "-i", str(raw),
@@ -1486,7 +1533,7 @@ def recover_all(_a=None) -> list[Path]:
 
 # ---------------------------------------------------------------- finalize
 def video_info(path: Path) -> dict:
-    from .render import probe
+    from .ff import probe
     p = probe(path)
     v = next((s for s in p.get("streams", []) if s.get("codec_type") == "video"), {})
     num, den = (v.get("avg_frame_rate") or v.get("r_frame_rate") or "60/1").split("/")
@@ -1501,7 +1548,7 @@ def webcam_offset(pdir: Path, meta: dict) -> float:
     if not cam.exists() or not meta.get("t0_mono"):
         return 0.0
     try:
-        from .render import probe
+        from .ff import probe
         st = float(probe(cam).get("format", {}).get("start_time", 0) or 0)
     except Exception:
         st = 0.0
@@ -1574,7 +1621,7 @@ def _scan_head_early(pdir: Path, out: dict):
     shorter. Anything that goes wrong here only means finalize does it itself."""
     try:
         from . import sync as syncmod
-        from .render import ffmpeg_bin
+        from .ff import ffmpeg_bin
         meta = json.loads((pdir / "capture.json").read_text())
         raw = projmod.Project(pdir).raw
         info = video_info(raw)               # the size is known while the file grows; the length is not
@@ -1638,7 +1685,7 @@ def finalize(pdir: Path, aoi: bool = True, plan: bool = True, on_video=None, hea
     runs = []
     if log_marks:
         try:
-            from .render import ffmpeg_bin
+            from .ff import ffmpeg_bin
             if clock_a is None:
                 # no clock to say where the start marker should be: read the whole file, as before
                 runs = syncmod.detect_markers(raw, sx, info["fps"] or 60, ffmpeg_bin())
@@ -1787,8 +1834,8 @@ def finalize(pdir: Path, aoi: bool = True, plan: bool = True, on_video=None, hea
         # Settings > Privacy > automatic blur: secret-bearing windows and notification toasts
         # become ordinary boxes in the editor's privacy lane (computed once; removing one is final)
         try:
-            from . import privacy as privmod
-            boxes = privmod.auto_boxes(tl)
+            from .sensitive import auto_boxes
+            boxes = auto_boxes(tl)
             if boxes:
                 data["privacy"] = [b for b in data.get("privacy") or [] if b.get("source") != "auto"] + boxes
         except Exception as ex:
@@ -1801,5 +1848,6 @@ def finalize(pdir: Path, aoi: bool = True, plan: bool = True, on_video=None, hea
     except OSError:
         pass
     if plan:
+        # the zoom plan needs ffmpeg and plain Python only, so it is made with or without cairo
         analysis.analyse(pdir, sync=True)
     return doc

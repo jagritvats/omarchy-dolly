@@ -101,7 +101,7 @@ def capabilities() -> dict:
     probs = []
     keys = bool(shutil.which("wtype"))
     if not keys:
-        probs.append("typing needs wtype (it ships with Omarchy): omarchy-pkg-add wtype")
+        probs.append("typing needs wtype (package wtype, which Omarchy ships)")
     pointer = bool(shutil.which("hyprctl") and os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"))
     if not pointer:
         probs.append("no Hyprland session found (HYPRLAND_INSTANCE_SIGNATURE is not set)")
@@ -286,10 +286,9 @@ class Desktop:
         return tuple(monitor_logical(m)[0]) if m else (0, 0, 1920, 1080)
 
     def screen_sample(self, rect=None):
-        """A small grayscale snapshot (numpy array) of the screen or a rect, or None without grim."""
+        """A small snapshot of the screen or a rect (for changed_fraction), or None without grim."""
         if not shutil.which("grim"):
             return None
-        import numpy as np
         cmd = ["grim", "-t", "ppm", "-s", "0.25"]
         if rect:
             cmd += ["-g", f"{int(rect[0])},{int(rect[1])} {int(rect[2])}x{int(rect[3])}"]
@@ -297,7 +296,7 @@ class Desktop:
             raw = subprocess.run([*cmd, "-"], capture_output=True, timeout=5).stdout
             parts = raw.split(b"\n", 3)                      # P6, "W H", maxval, pixels
             w, h = (int(v) for v in parts[1].split())
-            return np.frombuffer(parts[3][: w * h * 3], np.uint8).reshape(h, w, 3).mean(axis=2)
+            return snapshot(w, h, parts[3])
         except (OSError, ValueError, IndexError, subprocess.TimeoutExpired):
             return None
 
@@ -312,9 +311,30 @@ def terminal_command() -> str:
     return "xterm"
 
 
+def snapshot(w: int, h: int, rgb: bytes) -> tuple:
+    """What changed_fraction compares: (w, h, light) for w x h pixels of three bytes each.
+    `light` holds red + green + blue of every pixel side by side in one long integer, 16
+    bits a pixel, so that two pictures are compared by a few additions on whole integers:
+    no loop over the pixels, and nothing but the standard library. Pixels missing: ValueError."""
+    n = w * h
+    light = 0
+    for channel in range(3):
+        lanes = bytearray(2 * n)
+        lanes[0::2] = rgb[channel:3 * n:3]
+        light += int.from_bytes(lanes, "little")
+    return w, h, light
+
+
 def changed_fraction(a, b, thresh: int = 12) -> float:
-    """Share of pixels that differ between two snapshots (1.0 when they cannot be compared)."""
-    if a is None or b is None or a.shape != b.shape:
+    """Share of pixels whose brightness (the mean of red, green and blue) differs by more
+    than `thresh` between two snapshots (1.0 when they cannot be compared)."""
+    if a is None or b is None or a[:2] != b[:2] or not a[0] * a[1]:
         return 1.0
-    import numpy as np
-    return float((np.abs(a - b) > thresh).mean())
+    n = a[0] * a[1]
+    one = int.from_bytes(b"\x01\x00" * n, "little")          # 1 in every pixel's 16 bits
+    # Per pixel: 0x8000 + (difference of the two sums) - (the smallest difference that counts).
+    # Bit 15 is then set exactly where the first picture is brighter by more than thresh, and
+    # no pixel overflows into the next or borrows from it (a sum is at most 765).
+    lift = one * (0x8000 - int(3 * thresh) - 1)
+    brighter = (a[2] + lift - b[2]) | (b[2] + lift - a[2])
+    return (brighter & (one << 15)).bit_count() / n

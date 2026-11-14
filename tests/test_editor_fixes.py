@@ -17,7 +17,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from tests.test_settings import home, make_project  # noqa: E402,F401
+from tests.test_settings import home, make_project, rgb_at  # noqa: E402,F401
 from dolly.units import human_size  # noqa: E402
 
 SIZES = [0, 1, 499, 512, 412_000, 999_400, 999_999, 1_000_000, 4_700_000, 9_949_999, 9_950_000,
@@ -64,9 +64,11 @@ def test_library_json_has_size_text(home):
 # ------------------------------------------------------------------ background images
 
 def _png(path: Path, w=64, h=36, color=(30, 120, 200)):
-    from PIL import Image
+    from dolly import gfx
     path.parent.mkdir(parents=True, exist_ok=True)
-    Image.new("RGB", (w, h), color).save(path)
+    img = gfx.new(w, h)
+    gfx.fill_rect(img, 0, 0, w, h, gfx.rgb(color))
+    gfx.save(img, path)
     return path
 
 
@@ -97,17 +99,16 @@ def test_image_check_rejects(home, bad):
 
 def test_upload_is_verified_and_content_addressed(home):
     from dolly import images
-    from io import BytesIO
-    from PIL import Image
-    buf = BytesIO()
-    Image.new("RGB", (40, 20), (200, 10, 10)).save(buf, "PNG")
-    a = images.save_upload(buf.getvalue(), "My Wall.PNG")
-    b = images.save_upload(buf.getvalue(), "again.png")
+    shot = _png(home / "shot.png", 40, 20, (200, 10, 10))
+    png = shot.read_bytes()
+    shot.unlink()
+    a = images.save_upload(png, "My Wall.PNG")
+    b = images.save_upload(png, "again.png")
     assert a["path"] == b["path"] and Path(a["path"]).parent == images.uploads_dir()
     with pytest.raises(images.ImageError):
         images.save_upload(b"<html>not an image</html>", "x.png")
     with pytest.raises(images.ImageError):
-        images.save_upload(buf.getvalue(), "x.svg")
+        images.save_upload(png, "x.svg")
     assert not list(images.uploads_dir().glob("*.part"))
     names = [x["path"] for x in images.candidates()["uploaded"]]
     assert a["path"] in names
@@ -137,8 +138,8 @@ def test_export_uses_the_custom_image(home):
              "radius": 0, "output": {"width": 640, "height": 360}}
     lay = make_layout(640, 400, style)
     img = build_background(lay, style, colors={"background": "#000000", "accent": "#7aa2f7"})
-    b, g, r = img[2, 2]                           # a corner: background, not the screen
-    assert r > 180 and g < 60 and b < 60, img[2, 2]
+    r, g, b = rgb_at(img, 2, 2)                   # a corner: background, not the screen
+    assert r > 180 and g < 60 and b < 60, (r, g, b)
 
 
 # ------------------------------------------------------------------ the editor server

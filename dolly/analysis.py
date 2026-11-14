@@ -195,7 +195,8 @@ def ensure(pdir, say=None) -> None:
 
 
 def spawn(pdir) -> bool:
-    """Start the analysis in the background, detached from this process and its terminal."""
+    """Start the analysis in the background, detached from this process and its terminal.
+    It needs ffmpeg and plain Python only (no cairo), so it runs on any machine that records."""
     root = Path(__file__).resolve().parents[1]
     env = dict(os.environ, PYTHONPATH=str(root) + (os.pathsep + os.environ["PYTHONPATH"] if os.environ.get("PYTHONPATH") else ""))
     try:

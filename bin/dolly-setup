@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # dolly-setup: optional, idempotent integration steps. Omarchy plugins have no
-# install hooks, so run this once after `omarchy plugin add ... --enable`.
+# setup hooks, so run this once after `omarchy plugin add ... --enable`.
 #
-#   bin/dolly-setup            menu entries + keybind + python deps check
+#   bin/dolly-setup            menu entries + keybinds + a check of what is missing
 #   bin/dolly-setup --undo     remove what this script added
 #
 # What it does (each step prints what it touched):
-#   1. Adds one "Demo" entry (everything else inside it) to
+#   1. Adds one "Dolly Recorder" entry (everything else inside it) to
 #      ~/.config/omarchy/extensions/omarchy-menu.jsonc under Trigger > Capture
 #      (between "// >>> dolly" / "// <<< dolly" markers; your other lines are kept).
 #   2. Adds keybinds to ~/.config/hypr/bindings.lua between the same markers
@@ -15,15 +15,18 @@
 #      replay, SUPER+ALT+N mute mic, SUPER+ALT+L recordings library (change them or
 #      switch them off in Settings > Shortcuts); plus a window rule for the live
 #      camera bubble.
-#   3. Checks the packages Dolly needs (python-numpy and python-pillow, wf-recorder
-#      where gpu-screen-recorder cannot capture) and offers to install them with
-#      omarchy-pkg-add, or a private pip venv for the python ones. Asks only when
-#      run in a terminal; otherwise prints the command.
+#   3. Reports what Dolly still needs on this machine, if anything (on a stock Omarchy:
+#      nothing; in a VM: wf-recorder, because gpu-screen-recorder cannot capture there).
+#      It installs nothing and asks for no password: it names the packages and says that
+#      Omarchy's package installer (Omarchy menu > Install > Package) adds them.
 #   4. Makes sure the record button is on the bar (omarchy bar put, where it exists).
 # It also links ~/.local/bin/dolly to this plugin's launcher, so `dolly` works in a
 # terminal, a script or a coding agent's shell (never replaces something that is not ours).
-# Steps 1, 2 and the link are done by `dolly integration apply` (dolly/integration.py):
-# no password, safe to repeat, and Dolly repeats them by itself after an update.
+# It also adds the Dolly Recorder entry to the application launcher (search "dolly" or
+# "screen recorder"); opening it shows the panel and never starts a take.
+# Steps 1, 2, the link and the launcher entry are done by `dolly integration apply`
+# (dolly/integration.py): only your own files, safe to repeat, and Dolly repeats them by
+# itself after an update.
 set -euo pipefail
 # keep __pycache__ out of the plugin folder (Omarchy reloads the plugin when it changes)
 export PYTHONPYCACHEPREFIX="${PYTHONPYCACHEPREFIX:-${XDG_CACHE_HOME:-$HOME/.cache}/dolly/pycache}"
@@ -32,44 +35,16 @@ DOLLY="$ROOT/bin/dolly"
 UNDO=false
 [[ ${1:-} == --undo ]] && UNDO=true
 
-# ---- 1 + 2: the menu entry, the hotkeys, the `dolly` command (user files only, no password)
+# ---- 1 + 2: the menu entry, the hotkeys, the `dolly` command and the launcher entry
+# (user files only, no password), run with the Python that bin/dolly picks
 if $UNDO; then
-  PYTHONPATH="$ROOT" python3 -m dolly.integration undo
+  "$DOLLY" integration undo
   exit 0
 fi
-PYTHONPATH="$ROOT" python3 -m dolly.integration apply
+"$DOLLY" integration apply
 
-# ---- 3. packages Dolly needs (python-numpy and python-pillow; wf-recorder when
-# gpu-screen-recorder cannot capture here, as in VMs). Asks only when someone can
-# answer: with stdin or stdout not a terminal (piped, scripted) it prints the command.
-MISSING="$("$DOLLY" deps --json 2>/dev/null | python3 -c 'import json,sys
-try: print(" ".join(json.load(sys.stdin)["packages"]))
-except Exception: print("python-numpy python-pillow")' || true)"
-if [[ -z $MISSING ]]; then
-  echo "packages: everything Dolly needs is installed"
-else
-  echo "packages: missing $MISSING"
-  "$DOLLY" deps 2>/dev/null | sed 's/^/    /' || true
-  if command -v omarchy-pkg-add >/dev/null; then INSTALL="omarchy-pkg-add $MISSING"; else INSTALL="sudo pacman -S --needed $MISSING"; fi
-  if [[ ${DOLLY_SETUP_YES:-} == 1 ]]; then
-    echo "packages: installing ($INSTALL)"
-    $INSTALL || echo "packages: not installed; later run: $DOLLY deps --install"
-  elif [[ -t 0 && -t 1 ]]; then
-    read -r -p "Install them now ($INSTALL)? [Y/n/v = private pip venv for the python ones] " a
-    case ${a:-y} in
-      [yY]*) $INSTALL ;;
-      [vV]*)
-        VENV="${XDG_DATA_HOME:-$HOME/.local/share}/dolly/venv"
-        python3 -m venv "$VENV" && "$VENV/bin/pip" install -q numpy pillow
-        echo "python: venv ready ($VENV); bin/dolly uses it automatically" ;;
-      *) echo "packages: skipped; later run: $DOLLY deps --install" ;;
-    esac
-  else
-    echo "packages: not asking (no terminal). Install with:"
-    echo "    $INSTALL"
-    echo "  or: $DOLLY deps --install   (opens a terminal that asks for your password)"
-  fi
-fi
+# ---- 3. what Dolly still needs here, in words. Nothing is installed.
+"$DOLLY" deps 2>/dev/null | sed 's/^/packages: /' || echo "packages: could not check (run: $DOLLY doctor)"
 
 # ---- 4. the record button on the bar. `omarchy plugin add --enable` places it on
 # current Omarchy; where `omarchy bar put` exists this makes sure (it leaves a widget

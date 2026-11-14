@@ -1,17 +1,19 @@
 """Speed ramps, reframe, privacy/secret detection, captions, audio chain, pause/mark, replay."""
 import json
+import math
 import os
+import random
+import statistics
 import subprocess
 import sys
 import time
 from pathlib import Path
 
-import numpy as np
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from dolly import capture, captions, privacy  # noqa: E402
+from dolly import capture, captions, gfx, privacy  # noqa: E402
 from dolly.events import Timeline  # noqa: E402
 from dolly.reframe import reframe_path  # noqa: E402
 from dolly.render import audio_filter, export, ffmpeg_bin, probe  # noqa: E402
@@ -44,9 +46,8 @@ def test_timemap_roundtrip_and_duration():
     for ts in (1.0, 4.9, 6.0, 9.0, 13.0, 20.0):
         assert tm.to_source(tm.to_output(ts)) == pytest.approx(ts)
     assert tm.speed_at(7) == 4 and tm.speed_at(10) == 1
-    taus = np.linspace(0, tm.duration, 200)
-    src = [tm.to_source(t) for t in taus]
-    assert np.all(np.diff(src) >= -1e-9)                          # monotonic
+    src = [tm.to_source(tm.duration * i / 199) for i in range(200)]
+    assert all(b - a >= -1e-9 for a, b in zip(src, src[1:]))      # monotonic
 
 
 def test_timemap_clips_segments_to_trim():
@@ -69,8 +70,8 @@ def test_idle_detected_and_microjitter_ignored():
 def test_visual_change_prevents_idle():
     ev = [{"t": 1.0, "type": "click", "x": 10, "y": 10, "button": "left"},
           {"t": 9.0, "type": "click", "x": 10, "y": 10, "button": "left"}]
-    at = np.arange(0, 10, 0.2)
-    ad = np.where((at > 3) & (at < 7), 500.0, 0.0)  # terminal printing output
+    at = [0.2 * i for i in range(50)]
+    ad = [500.0 if 3 < t < 7 else 0.0 for t in at]  # terminal printing output
     segs = detect_speedups(tl_from(ev, 10), (at, ad))
     assert all(not (s["start"] < 6 < s["end"]) for s in segs)
 
@@ -97,15 +98,19 @@ def test_reframe_crop_in_bounds_smooth_and_follows_cursor(aspect):
     tl = demo_tl()
     segs = build_segments(tl)
     p = reframe_path(tl, segs, aspect, 30, 0, tl.duration)
-    assert np.all(p.cx - p.cw / 2 >= -0.5) and np.all(p.cx + p.cw / 2 <= W + 0.5)
-    assert np.all(p.cy - p.ch / 2 >= -0.5) and np.all(p.cy + p.ch / 2 <= H + 0.5)
-    assert np.allclose(p.cw / p.ch, aspect)
-    inside = (np.abs(p.cur_x - p.cx) <= p.cw / 2) & (np.abs(p.cur_y - p.cy) <= p.ch / 2)
-    assert inside.mean() > 0.95
-    step = np.hypot(np.diff(p.cx), np.diff(p.cy)) / p.cw[1:]      # fraction of crop width per frame
-    assert step.max() < 0.08
+    cx, cy, cw, ch = ([float(v) for v in a] for a in (p.cx, p.cy, p.cw, p.ch))
+    cur_x, cur_y = [float(v) for v in p.cur_x], [float(v) for v in p.cur_y]
+    n = len(cx)
+    assert all(cx[i] - cw[i] / 2 >= -0.5 and cx[i] + cw[i] / 2 <= W + 0.5 for i in range(n))
+    assert all(cy[i] - ch[i] / 2 >= -0.5 and cy[i] + ch[i] / 2 <= H + 0.5 for i in range(n))
+    assert all(abs(cw[i] / ch[i] - aspect) <= 1e-8 + 1e-5 * aspect for i in range(n))
+    inside = [abs(cur_x[i] - cx[i]) <= cw[i] / 2 and abs(cur_y[i] - cy[i]) <= ch[i] / 2 for i in range(n)]
+    assert sum(inside) / n > 0.95
+    # fraction of crop width per frame
+    step = [math.hypot(cx[i] - cx[i - 1], cy[i] - cy[i - 1]) / cw[i] for i in range(1, n)]
+    assert max(step) < 0.08
     # zooms in during segments
-    assert p.cw.min() < p.cw.max() * 0.95
+    assert min(cw) < max(cw) * 0.95
 
 
 # ------------------------------------------------------------------ privacy
@@ -125,15 +130,36 @@ def test_find_secrets_patterns():
     assert "tok_demo" in s[a:b] and s[a:b].endswith("8e")
 
 
-def test_apply_boxes_only_inside_rect_and_time():
-    rng = np.random.default_rng(0)
-    f = rng.integers(0, 255, (200, 300, 3), dtype=np.uint8)
-    boxes = [{"start": 1, "end": 2, "rect": [50, 50, 100, 60], "mode": "pixelate"}]
-    assert privacy.apply_boxes(f, boxes, 0.5) is f
-    g = privacy.apply_boxes(f, boxes, 1.5)
-    assert np.array_equal(g[:40], f[:40]) and not np.array_equal(g[60:100, 60:140], f[60:100, 60:140])
-    # pixelated block is (much) lower variance than the noise
-    assert g[60:100, 60:140].std() < f[60:100, 60:140].std() * 0.5
+def _spread(frame, x, y, w, h):
+    """How much the pixels of that part of a frame differ among themselves (a standard deviation)."""
+    return statistics.pstdev(gfx.plane(gfx.crop(frame, x, y, w, h), "g"))
+
+
+@pytest.mark.parametrize("mode", ["pixelate", "blur"])
+def test_privacy_boxes_only_inside_rect_and_time(mode):
+    """A box is laid on the recording before it is composed: inside its rectangle and its
+    time the picture is unreadable, everywhere else and at any other time it is untouched."""
+    from dolly import project as projmod
+    from dolly.render import Compositor
+    from dolly.zoom import ZoomConfig
+    tl = Timeline.from_dict({"video": {"w": 300, "h": 200, "fps": 30, "duration": 3.0},
+                             "capture": {"cursor_baked": True}, "events": []})
+    style = projmod.deep_merge(projmod.DEFAULT_STYLE, {"output": {"width": 300, "height": 200, "fps": 30}, "padding": 0,
+                                                       "radius": 0, "shadow": 0, "keys": {"enabled": False}})
+    boxes = [{"start": 1, "end": 2, "rect": [50, 50, 100, 60], "mode": mode}]
+    f = gfx.frame_from(bytearray(random.Random(0).randbytes(4 * 300 * 200)), 300, 200)     # noise
+    before = gfx.copy(f)
+
+    def compose(t, privacy):
+        return Compositor(tl, style, [], ZoomConfig(), 0.0, 3.0, privacy=privacy).compose_at(t, f)
+    plain = compose(1.5, [])
+    assert gfx.same(compose(0.5, boxes), plain)                    # not its time: nothing happens
+    g = compose(1.5, boxes)
+    assert gfx.same(f, before)                                     # the decoded frame itself is never drawn on
+    assert gfx.same(gfx.crop(g, 0, 0, 300, 40), gfx.crop(plain, 0, 0, 300, 40))
+    assert gfx.same(gfx.crop(g, 160, 0, 140, 200), gfx.crop(plain, 160, 0, 140, 200))
+    # inside, the noise is gone: (much) lower variance
+    assert _spread(g, 60, 60, 80, 40) < _spread(plain, 60, 60, 80, 40) * 0.5
 
 
 def _tesseract_eng():
@@ -146,39 +172,19 @@ def _tesseract_eng():
     return "eng" in (r.stdout + r.stderr).split()
 
 
-def _mono_font(px):
-    """A real monospace TTF at px: Debian and Arch keep DejaVu in different places."""
-    import shutil
-    import subprocess
-    from PIL import ImageFont
-    cands = ["/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
-             "/usr/share/fonts/dejavu/DejaVuSansMono.ttf", "/usr/share/fonts/liberation/LiberationMono-Regular.ttf"]
-    if shutil.which("fc-match"):
-        cands.append(subprocess.run(["fc-match", "-f", "%{file}", "monospace"], capture_output=True, text=True).stdout)
-    for c in cands:
-        if c and Path(c).exists() and c.lower().endswith((".ttf", ".otf")):
-            return ImageFont.truetype(c, px)
-    try:
-        return ImageFont.load_default(px)          # Pillow >= 10.1: scalable built-in font
-    except TypeError:
-        return None
-
-
 @pytest.mark.skipif(not _tesseract_eng(), reason="tesseract with English data not installed")
 def test_scan_secrets_ocr_end_to_end():
-    from PIL import Image, ImageDraw
-    font = _mono_font(28)
-    if font is None:
-        pytest.skip("no scalable monospace font for the OCR fixture")
+    font = gfx.font("DejaVu Sans Mono, Liberation Mono, monospace", 28)
+    ink = gfx.rgb((169, 177, 214))
 
     def frame(show):
-        im = Image.new("RGB", (1280, 400), (26, 27, 38))
-        d = ImageDraw.Draw(im)
-        d.text((30, 40), "~/code/tasks main > cat .env.local", font=font, fill=(169, 177, 214))
+        im = gfx.new(1280, 400)
+        gfx.fill_rect(im, 0, 0, 1280, 400, gfx.rgb((26, 27, 38)))
+        gfx.draw_text(im, "~/code/tasks main > cat .env.local", 30, 40, font, ink)
         if show:
-            d.text((30, 100), "API_TOKEN=tok_demo_8f3a9c2e7b1d4f6a0c5e9b2d7f4a1c8e", font=font, fill=(169, 177, 214))
-        d.text((30, 160), "Running 12 tests in parallel", font=font, fill=(169, 177, 214))
-        return np.asarray(im)[..., ::-1].copy()
+            gfx.draw_text(im, "API_TOKEN=tok_demo_8f3a9c2e7b1d4f6a0c5e9b2d7f4a1c8e", 30, 100, font, ink)
+        gfx.draw_text(im, "Running 12 tests in parallel", 30, 160, font, ink)
+        return im
     frames = [(float(t), frame(2 <= t <= 5)) for t in range(8)]
     boxes = privacy.scan_secrets(None, 8.0, frames=iter(frames))
     assert len(boxes) == 1
@@ -258,13 +264,16 @@ def test_webcam_bubble_drawn_bottom_left(av_proj):
                  style_over={"output": {"width": 640, "height": 360, "fps": 15}, "title": {"enabled": False},
                              "speed": {"enabled": False}, "webcam": {"enabled": True, "corner": "bottom-left", "size": 0.25}})
     raw = subprocess.run([ffmpeg_bin(), "-v", "error", "-ss", "5", "-i", str(out), "-frames:v", "1", "-f", "rawvideo",
-                          "-pix_fmt", "bgr24", "-"], capture_output=True).stdout
-    f = np.frombuffer(raw, np.uint8).reshape(360, 640, 3)
-    bl = f[360 - 80:360 - 20, 20:80].reshape(-1, 3)
-    red = (bl[:, 2] > 180) & (bl[:, 1] < 80) & (bl[:, 0] < 80)
-    assert red.mean() > 0.5                                   # bubble present in the bottom-left corner
-    tr = f[20:80, 560:620].reshape(-1, 3)
-    assert ((tr[:, 2] > 180) & (tr[:, 1] < 80)).mean() < 0.05  # and not elsewhere
+                          "-pix_fmt", "bgr0", "-"], capture_output=True).stdout
+    f = gfx.frame_from(bytearray(raw), 640, 360)
+
+    def red(x, y, w, h):
+        """The share of clearly red pixels in that part of the frame."""
+        part = gfx.crop(f, x, y, w, h)
+        r, g, b = (gfx.plane(part, ch) for ch in "rgb")
+        return sum(1 for i in range(w * h) if r[i] > 180 and g[i] < 80 and b[i] < 80) / (w * h)
+    assert red(20, 360 - 80, 60, 60) > 0.5                    # bubble present in the bottom-left corner
+    assert red(560, 20, 60, 60) < 0.05                        # and not elsewhere
 
 
 def test_audio_filter_graph_shape():
@@ -368,8 +377,6 @@ def test_workers_progress_while_parent_threads_hold_locks(av_proj):
     the first frames still land within 10 s and the export completes."""
     import logging
     import threading
-    import numpy as np
-    from dolly import imgops
     from dolly import render as R
     held = threading.Event()
     release = threading.Event()
@@ -385,9 +392,9 @@ def test_workers_progress_while_parent_threads_hold_locks(av_proj):
         h.release()
 
     def busy_blurring():
-        a = np.random.rand(600, 600).astype(np.float32)
+        a = gfx.frame_from(bytearray(random.Random(1).randbytes(4 * 600 * 600)), 600, 600)
         while not release.is_set():
-            imgops.gaussian_blur(a, 5)
+            gfx.blur(a, 5)
     ts = [threading.Thread(target=hold_logging_lock, daemon=True), threading.Thread(target=busy_blurring, daemon=True)]
     for t in ts:
         t.start()
@@ -406,6 +413,42 @@ def test_workers_progress_while_parent_threads_hold_locks(av_proj):
         release.set()
     assert first and first[0] < 10.0, first
     assert out.exists() and out.stat().st_size > 1000
+
+
+@pytest.mark.parametrize("aspect", ["16:9", "9:16"])
+def test_workers_are_handed_the_path_and_do_not_plan_again(av_proj, monkeypatch, tmp_path, aspect):
+    """The camera path is worked out once, by the process that starts the export. A worker
+    reads it from its job, value for value, and renders its part without planning: on a
+    long take planning cost seconds and most of a worker's memory."""
+    import shutil
+    from dolly import reframe, render as R, render_chunk
+    over = {"output": {"width": 320, "height": 180, "fps": 10}, "title": {"enabled": False}, "speed": {"enabled": False}}
+    seen = {}
+    real = R._spawn_workers
+
+    def spy(job_spec, chunks, work, comp):
+        procs = real(job_spec, chunks, work, comp)
+        job = json.loads((work / "job-0.json").read_text())
+        shutil.copy(job["chunk"]["plan"], tmp_path / "plan.json")
+        seen["job"], seen["path"] = job, dict(vars(comp.crop if comp.reframe else comp.path))
+        return procs
+    monkeypatch.setattr(R, "_spawn_workers", spy)
+    out = R.export(av_proj, av_proj / "exports" / f"handed-{aspect[0]}.mp4", "mp4", "fast", workers=2, aspect=aspect,
+                   style_over=over)
+    assert out.exists() and seen["job"]["chunk"]["b"] > seen["job"]["chunk"]["a"]
+    plan = json.loads((tmp_path / "plan.json").read_text())
+    assert plan == seen["path"] and len(plan["cx"]) > 20                         # the same numbers, to the last digit
+
+    def planned_again(*a, **k):
+        raise AssertionError("a worker worked the path out again")
+    monkeypatch.setattr(R, "camera_path", planned_again)
+    monkeypatch.setattr(reframe, "reframe_path", planned_again)
+    part = tmp_path / "part.mp4"
+    job = {**seen["job"], "chunk": {**seen["job"]["chunk"], "out": str(part), "plan": str(tmp_path / "plan.json")}}
+    (tmp_path / "job.json").write_text(json.dumps(job))
+    render_chunk.main([str(tmp_path / "job.json")])                              # what a worker runs
+    n = seen["job"]["chunk"]["b"] - seen["job"]["chunk"]["a"]
+    assert abs(float(probe(part)["format"]["duration"]) - n / 10) < 0.25
 
 
 def test_chapter_chip_lasts_in_output_time():

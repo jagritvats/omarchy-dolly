@@ -103,14 +103,11 @@ def test_rewriting_a_file_keeps_its_mode(tmp_path, umask022):
 
 
 def test_a_picked_background_is_copied_for_this_user_only(home, umask022):  # noqa: F811
-    import io
-
-    from PIL import Image
-
-    from dolly import images
-    buf = io.BytesIO()
-    Image.new("RGB", (64, 36), (10, 20, 30)).save(buf, "PNG")
-    got = images.save_upload(buf.getvalue(), "wall.png")
+    from dolly import gfx, images
+    picture = gfx.new(64, 36)
+    gfx.fill_rect(picture, 0, 0, 64, 36, gfx.rgb((10, 20, 30)))
+    gfx.save(picture, home / "made.png")
+    got = images.save_upload((home / "made.png").read_bytes(), "wall.png")
     assert mode(got["path"]) == 0o600 and mode(Path(got["path"]).parent) == 0o700
 
 

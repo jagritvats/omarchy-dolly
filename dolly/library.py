@@ -77,7 +77,7 @@ def poster(pdir: Path, refresh: bool = False, duration: float | None = None) -> 
     if not src:
         return None
     try:
-        from .render import ffmpeg_bin
+        from .ff import ffmpeg_bin
         dur = 3.0
         try:
             dur = float(duration) if duration else float(fsutil.read_json(pdir / "events.json")["video"]["duration"])

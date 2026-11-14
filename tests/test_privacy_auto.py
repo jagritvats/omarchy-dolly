@@ -1,13 +1,13 @@
 """Privacy by default: secret-bearing windows and notification toasts are blurred with no
 settings, as ordinary boxes; nothing typed into such a window is kept."""
+import random
+import statistics
 import sys
 from pathlib import Path
 
-import numpy as np
-
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from dolly import privacy, sensitive  # noqa: E402
+from dolly import gfx, privacy, sensitive  # noqa: E402
 from dolly.events import Timeline  # noqa: E402
 from dolly.logger import Logger  # noqa: E402
 
@@ -46,11 +46,70 @@ def test_password_manager_is_one_removable_auto_box():
     assert b["start"] <= 2.0 and 5.9 <= b["end"] <= 6.2                       # there before it appears, gone after
     x, y, w, h = b["rect"]
     assert x <= 600 and y <= 300 and x + w >= 1200 and y + h >= 800           # the whole window
-    frame = np.random.default_rng(1).integers(0, 255, (1080, 1920, 3), dtype=np.uint8)
+    frame = gfx.frame_from(bytearray(random.Random(1).randbytes(4 * 1920 * 1080)), 1920, 1080)     # noise
+    before = gfx.copy(frame)
     out = privacy.apply_boxes(frame, boxes, 4.0)                              # the normal privacy pipeline
-    inside, outside = (slice(350, 750), slice(650, 1150)), (slice(0, 200), slice(0, 500))
-    assert out[inside].std() < 0.3 * frame[inside].std() and (out[outside] == frame[outside]).all()
-    assert privacy.apply_boxes(frame, boxes, 8.0) is frame
+    assert out is frame                                                       # blurred where it lies
+    inside, outside = (650, 350, 500, 400), (0, 0, 500, 200)
+    spread = lambda f, box: statistics.pstdev(gfx.plane(gfx.crop(f, *box), "g")[::7])
+    assert spread(out, inside) < 0.3 * spread(before, inside)
+    assert gfx.same(gfx.crop(out, *outside), gfx.crop(before, *outside))
+    blurred = gfx.copy(frame)
+    assert privacy.apply_boxes(frame, boxes, 8.0) is frame and gfx.same(frame, blurred)     # no box at that time
+
+
+def _lines_of_text(w, h):
+    """White strokes 2 px wide on black, 6 px apart, in rows 14 px high: about what small text is."""
+    f = gfx.new(w, h)
+    for y in range(4, h - 10, 14):
+        for x in range(4, w - 4, 6):
+            gfx.fill_rect(f, x, y, 2, 9, (1, 1, 1))
+    return f
+
+
+def _levels(f, x, y, w, h):
+    g = gfx.plane(gfx.crop(f, x, y, w, h), "g")
+    return min(g), max(g)
+
+
+def _step(f, x, y, w, h):
+    """The largest difference between two neighbouring pixels (side by side or one above the other)."""
+    g = gfx.plane(gfx.crop(f, x, y, w, h), "g")
+    across = max(abs(a - b) for i in range(0, len(g), w) for a, b in zip(g[i:i + w], g[i + 1:i + w]))
+    return max(across, max(abs(a - b) for a, b in zip(g, g[w:])))
+
+
+def test_what_is_under_a_box_cannot_be_read():
+    box = {"start": 0, "end": 9, "rect": [100, 60, 400, 140]}
+    f = _lines_of_text(640, 360)
+    assert _levels(f, 100, 60, 400, 140) == (0, 255) and _step(f, 100, 60, 400, 140) == 255
+    privacy.apply_boxes(f, [box], 1.0)
+    lo, hi = _levels(f, 100, 60, 400, 140)
+    assert _step(f, 100, 60, 400, 140) <= 3 and hi < 200  # no stroke left, no edge of one: a smooth grey
+    assert _levels(f, 100, 210, 400, 100) == (0, 255)     # below the box the text is as sharp as before
+    # pixelate: a few blocks, each of one colour
+    g = _lines_of_text(640, 360)
+    privacy.apply_boxes(g, [{**box, "mode": "pixelate"}], 1.0)
+    lo, hi = _levels(g, 100, 60, 400, 140)
+    assert hi - lo < 120 and _step(g, 130, 90, 12, 12) == 0
+    assert len(set(gfx.plane(gfx.crop(g, 100, 60, 400, 140), "g"))) <= (400 // 23) * (140 // 23)
+    # a disabled box, a box of another time and a sliver do nothing
+    h = _lines_of_text(640, 360)
+    same = gfx.copy(h)
+    privacy.apply_boxes(h, [{**box, "enabled": False}, {**box, "start": 5}, {**box, "rect": [10, 10, 1.4, 300]}], 1.0)
+    assert gfx.same(h, same)
+
+
+def test_nothing_next_to_a_box_gets_into_it_and_the_edge_of_the_frame_is_fine():
+    f = gfx.new(320, 200)
+    gfx.fill_rect(f, 0, 0, 320, 200, (1, 1, 1))
+    gfx.fill_rect(f, 120, 80, 100, 60, (0, 0, 0))         # a black field on a white page, the box exactly on it
+    privacy.apply_boxes(f, [{"start": 0, "end": 9, "rect": [120, 80, 100, 60]}], 1.0)
+    assert _levels(f, 120, 80, 100, 60) == (0, 0)         # still black: no white was blurred in
+    assert _levels(f, 0, 0, 320, 80) == (255, 255) and gfx.pixel(f, 119, 100) == (255, 255, 255)
+    g = _lines_of_text(320, 200)                          # a box that sticks out of the frame on two sides
+    privacy.apply_boxes(g, [{"start": 0, "end": 9, "rect": [-50, -40, 200, 150]}], 1.0)
+    assert _step(g, 0, 0, 150, 110) <= 3 and _levels(g, 160, 120, 150, 70) == (0, 255)
 
 
 def test_moving_window_is_covered_along_its_path():

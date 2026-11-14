@@ -4,6 +4,7 @@ import Quickshell.Io
 import qs.Commons
 import qs.Commons as Commons
 import qs.Ui
+import "." as Compat
 
 // The Dolly panel under the bar button.
 //
@@ -31,7 +32,7 @@ Panel {
   readonly property string dolly: hostWidget ? hostWidget.dolly : ""
   property var cfg: ({})              // Settings (config.json), loaded each time the panel opens
 
-  Commons.Translations { id: tr; directory: Qt.resolvedUrl("i18n") }
+  Compat.DollyTranslations { id: tr; directory: Qt.resolvedUrl("i18n") }
 
   // config.json is the source of truth; the widget's shell.json values are the fallback
   property string mode: (cfg.capture && cfg.capture.mode) || (hostWidget ? hostWidget.setting("mode", "window") : "window")
@@ -111,7 +112,7 @@ Panel {
   }
   function fmtDate(ts) {
     var d = new Date(Number(ts || 0) * 1000)
-    return d.toLocaleString(Qt.locale(Commons.I18n.formatLocale), "d MMM · HH:mm")
+    return d.toLocaleString(Qt.locale(tr.formatLocale), "d MMM · HH:mm")
   }
 
   function open() { root.controller.show(); refreshAll() }
@@ -137,6 +138,9 @@ Panel {
   property var hotkeyConflicts: []
   // packages Dolly still needs (fresh Omarchy: the Python packages; VMs: wf-recorder)
   property var missingPackages: []
+  // ... and of those, the ones a recording cannot start without (the rest only hold back
+  // the editor and the zoom: recording and the plain export work without them)
+  property var blockingPackages: []
   Process {
     id: panelProc
     command: [root.dolly, "panel", "--json"]
@@ -156,6 +160,7 @@ Panel {
           root.integrationKnown = true
         } else root.integrationKnown = false
         root.missingPackages = (d.deps && d.deps.packages) || []
+        root.blockingPackages = (d.deps && d.deps.blocking) || []
       }
     }
   }
@@ -204,23 +209,22 @@ Panel {
     }
   }
 
-  KeyboardPanel {
+  Compat.DollyKeyboardPanel {
     id: panel
     anchorItem: root.anchorItem
     owner: root.barIdentity
     bar: root.bar
     open: root.opened
     centerOnBar: false
-    focusTarget: panel.loadedContent
+    focusTarget: panel.bodyItem
     contentWidth: panel.fittedContentWidth(Style.space(380))
-    contentHeight: panel.fittedContentHeight(panel.loadedContentHeight)
+    contentHeight: panel.fittedContentHeight(panel.bodyHeight)
 
-    content: PanelKeyCatcher {
+    body: PanelKeyCatcher {
       anchors.fill: parent
       implicitHeight: col.implicitHeight
       onCloseRequested: root.close()
       onActivateRequested: if (!root.recording) root.start()
-      onReturnRequested: if (!root.recording) root.start()
       onTabRequested: function(direction) { root.switchPanel(direction) }
 
       Column {
@@ -366,9 +370,7 @@ Panel {
                     wrapMode: Text.WordWrap; elide: Text.ElideNone
                     color: root.setUp ? root.urgent : root.fg
                     text: root.setUp ? tr.t("panel.hotkeyConflict").arg(root.hotkeyConflicts.join(", "))
-                                     : (root.missingPackages.length > 0
-                                        ? tr.t("panel.setupHintPackages").arg(root.missingPackages.join(", "))
-                                        : tr.t("panel.setupHint")) }
+                                     : tr.t("panel.setupHint") }
             // a hotkey is taken: Fix gives it up, Shortcuts opens Settings where other keys can be chosen
             Button { id: shortcutsBtn; visible: root.setUp; anchors.right: setupBtn.left
                      anchors.rightMargin: Style.space(6); anchors.verticalCenter: parent.verticalCenter
@@ -381,16 +383,16 @@ Panel {
                                   else { root.close(); root.run(["setup"]) } } }
           }
 
+          // what is missing, in words: Dolly installs nothing, Omarchy's package installer does
           Item {
-            visible: root.missingPackages.length > 0 && (root.setUp || !root.integrationKnown)
+            visible: root.missingPackages.length > 0
             width: parent.width; height: visible ? needsLabel.implicitHeight + Style.space(8) : 0
-            Label { id: needsLabel; anchors.left: parent.left; anchors.right: installBtn.left
-                    anchors.rightMargin: Style.space(8); anchors.verticalCenter: parent.verticalCenter
-                    wrapMode: Text.WordWrap; elide: Text.ElideNone; color: root.urgent
-                    text: tr.t("panel.needs").arg(root.missingPackages.join(", ")) }
-            Button { id: installBtn; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
-                     text: tr.t("panel.install"); iconText: "󰏗"; bordered: true; foreground: root.accent; fontFamily: root.ff
-                     onClicked: { root.close(); root.run(["deps", "--install"]) } }
+            Label { id: needsLabel; anchors.left: parent.left; anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    wrapMode: Text.WordWrap; elide: Text.ElideNone
+                    color: root.blockingPackages.length > 0 ? root.urgent : root.fg
+                    text: tr.t(root.blockingPackages.length > 0 ? "panel.needs" : "panel.needsEditor")
+                            .arg(root.missingPackages.join(", ")) }
           }
 
           Rectangle {

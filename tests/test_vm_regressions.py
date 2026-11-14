@@ -7,7 +7,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from dolly.events import Timeline  # noqa: E402
 from dolly import aoi as aoimod  # noqa: E402
-from dolly.zoom import around_caret  # noqa: E402
 
 W, H = 1920, 1200
 
@@ -31,6 +30,7 @@ def test_duplicate_key_presses_count_once(tmp_path):
 
 def test_typing_shot_is_around_the_caret_not_the_middle_of_the_union():
     """After `clear`, the typing rect spans most of the terminal; the shot must frame the caret."""
+    from dolly.zoom import around_caret
     r = around_caret((12, 48, 735, 1123), (202, 110), 16.0, W)
     cy = (r[1] + r[3]) / 2
     assert r[1] <= 110 <= r[3] and abs(cy - 110) < 40, r
@@ -38,6 +38,7 @@ def test_typing_shot_is_around_the_caret_not_the_middle_of_the_union():
 
 
 def test_caret_outside_rect_is_trusted():
+    from dolly.zoom import around_caret
     r = around_caret((12, 600, 700, 700), (100, 200), 16.0, W)
     assert r[1] <= 200 <= r[3] and r[0] <= 100 <= r[2]
 
@@ -47,9 +48,8 @@ def _act(blobs_at):
     n = 60
     t = [i * 0.1 for i in range(n)]
     blobs = [blobs_at.get(i, []) for i in range(n)]
-    import numpy as np
-    frac = np.array([sum(b[4] for b in bl) for bl in blobs])
-    return aoimod.Activity(t=np.array(t), frac=frac, blobs=blobs, w=W, h=H)
+    frac = [sum(b[4] for b in bl) for bl in blobs]
+    return aoimod.Activity(t=t, frac=frac, blobs=blobs, w=W, h=H)
 
 
 def test_resting_pointer_is_not_pointer_activity():
@@ -90,10 +90,10 @@ def test_export_progress_is_quiet_in_logs(monkeypatch):
 def test_typing_without_a_fresh_caret_uses_the_nearest_one():
     """Keys whose glyphs are not seen yet use the nearest caret (ahead first, then behind),
     not the whole window (a 1.2x centred shot that made zoom pump in and out)."""
-    import numpy as np
+    from dolly import num
     from dolly.zoom import last_caret
     from dolly.aoi import AOITrack
-    t = np.arange(0, 6, 0.1)
+    t = num.arange(0, 6, 0.1)
     kind = [None] * len(t)
     foc = [None] * len(t)
     for i in range(30, 35):

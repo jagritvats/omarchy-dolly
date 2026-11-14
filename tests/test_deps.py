@@ -1,9 +1,9 @@
 """Fresh-install paths (found on an Omarchy 4.0.4 VirtualBox VM, Nov 10):
-- `dolly doctor` must report missing python-numpy/pillow, not crash on them
+- `dolly doctor` must report a missing python-cairo, not crash on it
 - gpu-screen-recorder that cannot capture on the GPU ("unknown gpu vendor: VMware")
   makes wf-recorder a missing package
-- recording with packages missing stops before the picker/DND and says what to
-  install, with an Install button that runs `dolly deps --install`
+- recording with a recorder missing stops before the picker/DND and says which package
+  is missing and where to install it; there is no Install button: Dolly installs nothing
 """
 import json
 import os
@@ -54,18 +54,20 @@ def run(env, *args, site=True):
     return subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=60)
 
 
-def test_doctor_reports_missing_python_packages_instead_of_crashing(env):
-    r = run(env, "doctor", "--json", site=False)       # -S: no site-packages, so no numpy/PIL
+def test_doctor_reports_a_missing_cairo_instead_of_crashing(env):
+    r = run(env, "doctor", "--json", site=False)       # -S: no site-packages, so no cairo
     assert "Traceback" not in r.stderr, r.stderr
     rep = json.loads(r.stdout)
-    assert rep["ok"] is False
+    assert rep["ok"] is False                          # the recorder cannot capture here (VMware stub)
     pk = rep["missing_packages"]["packages"]
-    assert {"python-numpy", "python-pillow"} <= set(pk) and "python-opencv" not in pk
+    assert pk == ["python-cairo", "wf-recorder"]
     names = {c["name"]: c for c in rep["checks"]}
-    assert names["python: PIL"]["ok"] is False and "dolly deps --install" in names["python: PIL"]["detail"]
-    assert "python: cv2" not in names
+    row = names["python: cairo"]
+    assert row["ok"] is False and row["level"] == "warn" and "Omarchy menu > Install > Package" in row["detail"]
+    assert not any(n.startswith(("python: numpy", "python: PIL", "python: cv2")) for n in names)
     r = run(env, "doctor", site=False)
-    assert "Missing packages:" in r.stdout and "dolly deps --install" in r.stdout
+    assert "Missing packages:" in r.stdout and "Dolly installs nothing itself" in r.stdout
+    assert "deps --install" not in r.stdout
 
 
 def test_gsr_that_cannot_capture_makes_wf_recorder_missing(env, tmp_path):
@@ -95,37 +97,34 @@ def test_doctor_marks_unusable_gsr(env):
     assert c["a capture backend"]["ok"] is False and "wf-recorder" in c["a capture backend"]["detail"]
 
 
-def test_record_with_packages_missing_says_what_to_install(env, tmp_path):
+def test_record_with_a_recorder_missing_says_what_to_install(env, tmp_path):
     r = run(env, "record", "--mode", "screen", "--countdown", "0")
     assert r.returncode != 0
-    assert "wf-recorder" in r.stderr and "dolly deps --install" in r.stderr
-    log = (tmp_path / "notify.log").read_text()
-    assert "Dolly needs a few packages first" in log
+    assert "missing packages: wf-recorder (install it with Omarchy menu > Install > Package)" in r.stderr
+    import time
+    notes = tmp_path / "notify.log"
+    for _ in range(50):                        # the card is sent by a child process
+        if notes.exists() and "---" in notes.read_text():
+            break
+        time.sleep(0.1)
+    log = notes.read_text()
+    assert "Dolly cannot record here yet" in log
     assert "gpu-screen-recorder cannot capture here (unknown gpu vendor)" in log
-    lines = log.splitlines()
-    i = lines.index("--action")
-    assert lines[i + 1] == "Install" and lines[i + 2].endswith("bin/dolly") and lines[i + 3:i + 5] == ["deps", "--install"]
+    assert "Omarchy's package installer (Omarchy menu > Install > Package)" in log
+    assert "--action" not in log.splitlines() and "--install" not in log    # nothing to click that installs
     # stopped before anything changed: no recording folder, DND never touched
     assert not (tmp_path / "videos").exists() or not any((tmp_path / "videos").iterdir())
     shell = (tmp_path / "shell.log").read_text() if (tmp_path / "shell.log").exists() else ""
     assert "dnd" not in shell.lower() and "silenc" not in shell.lower()
 
 
-def test_deps_install_opens_omarchy_terminal(env, tmp_path):
-    bindir = tmp_path / "bin"
-    _stub(bindir, "omarchy-pkg-add", "#!/usr/bin/env bash\nexit 0\n")
-    _stub(bindir, "omarchy-launch-floating-terminal-with-presentation",
+def test_deps_names_the_packages_and_opens_nothing(env, tmp_path):
+    _stub(tmp_path / "bin", "omarchy-launch-floating-terminal-with-presentation",
           '#!/usr/bin/env bash\nprintf "%s" "$1" > "$HOME/term-cmd"\n')
-    r = run(env, "deps", "--install", "--json")
-    out = json.loads(r.stdout)
-    assert out["launched"] is True and out["packages"] == ["wf-recorder"]
-    import time
-    for _ in range(50):
-        if (tmp_path / "term-cmd").exists():
-            break
-        time.sleep(0.1)
-    cmd = (tmp_path / "term-cmd").read_text()
-    assert cmd.startswith("omarchy-pkg-add wf-recorder && ") and cmd.endswith("bin/dolly doctor")
+    r = run(env, "deps")
+    assert r.returncode == 0 and r.stdout.startswith("wf-recorder ") and "unknown gpu vendor" in r.stdout
+    assert "install these with Omarchy's package installer (Omarchy menu > Install > Package)" in r.stdout
+    assert not (tmp_path / "term-cmd").exists()
 
 
 def test_help_has_no_internal_or_suppressed_entries(env):
@@ -133,14 +132,14 @@ def test_help_has_no_internal_or_suppressed_entries(env):
     assert "SUPPRESS" not in out and "log-events" not in out and "deps" in out
 
 
-def test_dolly_setup_prints_the_command_when_not_in_a_terminal(env, tmp_path):
+def test_dolly_setup_reports_what_is_missing_and_installs_nothing(env, tmp_path):
     (tmp_path / ".config" / "hypr").mkdir(parents=True)
     (tmp_path / ".config" / "hypr" / "bindings.lua").write_text("-- user binds\n")
     r = subprocess.run(["bash", str(ROOT / "bin" / "dolly-setup")], env=env, capture_output=True, text=True,
                        timeout=120, stdin=subprocess.DEVNULL)
-    assert "packages: missing wf-recorder" in r.stdout
-    assert "not asking (no terminal)" in r.stdout and "deps --install" in r.stdout
-    assert "[y/N]" not in r.stdout and "[Y/n" not in r.stdout
+    assert "packages: wf-recorder " in r.stdout and "unknown gpu vendor" in r.stdout
+    assert "packages: Dolly installs nothing itself" in r.stdout and "Omarchy menu > Install > Package" in r.stdout
+    assert "[y/N]" not in r.stdout and "[Y/n" not in r.stdout and "--install" not in r.stdout
 
 
 def test_gsr_info_that_exits_0_but_cannot_capture(env, tmp_path):

@@ -12,8 +12,7 @@ import math
 from dataclasses import dataclass
 from pathlib import Path
 
-import numpy as np
-
+from dolly import num
 from dolly import project as projmod
 from dolly.events import Timeline
 from dolly.render import Compositor, load_aoi
@@ -65,6 +64,14 @@ def _on_wide_subject(vis, aoi, strip):
     return on >= 0.85 * (vis[2] - vis[0])
 
 
+def _gradient(a):
+    """NumPy's gradient of a list: central differences inside, one-sided at the two ends."""
+    n = len(a)
+    if n < 2:
+        return [0.0] * n
+    return ([a[1] - a[0]] + [(a[i + 1] - a[i - 1]) / 2 for i in range(1, n - 1)] + [a[-1] - a[-2]])
+
+
 def _contains(outer, inner, tol):
     return (inner[0] >= outer[0] - tol and inner[1] >= outer[1] - tol and
             inner[2] <= outer[2] + tol and inner[3] <= outer[3] + tol)
@@ -75,13 +82,13 @@ def _reversals(v, amp, seg_mask, dead=0.03, min_amp=0.03, where=None):
     travel >= min_amp viewport widths and the camera must not have come to rest in between
     (|v| < dead for ~0.15 s). Moving to a new subject after settling is a new beat."""
     n = 0
-    for axis in range(v.shape[1]):
+    for axis in range(len(v)):
         sign, travel, still = 0, 0.0, 0
-        for i in range(len(v)):
+        for i in range(len(seg_mask)):
             if not seg_mask[i]:
                 sign, travel = 0, 0.0
                 continue
-            x = v[i, axis]
+            x = v[axis][i]
             sg = 1 if x > dead else (-1 if x < -dead else 0)
             if sg == 0:
                 still += 1
@@ -90,21 +97,21 @@ def _reversals(v, amp, seg_mask, dead=0.03, min_amp=0.03, where=None):
                 continue
             still = 0
             if sign == 0:
-                sign, travel = sg, abs(amp[i, axis])
+                sign, travel = sg, abs(amp[axis][i])
             elif sg == sign:
-                travel += abs(amp[i, axis])
+                travel += abs(amp[axis][i])
             else:
                 if travel > min_amp:
                     # count only if the new direction also travels far enough
                     j, t2 = i, 0.0
-                    while j < len(v) and seg_mask[j] and (1 if v[j, axis] > dead else (-1 if v[j, axis] < -dead else 0)) in (sg, 0):
-                        t2 += abs(amp[j, axis])
+                    while j < len(seg_mask) and seg_mask[j] and (1 if v[axis][j] > dead else (-1 if v[axis][j] < -dead else 0)) in (sg, 0):
+                        t2 += abs(amp[axis][j])
                         j += 1
                     if t2 > min_amp:
                         n += 1
                         if where is not None:
                             where.append((i, axis))
-                sign, travel = sg, abs(amp[i, axis])
+                sign, travel = sg, abs(amp[axis][i])
     return n
 
 
@@ -194,40 +201,43 @@ def evaluate(pdir: Path, aspect: str = "16:9", engine: Engine = Engine("after", 
                     cursor_over_text += 1
         if not fr.get("cursor_in", True) and comp.draw_cursor and comp.cursor_alpha(ts) > 0.05:
             cursor_out_drawn += 1
-    cx, cy, vw = np.array(cx), np.array(cy), np.array(vw)
     cuts = set(getattr(comp.crop if comp.reframe else comp.path, "cuts", None) or [])
-    ok = np.ones(n, bool)
+    ok = [True] * n
     for c in cuts:
-        ok[max(0, c - 3):min(n, c + 3)] = False
+        ok[max(0, c - 3):min(n, c + 3)] = [False] * len(ok[max(0, c - 3):min(n, c + 3)])
     dt = 1 / fps
-    vx = np.gradient(cx) / dt / vw
-    vy = np.gradient(cy) / dt / vw
-    vz = np.abs(np.gradient(np.log(vw)) / dt)
-    pan = np.hypot(vx, vy)
-    ax = np.gradient(vx) / dt
-    ay = np.gradient(vy) / dt
-    acc = np.hypot(ax, ay)
-    jerk = np.hypot(np.gradient(ax) / dt, np.gradient(ay) / dt)
-    seg_mask = np.zeros(n, bool)
+    vx = [g / dt / w for g, w in zip(_gradient(cx), vw)]
+    vy = [g / dt / w for g, w in zip(_gradient(cy), vw)]
+    vz = [abs(g / dt) for g in _gradient([math.log(w) for w in vw])]
+    pan = [math.hypot(a, b) for a, b in zip(vx, vy)]
+    ax = [g / dt for g in _gradient(vx)]
+    ay = [g / dt for g in _gradient(vy)]
+    acc = [math.hypot(a, b) for a, b in zip(ax, ay)]
+    jerk = [math.hypot(a / dt, b / dt) for a, b in zip(_gradient(ax), _gradient(ay))]
+    seg_mask = [False] * n
     for sgm in segs:
         a = int((sgm.start + 0.4 - t0) * fps)
         b = int((sgm.end - 0.4 - t0) * fps)
         if b > a:
-            seg_mask[max(0, a):max(0, min(n, b))] = True
-    seg_mask &= ok
-    seg_mask &= vz < 0.12          # pans only: a crop widening from a pinned edge is a zoom, not a reversal
-    amp = np.stack([vx * dt, vy * dt], 1)
+            lo, hi = max(0, a), max(0, min(n, b))
+            seg_mask[lo:hi] = [True] * len(seg_mask[lo:hi])
+    # pans only: a crop widening from a pinned edge is a zoom, not a reversal
+    seg_mask = [m and k and z < 0.12 for m, k, z in zip(seg_mask, ok, vz)]
+    amp = ([v * dt for v in vx], [v * dt for v in vy])
     where = []
-    rev = _reversals(np.stack([vx, vy], 1), amp, seg_mask, where=where)
-    sel = ok if ok.any() else np.ones(n, bool)
+    rev = _reversals((vx, vy), amp, seg_mask, where=where)
+    sel = ok if any(ok) else [True] * n
+
+    def picked(a):
+        return [v for v, keep in zip(a, sel) if keep]
     res = {
         "scenario": truth["name"], "aspect": aspect, "engine": engine.name, "frames": n,
         "aoi_frames": aoi_total,
         "aoi_in_frame_pct": round(100.0 * aoi_in / aoi_total, 1) if aoi_total else 100.0,
-        "pan_speed": round(float(pan[sel].max()), 3) if n else 0.0,
-        "zoom_speed": round(float(vz[sel].max()), 3) if n else 0.0,
-        "pan_accel": round(float(np.percentile(acc[sel], 99.5)), 2) if n else 0.0,
-        "pan_jerk": round(float(np.percentile(jerk[sel], 99)), 1) if n else 0.0,
+        "pan_speed": round(max(picked(pan)), 3) if n else 0.0,
+        "zoom_speed": round(max(picked(vz)), 3) if n else 0.0,
+        "pan_accel": round(num.percentile(picked(acc), 99.5), 2) if n else 0.0,
+        "pan_jerk": round(num.percentile(picked(jerk), 99), 1) if n else 0.0,
         "reversals": int(rev),
         "cuts": len(cuts),
         "typing_frames": text_frames,
@@ -296,7 +306,7 @@ def check(res: dict):
 
 def debug_frames(pdir, aspect, engine, times, out_png, fps=30.0):
     """Composite frames at `times` with the truth AOI outlined (red) - diagnostics only."""
-    from dolly import imgops
+    from dolly import gfx
     from scene import blit_text
     pdir = Path(pdir)
     truth = json.loads((pdir / "truth.json").read_text())
@@ -317,8 +327,8 @@ def debug_frames(pdir, aspect, engine, times, out_png, fps=30.0):
     tiles = []
     for t in times:
         raw = subprocess.run(["ffmpeg", "-v", "error", "-ss", f"{t:.3f}", "-i", str(proj.raw), "-frames:v", "1",
-                              "-f", "rawvideo", "-pix_fmt", "bgr24", "-"], capture_output=True).stdout
-        frame = np.frombuffer(raw, np.uint8).reshape(tl.h, tl.w, 3)
+                              "-f", "rawvideo", "-pix_fmt", "bgr0", "-"], capture_output=True).stdout
+        frame = gfx.frame_from(bytearray(raw), tl.w, tl.h)
         img = comp.compose_at(t, frame)
         fr = truth["frames"][min(len(truth["frames"]) - 1, int(round(t * truth["fps"])))]
         z, k, vx0, vy0 = comp.affine_at(t)
@@ -326,12 +336,16 @@ def debug_frames(pdir, aspect, engine, times, out_png, fps=30.0):
             a = fr["aoi"]
             x0, y0, x1, y1 = (int((a[0] - vx0) * k), int((a[1] - vy0) * k), int((a[2] - vx0) * k), int((a[3] - vy0) * k))
             for p0, p1 in (((x0, y0), (x1, y0 + 1)), ((x0, y1 - 1), (x1, y1)), ((x0, y0), (x0 + 1, y1)), ((x1 - 1, y0), (x1, y1))):
-                imgops.fill_rect(img, p0, p1, (60, 60, 255))
+                gfx.fill_rect(img, p0[0], p0[1], p1[0] - p0[0] + 1, p1[1] - p0[1] + 1, gfx.rgb((255, 60, 60)))
         blit_text(img, 10, 8, f"{t:.2f}s {fr.get('kind') or ''}", 20, (255, 255, 255), bold=True)
         tiles.append(img)
-    h = max(t.shape[0] for t in tiles)
-    row = np.concatenate([np.pad(t, ((0, h - t.shape[0]), (0, 4), (0, 0))) for t in tiles], 1)
-    imgops.write_image(out_png, row)
+    h = max(t.get_height() for t in tiles)
+    row = gfx.new(sum(t.get_width() + 4 for t in tiles), h)     # black between and below, as the padding was
+    x = 0
+    for t in tiles:
+        gfx.place(row, t, 1, 1, x, 0)
+        x += t.get_width() + 4
+    gfx.save(row, out_png)
 
 
 def trace(pdir, aspect, engine=Engine("after", True), fps=30.0):
@@ -348,6 +362,6 @@ def trace(pdir, aspect, engine=Engine("after", True), fps=30.0):
     segs = [Segment.from_dict(s) for s in data["segments"]]
     trim = data.get("trim") or [0.0, tl.duration]
     comp = Compositor(tl, style, segs, zcfg, float(trim[0]), float(trim[1]), aspect=aspect, aoi=aoi)
-    ts = np.arange(float(trim[0]), float(trim[1]), 1 / fps)
-    rs = np.array([_visible_rect(comp, t)[0] for t in ts])
+    ts = num.arange(float(trim[0]), float(trim[1]), 1 / fps)
+    rs = [_visible_rect(comp, t)[0] for t in ts]
     return ts, rs, comp, aoi, segs

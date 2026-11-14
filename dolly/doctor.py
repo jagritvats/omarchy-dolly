@@ -6,7 +6,6 @@ machine-readable report (used by the editor and by the test plan).
 from __future__ import annotations
 
 import glob
-import importlib
 import json
 import os
 import platform
@@ -89,56 +88,57 @@ def check(as_json=False) -> dict:
 
     # --- python
     add("Python >= 3.10", sys.version_info >= (3, 10), platform.python_version())
-    for mod, pkg in (("numpy", "python-numpy"), ("PIL", "python-pillow")):
-        try:
-            m = importlib.import_module(mod)
-            add(f"python: {mod}", True, getattr(m, "__version__", ""))
-        except Exception:
-            add(f"python: {mod}", False, f"missing - {pkg} (dolly deps --install)")
+    from . import deps, gfx
+    # not failures: recording, Stop, the zoom plan and the plain export run without cairo,
+    # and text without Pango falls back to cairo's own simple font
+    add("python: cairo", gfx.available(), "draws the editor and the styled export" if gfx.available() else
+        f"missing - the editor and the styled export need {deps.how([deps.DRAW_PACKAGE])}; "
+        "recording and the plain export do not", "warn")
+    if gfx.available():
+        add("python: Pango (text)", not deps.text_layout_missing(), "pango" if not deps.text_layout_missing() else
+            "not usable (package python-gobject, pango or a font missing): text is drawn with cairo's simple font",
+            "warn")
+    old_env = deps.passed_over_environment()
+    if old_env:
+        add("private Python environment", False,
+            f"not used: {old_env} cannot see the system's packages (cairo), so Dolly runs the system Python. "
+            "Versions up to 0.7.3 made it for NumPy and Pillow, which are no longer needed: delete the folder, "
+            "or remake it as docs/captions.md says if it holds a transcriber", "warn")
 
     # --- ffmpeg
     ff = shutil.which("ffmpeg")
-    add("ffmpeg", ff, ff or "pacman -S ffmpeg")
-    # Dolly stopped using OpenCV in 0.7.0. Say so once if the package is still here; nothing
-    # is ever removed for the user (another program may need it).
-    if shutil.which("pacman"):
-        rc, _out = sh(["pacman", "-Qq", "python-opencv"])
-        if rc == 0:
-            add("python-opencv (no longer needed)", True,
-                "still installed, but Dolly does not use it any more. If nothing else on this machine does: "
-                "sudo pacman -Rs python-opencv (pacman lists what goes with it before it asks)")
+    add("ffmpeg", ff, ff or "missing: package ffmpeg (Omarchy ships it)")
     if ff:
         rc, enc = sh(["ffmpeg", "-hide_banner", "-encoders"])
         add("ffmpeg libx264 encoder", "libx264" in enc, "needed for export")
     # --- capture backends
     gsr = shutil.which("gpu-screen-recorder")
     wf = shutil.which("wf-recorder")
-    from . import deps
     gsr_bad = deps.gsr_unusable() if gsr else None
-    add("gpu-screen-recorder", gsr, gsr or "pacman -S gpu-screen-recorder (Omarchy ships it)", "warn")
+    add("gpu-screen-recorder", gsr, gsr or "missing: package gpu-screen-recorder (Omarchy ships it)", "warn")
     if gsr:
         add("gpu-screen-recorder can capture on this GPU", not gsr_bad,
-            "yes (or not probed)" if not gsr_bad else f"no: {gsr_bad} - common in VMs; install wf-recorder",
+            "yes (or not probed)" if not gsr_bad else f"no: {gsr_bad} - common in VMs; wf-recorder records instead (package wf-recorder)",
             "warn" if wf else "error")
-    add("wf-recorder (software fallback)", wf, wf or "pacman -S wf-recorder  (recommended in VMs)", "warn")
+    add("wf-recorder (software fallback)", wf, wf or "missing: package wf-recorder (needed in VMs)", "warn")
     if (gsr and not gsr_bad) or wf:
         add("a capture backend", True, "gpu-screen-recorder" if gsr and not gsr_bad else "wf-recorder")
     else:
         add("a capture backend", False,
-            "need wf-recorder (dolly deps --install)" if gsr_bad else "need gpu-screen-recorder or wf-recorder")
+            f"need {deps.how(['wf-recorder'])}" if gsr_bad else "need gpu-screen-recorder or wf-recorder")
     for tool in ("slurp", "jq"):
         add(tool, shutil.which(tool), "", "warn")
 
     # --- round 2 features (all optional)
-    add("wl-copy (copy file / link to clipboard)", shutil.which("wl-copy"), shutil.which("wl-copy") or "pacman -S wl-clipboard (ships with Omarchy)", "warn")
-    add("tesseract (scrub secrets OCR)", shutil.which("tesseract"), shutil.which("tesseract") or "pacman -S tesseract tesseract-data-eng", "warn")
-    add("rclone (links via Drive/Dropbox/OneDrive...)", shutil.which("rclone"), shutil.which("rclone") or "optional: pacman -S rclone", "warn")
+    add("wl-copy (copy file / link to clipboard)", shutil.which("wl-copy"), shutil.which("wl-copy") or "missing: package wl-clipboard (Omarchy ships it)", "warn")
+    add("tesseract (scrub secrets OCR)", shutil.which("tesseract"), shutil.which("tesseract") or "missing: packages tesseract and tesseract-data-eng", "warn")
+    add("rclone (links via Drive/Dropbox/OneDrive...)", shutil.which("rclone"), shutil.which("rclone") or "optional: package rclone", "warn")
     try:
         from .captions import backend as cap_backend
         cb = cap_backend()
     except Exception:
         cb = None
-    add("captions transcriber", cb, cb or "optional: whisper.cpp (whisper-cli + ggml model) or pip install faster-whisper", "warn")
+    add("captions transcriber", cb, cb or "optional: whisper.cpp (whisper-cli + ggml model) or faster-whisper; see docs/captions.md", "warn")
     try:
         from . import camera as cammod
         cams = cammod.devices()
@@ -146,13 +146,13 @@ def check(as_json=False) -> dict:
     except Exception:
         cam = None
     add("camera (v4l2)", cam, cam or "no capture device (fine in a VM; the camera bubble stays off)", "warn")
-    add("mpv (camera preview / live bubble)", shutil.which("mpv"), shutil.which("mpv") or "pacman -S mpv (ships with Omarchy)", "warn")
+    add("mpv (camera preview / live bubble)", shutil.which("mpv"), shutil.which("mpv") or "missing: package mpv (Omarchy ships it)", "warn")
     try:
         from . import audio as audiomod
         dv = audiomod.devices()
         add("audio (pactl, separate mic/system tracks)", dv["available"],
             f"mic: {dv['default_source'] or '?'} · system: {dv['default_sink'] or '?'}.monitor" if dv["available"]
-            else "pactl missing: audio recording off (pacman -S libpulse)", "warn")
+            else "pactl missing: audio recording off (package libpulse)", "warn")
     except Exception as e:
         add("audio (pactl, separate mic/system tracks)", False, str(e)[:120], "warn")
     try:
@@ -188,7 +188,7 @@ def check(as_json=False) -> dict:
             "omarchy-shell io.github.jagritvats.dolly answers" if rc == 0 else
             "plugin not enabled: omarchy plugin add file://$PWD --enable; without it no sync marker "
             "(events are timed from the logger start)", "warn")
-    add("gdbus (stop cleanly on suspend/lock)", shutil.which("gdbus"), shutil.which("gdbus") or "pacman -S glib2", "warn")
+    add("gdbus (stop cleanly on suspend/lock)", shutil.which("gdbus"), shutil.which("gdbus") or "missing: package glib2", "warn")
     cs = os.environ.get("HYPRCURSOR_SIZE") or os.environ.get("XCURSOR_SIZE")
     add("cursor theme size", True, f"{cs or 24} px (HYPRCURSOR_SIZE/XCURSOR_SIZE) x monitor scale", "ok")
     try:
@@ -233,7 +233,7 @@ def check(as_json=False) -> dict:
     elif gsr and gsr_bad:
         cap = ("wf: wf-recorder + libx264 CFR (gpu-screen-recorder cannot capture here: "
                f"{gsr_bad}; cursor baked in, Dolly cursor disabled)" if wf
-               else f"none: gpu-screen-recorder cannot capture here ({gsr_bad}); install wf-recorder (dolly deps --install)")
+               else f"none: gpu-screen-recorder cannot capture here ({gsr_bad}); needs {deps.how(['wf-recorder'])}")
     elif gsr and (gpu["vaapi_h264_encode"] or gpu["nvenc"]) and not gpu["software_rendering"]:
         cap = "gsr: gpu-screen-recorder, hardware H.264, cursor hidden, CFR"
     elif gsr and not gpu["software_rendering"] and gpu["render_nodes"]:
@@ -272,10 +272,15 @@ def check(as_json=False) -> dict:
         inp = "none: no click source - auto-zoom uses cursor dwell detection (add yourself to the 'input' group or fix hyprctl eval)"
     rep["paths"]["clicks_keys"] = inp
     rep["paths"]["cursor"] = "Hyprland IPC socket j/cursorpos polled at 125 Hz" if hypr else "unavailable outside Hyprland"
-    from .workers import default_workers      # no NumPy or Pillow needed: doctor must work without them
-    rep["paths"]["render"] = (f"CPU (NumPy + Pillow) - no GPU needed; libx264 -preset veryfast; "
+    from .workers import default_workers      # needs no cairo: doctor must work without it
+    styled = (f"CPU (cairo) - no GPU needed; libx264 -preset veryfast; "
                               f"{default_workers(10 ** 6, 60)} parallel workers (DOLLY_WORKERS); unchanged frames reused; "
                               "`dolly export --quality draft` for a fast half-size preview")
+    from . import deps as _deps
+    lacking = _deps.python_missing()
+    rep["paths"]["render"] = styled if not lacking else (
+        "plain export only (ffmpeg: the recording as captured, cut to the take) until "
+        f"{_deps.how(lacking)}; then " + styled)
     rep["paths"]["sync"] = "on-screen marker at start/stop (bar widget overlay) -> offset + drift fit; fallback: logger start"
     rep["paths"]["auto_zoom"] = "area of interest (frame diffs + Hyprland windows/layers + typing) - set zoom_config.use_aoi=false for cursor-only"
     rep["paths"]["replay"] = ("gpu-screen-recorder replay buffer (-r, SIGUSR1/SIGRTMIN+n)" if gsr_ok
@@ -319,12 +324,19 @@ def run(as_json=False) -> int:
     print()
     for k, v in rep["paths"].items():
         print(f"  {k:12s} {v}")
-    print("\n" + ("Dolly is ready." if rep["ok"] else "Dolly is NOT ready - fix the FAIL lines above."))
     mp = rep.get("missing_packages") or {}
+    held_back = [p for p in mp.get("packages") or [] if p not in (mp.get("blocking") or [])]
+    if not rep["ok"]:
+        print("\nDolly is NOT ready - fix the FAIL lines above.")
+    elif held_back:
+        print("\nDolly is ready to record. The editor and the styled export still need: "
+              f"{', '.join(held_back)}.")
+    else:
+        print("\nDolly is ready.")
     if mp.get("packages"):
         from . import deps
         print("\nMissing packages:")
         for p in mp["packages"]:
             print(f"  {p:16s} {mp['why'].get(p, '')}")
-        print(f"Install them: dolly deps --install   (runs: {deps.install_command(mp['packages'])})")
+        print(f"Dolly installs nothing itself: install them with Omarchy's package installer ({deps.HOW}).")
     return 0 if rep["ok"] else 1

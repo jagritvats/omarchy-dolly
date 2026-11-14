@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.jagritvats.dolly",
   "name": "Dolly: Screen Recorder",
-  "version": "0.7.3",
+  "version": "0.7.4",
   "author": "Jagrit Vats",
   "license": "MIT",
   "description": "Screen recorder for demos, tutorials and screencasts on Omarchy. Records your screen or a window and zooms in on what you type and click; built-in video editor, camera bubble, mic and system audio, keystroke overlay, MP4, GIF and vertical exports, and commands for scripts and coding agents.",

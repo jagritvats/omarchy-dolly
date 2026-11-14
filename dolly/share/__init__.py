@@ -73,7 +73,7 @@ def output_duration(project_dir) -> float:
 
 def estimate_all(project_dir) -> list[dict]:
     dur = output_duration(project_dir)
-    from ..render import probe
+    from ..ff import probe
     audio = any(s.get("codec_type") == "audio" for s in probe(projmod.Project(project_dir).raw).get("streams", []))
     out = []
     for p in presets.all_presets():
@@ -205,11 +205,13 @@ def delete_remote(project_dir, share_id: str) -> dict:
     return e
 
 
-def notify_export(project_dir, file: Path, title=None):
-    """Omarchy notification with Open / Copy file / Get link / Edit actions."""
+def notify_export(project_dir, file: Path, title=None, lacking: list[str] | None = None):
+    """Omarchy notification with Open / Copy file / Get link / Edit actions. `lacking`: a
+    plain export made because these packages are missing; the card says what they add and
+    offers Install where Edit would be (the editor cannot open without them)."""
     from ..capture import notify
     from ..i18n import t
-    title = title or t("notify.exported")
+    title = title or t("notify.exportedPlainTitle" if lacking else "notify.exported")
     dolly = str(Path(__file__).resolve().parents[2] / "bin" / "dolly")
     size = Path(file).stat().st_size / MB
     acts = [(t("notify.open"), "xdg-open", str(file)), (t("notify.copyFile"), dolly, "share", "copy", str(file))]
@@ -218,5 +220,9 @@ def notify_export(project_dir, file: Path, title=None):
             acts.append((t("notify.getLink"), dolly, "share", "upload", str(file)))
     except config.ConfigError:
         pass
-    acts.append((t("notify.edit"), dolly, "edit", str(project_dir)))
-    notify(title, t("notify.exportedDetails", Path(file).name, f"{size:.1f}"), *acts, timeout=12000)
+    body = t("notify.exportedDetails", Path(file).name, f"{size:.1f}")
+    if lacking:
+        body += "\n" + t("notify.exportedPlain")
+    else:
+        acts.append((t("notify.edit"), dolly, "edit", str(project_dir)))
+    notify(title, body, *acts, timeout=12000)

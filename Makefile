@@ -3,8 +3,8 @@ PY ?= python3
 
 .PHONY: test demo demo-fast scenarios doctor validate clean
 
-test:            ## unit + integration tests (no Hyprland needed; needs ffmpeg). OpenCV is hidden: Dolly must run without it
-	DOLLY_TEST_NO_CV2=1 $(PY) -m pytest -q tests/
+test:            ## unit + integration tests (no Hyprland needed; needs ffmpeg). OpenCV, NumPy and Pillow are hidden: Dolly must run without them
+	DOLLY_TEST_NO_CV2=1 DOLLY_TEST_NO_NUMPY=1 $(PY) -m pytest -q tests/
 
 demo:            ## synthetic end-to-end demo -> ./demo-out (needs playwright + chromium)
 	bin/dolly demo demo-out

@@ -53,22 +53,38 @@ SHIMS = {
 
 
 NO_CV2 = Path(__file__).resolve().parent / "no_cv2"
+NO_NUMPY = Path(__file__).resolve().parent / "no_numpy"
+
+
+def _hide(folder: Path, names: tuple):
+    """Make `import <name>` fail in this process and in every Python the tests start with
+    this environment: `folder` holds modules of those names that raise ImportError, and
+    goes first on the module path."""
+    import sys
+    for mod in [m for m in sys.modules if m.split(".")[0] in names]:
+        del sys.modules[mod]
+    sys.path.insert(0, str(folder))
+    rest = [p for p in os.environ.get("PYTHONPATH", "").split(os.pathsep) if p and p != str(folder)]
+    os.environ["PYTHONPATH"] = os.pathsep.join([str(folder), *rest])
 
 
 def _hide_opencv():
     """Dolly must run on a machine without OpenCV (it needed python-opencv until 0.7.0).
-    Unless DOLLY_TEST_NO_CV2=0, `import cv2` fails in this process and in every Python the
-    tests start with this environment, even when OpenCV happens to be installed."""
-    if os.environ.get("DOLLY_TEST_NO_CV2", "1") != "1":
-        return
-    import sys
-    sys.modules.pop("cv2", None)
-    sys.path.insert(0, str(NO_CV2))
-    rest = [p for p in os.environ.get("PYTHONPATH", "").split(os.pathsep) if p and p != str(NO_CV2)]
-    os.environ["PYTHONPATH"] = os.pathsep.join([str(NO_CV2), *rest])
+    Unless DOLLY_TEST_NO_CV2=0, `import cv2` fails even when OpenCV happens to be installed."""
+    if os.environ.get("DOLLY_TEST_NO_CV2", "1") == "1":
+        _hide(NO_CV2, ("cv2",))
+
+
+def _hide_numpy():
+    """A stock Omarchy has neither NumPy nor Pillow, and Dolly must run without them (it
+    needed both until 0.7.3). Unless DOLLY_TEST_NO_NUMPY=0, importing either fails even when
+    they happen to be installed, so what passes passes there."""
+    if os.environ.get("DOLLY_TEST_NO_NUMPY", "1") == "1":
+        _hide(NO_NUMPY, ("numpy", "PIL"))
 
 
 _hide_opencv()
+_hide_numpy()
 
 
 def pytest_configure(config):

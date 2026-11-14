@@ -57,12 +57,8 @@ def _versions() -> list[str]:
             out.append(f"{label}: {(_run(cmd).splitlines() or ['?'])[0][:120]}")
         else:
             out.append(f"{label}: not installed")
-    for mod in ("numpy", "PIL"):
-        try:
-            m = __import__(mod)
-            out.append(f"python {mod}: {getattr(m, '__version__', '?')}")
-        except Exception:
-            out.append(f"python {mod}: missing")
+    from . import gfx
+    out.append(f"python cairo: {'yes' if gfx.available() else 'missing'}; text: {gfx.text_engine() or 'none'}")
     out.append("env: " + " ".join(f"{k}={os.environ.get(k, '')}" for k in
                                   ("XDG_CURRENT_DESKTOP", "QT_QUICK_BACKEND", "LIBGL_ALWAYS_SOFTWARE", "DOLLY_BACKEND")))
     return out

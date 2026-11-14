@@ -1,10 +1,9 @@
 """One timed export. Prints one JSON line.
 
-    systemd-run --user --scope -q -p MemoryMax=3G -p MemorySwapMax=0 \
-        python3 harness/bench/run_export.py --take DIR --out FILE [--aspect 9:16] [--quality high]
+    python3 harness/bench/run_export.py --take DIR --out FILE [--aspect 9:16] [--quality high]
 
-Run it inside a memory-capped scope (as above), so a runaway render cannot take the machine
-down. Measured: elapsed time, user+system CPU seconds of every process the export started, the
+Run it inside a memory-capped scope (harness/bench/README.md shows the command), so a
+runaway render cannot take the machine down. Measured: elapsed time, user+system CPU seconds of every process the export started, the
 scope's peak memory (all processes together, from the cgroup), the largest single process,
 and the output's size, length and frame count. Set DOLLY_BENCH_ROOT to another checkout of
 Dolly to time that checkout's code instead of this one.
@@ -51,8 +50,11 @@ def main():
     ap.add_argument("--quality", default="high")
     ap.add_argument("--limit", type=float, default=900.0)
     ap.add_argument("--tag", default="")
+    ap.add_argument("--front", default="", help="folders put before the checkout on the module path, separated by ':' "
+                    "(tests/no_cv2:tests/no_numpy times it with OpenCV, NumPy and Pillow hidden)")
     a, extra = ap.parse_known_args()                 # anything else goes to `dolly export` (e.g. --gif)
-    env = dict(os.environ, PYTHONPATH=str(ROOT), DOLLY_OPEN_EDITOR="0")
+    path = os.pathsep.join([p for p in a.front.split(os.pathsep) if p] + [str(ROOT)])
+    env = dict(os.environ, PYTHONPATH=path, DOLLY_OPEN_EDITOR="0")
     env.setdefault("DOLLY_WORKERS", "2")
     cmd = [sys.executable, "-m", "dolly.cli", "export", a.take, "-o", a.out, "--quality", a.quality,
            "--aspect", a.aspect, "--quiet", *extra]

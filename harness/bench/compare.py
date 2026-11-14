@@ -10,13 +10,16 @@ whole and as a 4x crop around the largest difference.
 import argparse
 import json
 import re
+import statistics
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
-import numpy as np
-from PIL import Image
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from dolly import gfx  # noqa: E402
+
+CELL = 15                  # the difference is summed on a grid of 15x15 pixel cells, not per pixel
 
 
 def inputs(p):
@@ -24,14 +27,42 @@ def inputs(p):
 
 
 def frame(p, n, fps):
-    """Frame n of a video or still sequence as an RGB array."""
-    with tempfile.NamedTemporaryFile(suffix=".png") as f:
-        if "%" in p:
-            src = p % (n + 1)
-            return np.asarray(Image.open(src).convert("RGB"))
-        subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", p, "-vf", f"select=eq(n{chr(92)},{n})", "-frames:v", "1", f.name],
+    """Frame n of a video or still sequence as a picture."""
+    if "%" in p:
+        return gfx.load(p % (n + 1))
+    with tempfile.TemporaryDirectory() as td:
+        f = str(Path(td) / "f.png")
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", p, "-vf", f"select=eq(n{chr(92)},{n})", "-frames:v", "1", f],
                        check=True)
-        return np.asarray(Image.open(f.name).convert("RGB"))
+        return gfx.load(f)
+
+
+def worst_window(d, bw, bh):
+    """(x, y, sum) of the bw x bh window with the most difference in `d`, to a cell."""
+    w = d.get_width()
+    gw, gh = w // CELL, d.get_height() // CELL
+    # every cell's sum, exactly (a shrunk picture would round a difference of a level or two away)
+    cell = [0] * (gw * gh)
+    for ch in "rgb":
+        p = gfx.plane(d, ch)
+        for y in range(gh * CELL):
+            row, o = (y // CELL) * gw, y * w
+            for x in range(gw):
+                cell[row + x] += sum(p[o + x * CELL:o + (x + 1) * CELL])
+    ww, wh = max(1, min(gw, bw // CELL)), max(1, min(gh, bh // CELL))
+    ii = [[0] * (gw + 1) for _ in range(gh + 1)]                  # summed-area table of the grid
+    for y in range(gh):
+        row, acc = ii[y + 1], 0
+        for x in range(gw):
+            acc += cell[y * gw + x]
+            row[x + 1] = ii[y][x + 1] + acc
+    best = (0, 0, -1)
+    for y in range(gh - wh + 1):
+        for x in range(gw - ww + 1):
+            s = ii[y + wh][x + ww] - ii[y][x + ww] - ii[y + wh][x] + ii[y][x]
+            if s > best[2]:
+                best = (x * CELL, y * CELL, s)
+    return best
 
 
 def main():
@@ -53,29 +84,30 @@ def main():
         psnr = [float("inf") if m.group(1) == "inf" else float(m.group(1))
                 for m in re.finditer(r"psnr_avg:([0-9.a-z]+)", q.read_text())]
     fin = [p for p in psnr if p != float("inf")]
-    worst = int(np.argmin(ssim))
-    res = {"frames": len(ssim), "ssim_mean": round(float(np.mean(ssim)), 5), "ssim_worst": round(min(ssim), 5),
-           "psnr_mean_db": round(float(np.mean(fin)), 2) if fin else None,
+    worst = min(range(len(ssim)), key=ssim.__getitem__)
+    res = {"frames": len(ssim), "ssim_mean": round(statistics.fmean(ssim), 5), "ssim_worst": round(min(ssim), 5),
+           "psnr_mean_db": round(statistics.fmean(fin), 2) if fin else None,
            "psnr_worst_db": round(min(fin), 2) if fin else None, "identical_frames": len(psnr) - len(fin),
            "worst_frame": worst}
     if a.crops:
         out = Path(a.crops)
         out.mkdir(parents=True, exist_ok=True)
         ta, tb = frame(a.test, worst, 0), frame(a.ref, worst, 0)
-        h, w = min(ta.shape[0], tb.shape[0]), min(ta.shape[1], tb.shape[1])
-        d = np.abs(ta[:h, :w].astype(np.int16) - tb[:h, :w].astype(np.int16)).sum(axis=2).astype(np.float32)
+        h, w = min(ta.get_height(), tb.get_height()), min(ta.get_width(), tb.get_width())
+        ta, tb = gfx.crop(ta, 0, 0, w, h), gfx.crop(tb, 0, 0, w, h)
         # the 240x135 window with the most difference
         bh, bw = 135, 240
-        ii = np.pad(d, ((1, 0), (1, 0))).cumsum(0).cumsum(1)
-        win = ii[bh:, bw:] - ii[:-bh, bw:] - ii[bh:, :-bw] + ii[:-bh, :-bw]
-        y, x = np.unravel_index(int(np.argmax(win)), win.shape)
+        x, y, total = worst_window(gfx.difference(ta, tb), bw, bh)
         res["worst_window"] = [int(x), int(y), bw, bh]
-        res["worst_window_mean_abs_diff"] = round(float(win[y, x]) / (bw * bh * 3), 2)
-        pair = np.concatenate([tb[y:y + bh, x:x + bw], np.full((bh, 6, 3), 255, np.uint8), ta[y:y + bh, x:x + bw]], axis=1)
-        Image.fromarray(pair).resize((pair.shape[1] * 4, pair.shape[0] * 4), Image.NEAREST).save(
-            out / f"{a.tag}-worst-crop-ref-left-test-right.png")
-        Image.fromarray(tb[:h, :w]).save(out / f"{a.tag}-worst-frame-ref.png")
-        Image.fromarray(ta[:h, :w]).save(out / f"{a.tag}-worst-frame-test.png")
+        res["worst_window_mean_abs_diff"] = round(total / (bw * bh * 3), 2)
+        pair = gfx.new(2 * bw + 6, bh)
+        gfx.fill_rect(pair, 0, 0, 2 * bw + 6, bh, (1, 1, 1))
+        gfx.place(pair, gfx.crop(tb, x, y, min(bw, w - x), min(bh, h - y)), 1, 1, 0, 0)
+        gfx.place(pair, gfx.crop(ta, x, y, min(bw, w - x), min(bh, h - y)), 1, 1, bw + 6, 0)
+        gfx.save(gfx.resize(pair, pair.get_width() * 4, bh * 4, "nearest"),
+                 out / f"{a.tag}-worst-crop-ref-left-test-right.png")
+        gfx.save(tb, out / f"{a.tag}-worst-frame-ref.png")
+        gfx.save(ta, out / f"{a.tag}-worst-frame-test.png")
     print(json.dumps(res))
 
 

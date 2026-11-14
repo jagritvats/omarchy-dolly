@@ -21,12 +21,12 @@ import subprocess
 import sys
 from pathlib import Path
 
-import numpy as np
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from dolly import gfx  # noqa: E402
 from dolly import monitors as M  # noqa: E402
 
 
@@ -139,18 +139,31 @@ TARGET = (70, 45)    # logical px half-size of the drawn target (a small dialog)
 
 
 def _write_video(path, W, H, fps, n, draw):
-    p = subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{W}x{H}",
+    p = subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgr0", "-s", f"{W}x{H}",
                           "-r", str(fps), "-i", "-", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "8",
                           "-pix_fmt", "yuv444p", "-g", "10", str(path)], stdin=subprocess.PIPE)
     for i in range(n):
-        p.stdin.write(draw(i).tobytes())
+        p.stdin.write(gfx.data(draw(i)))
     p.stdin.close()
     assert p.wait() == 0
 
 
-def _centroid(mask):
-    ys, xs = np.nonzero(mask)
-    return (xs.mean(), ys.mean()) if len(xs) else (None, None)
+def _red_centre(picture):
+    """Middle of the clearly red pixels of a frame: (x, y), or (None, None) without any."""
+    w, h = picture.get_width(), picture.get_height()
+    above = bytes(v > 150 for v in range(256))
+    below = bytes(v < 120 for v in range(256))
+    r, g, b = (int.from_bytes(gfx.plane(picture, ch).translate(table), "little")
+               for ch, table in (("r", above), ("g", below), ("b", below)))
+    red = (r & g & b).to_bytes(w * h, "little")              # 1 where red, row after row
+    n = sx = sy = 0
+    for y in range(h):
+        row = red[y * w:(y + 1) * w]
+        k = row.count(1)
+        if k:
+            n, sy = n + k, sy + k * y
+            sx += sum(x for x, on in enumerate(row) if on)
+    return (sx / n, sy / n) if n else (None, None)
 
 
 @pytest.mark.parametrize("case", list(CASES))
@@ -171,19 +184,29 @@ def test_click_lands_on_target_end_to_end(tmp_path, case):
     fps, n, t_click = 20, 50, 1.0
     hx, hy = TARGET[0] * s, TARGET[1] * s
 
+    def grey(v):
+        return gfx.rgb((v, v, v))
+
     def draw(i):
-        img = np.full((H, W, 3), 40, np.uint8)
-        img[:, :, 1] = 44
+        img = gfx.new(W, H)
+        gfx.fill_rect(img, 0, 0, W, H, gfx.rgb((40, 44, 40)))
         if i / fps >= t_click + 0.1:          # the click opens something: a red target appears
-            yy, xx = np.mgrid[0:H, 0:W]
-            dx, dy = xx + 0.5 - px, yy + 0.5 - py
-            panel = (abs(dx) <= hx) & (abs(dy) <= hy)
-            shade = (90 + 50 * dx / hx + 25 * dy / hy).astype(np.uint8)       # a shaded panel, not a flat dim
-            for ch in range(3):
-                img[:, :, ch][panel] = shade[panel]
-            img[panel & (dy < -hy + 14 * s)] = (200, 200, 205)                  # title bar
-            img[panel & ((yy // max(1, int(6 * s))) % 3 == 0) & (dx < hx * 0.2)] = (150, 150, 150)   # text rows
-            img[(abs(dx) <= 16 * s) & (abs(dy) <= 9 * s)] = (40, 40, 230)       # the button that was clicked
+            c = gfx.context(img)
+            c.rectangle(px - hx, py - hy, 2 * hx, 2 * hy)
+            c.clip()
+            # a shaded panel, not a flat dim: 90 in the middle, 50 more at its right edge and
+            # 25 more at its lower one (the gradient runs 75 levels along (50 / hx, 25 / hy))
+            gx, gy = 50 / hx, 25 / hy
+            reach = 75 / (gx * gx + gy * gy)
+            c.set_source(gfx.linear_gradient(px - gx * reach, py - gy * reach, px + gx * reach, py + gy * reach,
+                                             [(0, grey(15)), (1, grey(165))]))
+            c.paint()
+            gfx.fill_rect(c, px - hx, py - hy, 2 * hx, 14 * s, gfx.rgb((205, 200, 200)))    # title bar
+            band = max(1, int(6 * s))
+            for y in range(int(py - hy) // (3 * band) * 3 * band, int(py + hy) + 1, 3 * band):
+                gfx.fill_rect(c, px - hx, y, 1.2 * hx, band, grey(150))                      # text rows
+            c.reset_clip()
+            gfx.fill_rect(img, px - 16 * s, py - 9 * s, 32 * s, 18 * s, gfx.rgb((230, 40, 40)))   # the button that was clicked
         return img
 
     pdir = tmp_path / "p"
@@ -232,12 +255,10 @@ def test_click_lands_on_target_end_to_end(tmp_path, case):
     segs = [Segment.from_dict(g) for g in data["segments"]]
     comp = Compositor(tl, style, segs, ZoomConfig.from_dict(data.get("zoom_config")), 0.0, n / fps)
     ts = 1.6
-    frame = np.ascontiguousarray(draw(int(ts * fps)))
-    out = comp.compose_at(ts, frame)
+    out = comp.compose_at(ts, draw(int(ts * fps)))
     z, k, vx0, vy0 = comp.affine_at(ts)
     ex, ey = (c["x"] - vx0) * k, (c["y"] - vy0) * k
-    red = (out[:, :, 2] > 150) & (out[:, :, 0] < 120) & (out[:, :, 1] < 120)
-    cx, cy = _centroid(red)
+    cx, cy = _red_centre(out)
     assert cx is not None
     assert abs(cx - ex) <= 1.0 * max(1.0, k) and abs(cy - ey) <= 1.0 * max(1.0, k), (cx, cy, ex, ey, k)
 
@@ -303,11 +324,13 @@ def test_render_window_card_holds_on_monitor_part():
     rects = [(300, 150, 990, 590), (700, 100, 1100, 400), (950, 100, 1350, 400)]
     tl = SimpleNamespace(w=1000, h=600, window_rect_at=lambda t, a: rects[min(2, int(t // 2))])
     me = SimpleNamespace(tl=tl, window_target="0xa")
-    ts, arr = Compositor._window_track(me, 0.0, 5.0)
-    at = lambda t: arr[int(np.argmin(np.abs(ts - t)))]
-    assert np.allclose(at(1.0), rects[0], atol=0.5)
-    assert np.allclose(at(3.0), (700, 100, 1000, 400), atol=0.5)
-    assert np.allclose(at(5.0), (700, 100, 1000, 400), atol=0.5)
+    me._win_track = Compositor._window_track(me, 0.0, 5.0)
+
+    def card_is(t, rect):
+        return all(abs(a - b) <= 0.5 for a, b in zip(Compositor.window_rect(me, t), rect))
+    assert card_is(1.0, rects[0])
+    assert card_is(3.0, (700, 100, 1000, 400))
+    assert card_is(5.0, (700, 100, 1000, 400))
 
 
 @pytest.mark.parametrize("w,h,scale", [(1920, 1200, 1.25), (2880, 1800, 1.5), (2560, 1600, 1.6666666),

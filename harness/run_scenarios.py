@@ -16,13 +16,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
 import time
 from pathlib import Path
 
-import numpy as np
+import statistics
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -30,7 +31,7 @@ sys.path.insert(0, str(HERE.parent))
 
 import metrics as M  # noqa: E402
 import scenarios as SC  # noqa: E402
-from dolly import imgops  # noqa: E402
+from dolly import gfx  # noqa: E402
 from dolly import project as projmod  # noqa: E402
 from scene import blit_text  # noqa: E402
 from dolly.render import export, ffmpeg_bin  # noqa: E402
@@ -58,7 +59,11 @@ def make_before_project(pdir: Path, dst: Path) -> Path:
     dst.mkdir(parents=True)
     for f in ("raw.mp4", "raw.mkv"):
         if (pdir / f).exists():
-            (dst / f).symlink_to((pdir / f).resolve())
+            # a hard link, not a symbolic one: Dolly refuses a recording folder with links in it
+            try:
+                os.link(pdir / f, dst / f)
+            except OSError:
+                shutil.copy(pdir / f, dst / f)
     for f in ("capture.json", "events.raw.jsonl"):
         if (pdir / f).exists():
             shutil.copy(pdir / f, dst / f)
@@ -100,14 +105,17 @@ def key_times(truth: dict, n: int = 1) -> list[float]:
 
 def still(comp, raw: Path, t: float, w: int, h: int):
     out = subprocess.run([ffmpeg_bin(), "-v", "error", "-ss", f"{t:.3f}", "-i", str(raw), "-frames:v", "1",
-                          "-f", "rawvideo", "-pix_fmt", "bgr24", "-"], capture_output=True).stdout
-    frame = np.frombuffer(out, np.uint8).reshape(h, w, 3)
+                          "-f", "rawvideo", "-pix_fmt", "bgr0", "-"], capture_output=True).stdout
+    frame = gfx.frame_from(bytearray(out), w, h)
     return comp.compose_at(t, frame)
 
 
+GREY = gfx.rgb((12, 12, 12))       # between the tiles of the contact sheet
+
+
 def label(img, text, sub=""):
-    img = img.copy()
-    imgops.fill_rect(img, (0, 0), (img.shape[1], 34 if not sub else 58), (20, 16, 16))
+    img = gfx.copy(img)
+    gfx.fill_rect(img, 0, 0, img.get_width() + 1, (34 if not sub else 58) + 1, gfx.rgb((16, 16, 20)))
     blit_text(img, 10, 8, text, 15, (245, 245, 250))
     if sub:
         blit_text(img, 10, 35, sub, 12, (180, 190, 210))
@@ -115,7 +123,7 @@ def label(img, text, sub=""):
 
 
 def fit_h(img, h):
-    return imgops.resize(img, (int(img.shape[1] * h / img.shape[0]), h))
+    return gfx.resize(img, int(img.get_width() * h / img.get_height()), h)
 
 
 def contact_sheet(projects: list[Path], out_png: Path, results: dict):
@@ -136,16 +144,25 @@ def contact_sheet(projects: list[Path], out_png: Path, results: dict):
             r = results[pdir.name][eng.name][asp]
             sub = f"AOI in frame {r['aoi_in_frame_pct']}%"
             tiles.append(label(fit_h(img, H), f"{tag} @ {tt:.1f}s", sub))
-        head = np.full((H, 250, 3), (28, 22, 22), np.uint8)
+        head = gfx.new(250, H)
+        gfx.fill_rect(head, 0, 0, 250, H, gfx.rgb((22, 22, 28)))
         y = 40
         for line in [pdir.name] + _desc(pdir.name):
             blit_text(head, 12, y - 15, line, 15 if y == 40 else 11, (245, 245, 250) if y == 40 else (190, 196, 214))
             y += 30 if y == 40 else 22
-        row = np.concatenate([head] + [np.pad(x, ((0, 0), (0, 6), (0, 0)), constant_values=12) for x in tiles], 1)
-        rows.append(row)
-    wmax = max(r.shape[1] for r in rows)
-    rows = [np.pad(r, ((0, 8), (0, wmax - r.shape[1]), (0, 0)), constant_values=12) for r in rows]
-    imgops.write_image(out_png, np.concatenate(rows, 0))
+        rows.append([head] + tiles)
+    # each tile followed by 6 grey columns, each row by 8 grey lines
+    wmax = max(r[0].get_width() + sum(x.get_width() + 6 for x in r[1:]) for r in rows)
+    sheet = gfx.new(wmax, sum(max(x.get_height() for x in r) + 8 for r in rows))
+    gfx.fill_rect(sheet, 0, 0, sheet.get_width(), sheet.get_height(), GREY)
+    y = 0
+    for r in rows:
+        x = 0
+        for i, tile in enumerate(r):
+            gfx.place(sheet, tile, 1, 1, x, y)
+            x += tile.get_width() + (6 if i else 0)
+        y += max(t.get_height() for t in r) + 8
+    gfx.save(sheet, out_png)
 
 
 def _desc(name):
@@ -236,7 +253,7 @@ def main():
     for eng in ("before", "after"):
         rs = [results[n][eng][asp] for n in results for asp in ASPECTS]
         agg[eng] = {
-            "aoi_in_frame_pct_mean": round(float(np.mean([r["aoi_in_frame_pct"] for r in rs])), 1),
+            "aoi_in_frame_pct_mean": round(statistics.fmean(r["aoi_in_frame_pct"] for r in rs), 1),
             "aoi_in_frame_pct_min": min(r["aoi_in_frame_pct"] for r in rs),
             "max_pan_speed": max(r["pan_speed"] for r in rs), "max_zoom_speed": max(r["zoom_speed"] for r in rs),
             "max_pan_accel_p995": max(r["pan_accel"] for r in rs), "max_pan_jerk_p99": max(r["pan_jerk"] for r in rs),

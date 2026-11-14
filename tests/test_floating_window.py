@@ -11,9 +11,8 @@ Three causes, each tested here:
 import sys
 from pathlib import Path
 
-import numpy as np
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from dolly import num  # noqa: E402
 from dolly.aoi import AOITrack  # noqa: E402
 from dolly.events import Timeline  # noqa: E402
 from dolly.zoom import (Action, CameraGeometry, ZoomConfig, build_segments, camera_path,  # noqa: E402
@@ -25,7 +24,7 @@ WIN = (362.0, 172.0, 1462.0, 932.0)             # a floating 1100x760 window
 
 def track(spans, duration=30.0, line_h=16.0):
     """spans: [(t0, t1, kind, rect, focus)] on a 0.1 s grid."""
-    t = np.round(np.arange(0, duration, 0.1), 3)
+    t = [round(0.1 * i, 3) for i in range(round(duration * 10))]
     rect, kind, foc = [None] * len(t), [None] * len(t), [None] * len(t)
     for i, ti in enumerate(t):
         for a, b, k, r, f in spans:
@@ -118,7 +117,7 @@ LOOK = 0.45          # the vertical crop asks for the subject this far ahead (it
 
 
 def _subject_kinds(tl, aoi, times):
-    st = np.arange(0, tl.duration, 1 / 50)
+    st = num.arange(0, tl.duration, 1 / 50)
     cx, cy = smooth_cursor(tl, st, 0.05)
     kinds = subject_track(tl, aoi, st, cx, cy, ZoomConfig(), lookahead=LOOK).kind
     return [kinds[int(round(t * 50))] for t in times]

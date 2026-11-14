@@ -22,7 +22,9 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import time
+from array import array
 from pathlib import Path
 import re
 from . import log as _dlog
@@ -159,7 +161,7 @@ def resolve(mode: str, mic: str = DEFAULT, system: str = DEFAULT) -> list[tuple[
 
 
 def track_cmd(source: str, out: Path) -> list[str]:
-    from .render import ffmpeg_bin
+    from .ff import ffmpeg_bin
     # wallclock pts (pulse demuxer default) kept with -copyts: start_time = when the first
     # sample was captured, on the same clock as time.time()
     return [ffmpeg_bin(), "-v", "error", "-nostdin", "-y", "-f", "pulse", "-wallclock", "1",
@@ -218,7 +220,7 @@ def stop_tracks(tracks: list[dict], timeout: float = 5.0):
 
 # ------------------------------------------------------------------ alignment
 def start_time(f: Path) -> float | None:
-    from .render import probe
+    from .ff import probe
     try:
         st = probe(f).get("format", {}).get("start_time")
         return float(st) if st not in (None, "N/A") else None
@@ -346,10 +348,17 @@ def mix_filter(tracks: list[dict], first_input: int, pieces, intro: float, total
 
 
 # ------------------------------------------------------------------ level meter (panel)
+def peak(block: bytes) -> float:
+    """The loudest sample in a block of 16-bit little-endian audio, as 0..1."""
+    samples = array("h", block[:len(block) // 2 * 2])       # (a block cut off mid-sample: without its last byte)
+    if sys.byteorder == "big":
+        samples.byteswap()
+    return max(max(samples), -min(samples)) / 32768 if samples else 0.0
+
+
 def meter(source: str, seconds: float = 0, interval: float = 0.1):
     """Print {"peak": 0..1} lines for a source (parec, ~10 Hz) until killed or `seconds`.
     The panel runs it only while it is open."""
-    import numpy as np
     exe = shutil.which("parec")
     if not exe:
         raise SystemExit("parec missing (pulseaudio-utils / pipewire-pulse)")
@@ -363,9 +372,7 @@ def meter(source: str, seconds: float = 0, interval: float = 0.1):
             buf = p.stdout.read(n)
             if not buf:
                 break
-            a = np.frombuffer(buf, np.int16)
-            pk = float(np.abs(a).max()) / 32768 if len(a) else 0.0
-            print(json.dumps({"peak": round(pk, 3)}), flush=True)
+            print(json.dumps({"peak": round(peak(buf), 3)}), flush=True)
     except (BrokenPipeError, KeyboardInterrupt):
         pass
     finally:

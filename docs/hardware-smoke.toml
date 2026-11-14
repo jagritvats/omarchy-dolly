@@ -1,0 +1,36 @@
+title = "Dolly real hardware smoke"
+record = "window:term"
+quality = "fast"
+aspect = ["16:9"]
+stage = "clean"
+max_seconds = 30
+speed = 30
+
+[[setup]]
+open = "foot --app-id=dolly-hardware-smoke --title=Dolly-Hardware-Smoke /bin/bash --noprofile --norc"
+as = "term"
+
+[[step]]
+type = "printf 'Dolly Recorder - real hardware test\\n'"
+enter = true
+
+[[step]]
+wait = "quiet"
+timeout = 2
+
+[[step]]
+click = "35%,45%"
+in = "term"
+
+[[step]]
+type = "printf 'Omarchy 4.0.4 - Hyprland 0.56.2 - capture and export\\n'"
+enter = true
+
+[[step]]
+zoom = "here"
+
+[[step]]
+wait = 2
+
+[[cleanup]]
+close = "term"

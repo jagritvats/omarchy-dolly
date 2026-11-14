@@ -2,12 +2,15 @@
 
 The editor is a local web page; it never sends file contents back to Dolly except
 through upload(). Paths it names are checked here before anything is read:
-an existing regular file, an image type, a sane size, a real decodable image, and
-inside the user's home or the system's shared data (theme backgrounds)."""
+an existing regular file, an image type, a sane size, a real image by its header (and a
+whole one: a PNG's checksums; an upload is decoded once), and inside the user's home or
+the system's shared data (theme backgrounds)."""
 from __future__ import annotations
 
 import hashlib
 import os
+import struct
+import zlib
 from pathlib import Path
 
 IMAGE_EXT = (".png", ".jpg", ".jpeg", ".webp")
@@ -66,17 +69,45 @@ def check(path: str | os.PathLike) -> Path:
     return p
 
 
-def _verify(p: Path) -> tuple[int, int]:
-    from PIL import Image
+def _verify(p: Path, decode: bool = False) -> tuple[int, int]:
+    """(width, height) of a PNG, JPEG or WebP file, told by its first bytes and read from
+    its header: nothing is decoded and no program is started, so this also works on a
+    machine that cannot draw. decode=True reads the whole picture once as well (an upload,
+    before it is kept); a file damaged further in otherwise shows when the renderer loads
+    it, which then draws its gradient instead."""
+    from . import gfx
     try:
-        with Image.open(p) as im:
-            w, h = im.size
-            im.verify()
-    except Exception:
+        w, h = gfx.image_size(p)
+    except gfx.ImageError:
         raise ImageError("the file is not a readable image") from None
     if w * h > MAX_PIXELS:
         raise ImageError("image has too many pixels")
+    if not _png_intact(p):
+        raise ImageError("the file is not a readable image")
+    if decode and gfx.available():
+        try:
+            gfx.load(p, size=(64, 64))
+        except gfx.ImageError:
+            raise ImageError("the file is not a readable image") from None
     return w, h
+
+
+def _png_intact(p: Path) -> bool:
+    """Whether every chunk of a PNG file is whole and has its checksum right, up to the
+    closing one (a cut-off or damaged download). True for a file that is not a PNG."""
+    with open(p, "rb") as f:
+        if f.read(8) != b"\x89PNG\r\n\x1a\n":
+            return True
+        while True:
+            head = f.read(8)
+            if len(head) < 8:
+                return False
+            n, tag = struct.unpack(">I4s", head)
+            body = f.read(n + 4)
+            if len(body) < n + 4 or zlib.crc32(tag + body[:n]) != struct.unpack(">I", body[n:])[0]:
+                return False
+            if tag == b"IEND":
+                return True
 
 
 def info(path) -> dict:
@@ -151,7 +182,7 @@ def save_upload(data: bytes, name: str) -> dict:
         with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as f:
             f.write(data)
         try:
-            _verify(tmp)
+            _verify(tmp, decode=True)
         except ImageError:
             tmp.unlink(missing_ok=True)
             raise

@@ -19,8 +19,7 @@ import tempfile
 from functools import lru_cache
 from pathlib import Path
 
-import numpy as np
-from PIL import Image, ImageDraw, ImageFont
+from . import gfx
 
 
 class CaptionsUnavailable(RuntimeError):
@@ -85,7 +84,7 @@ def _model_path() -> str | None:
 
 
 def transcribe(project_dir: Path, language: str | None = None) -> list[dict]:
-    from .render import ffmpeg_bin, probe
+    from .ff import ffmpeg_bin, probe
     project_dir = Path(project_dir)
     from .project import Project
     raw = Project(project_dir).raw
@@ -94,7 +93,7 @@ def transcribe(project_dir: Path, language: str | None = None) -> list[dict]:
     be = backend()
     if not be:
         raise CaptionsUnavailable("no transcriber: install whisper.cpp (whisper-cli + a ggml model) "
-                                  "or `pip install faster-whisper`")
+                                  "or the faster-whisper Python package (docs/captions.md)")
     with tempfile.TemporaryDirectory() as tmp:
         wav = Path(tmp) / "a.wav"
         # no timeouts here: decoding and transcribing take time proportional to the recording
@@ -121,28 +120,32 @@ def load(project_dir: Path) -> list[dict]:
 
 
 @lru_cache(maxsize=128)
-def caption_image(text: str, max_w: int, scale: float, font_file: str | None):
+def caption_image(text: str, max_w: int, scale: float, font: str | None):
+    """The caption as a pill with its text: a gfx sprite (colours already multiplied by the
+    alpha), which the renderer places and fades. It is kept: never draw on it.
+    `font`: families, the first one installed is used ("A, B, monospace"), or a font file."""
     size = int(30 * scale)
-    font = ImageFont.truetype(font_file, size) if font_file else ImageFont.load_default()
+    font = gfx.font(font, size, bold=True)
     # greedy wrap to max 2 lines
     words, lines, cur = text.split(), [], ""
     for w in words:
         trial = (cur + " " + w).strip()
-        if font.getlength(trial) <= max_w - 40 * scale or not cur:
+        if gfx.text_width(trial, font) <= max_w - 40 * scale or not cur:
             cur = trial
         else:
             lines.append(cur)
             cur = w
     if cur:
         lines.append(cur)
-    lines = lines[-2:]
+    lines = lines[-2:] or [""]
     lh = int(size * 1.3)
-    tw = int(max(font.getlength(l) for l in lines)) + int(36 * scale)
+    tw = int(max(gfx.text_width(l, font) for l in lines)) + int(36 * scale)
     th = lh * len(lines) + int(20 * scale)
-    img = Image.new("RGBA", (tw, th), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    d.rounded_rectangle((0, 0, tw - 1, th - 1), radius=int(14 * scale), fill=(14, 14, 20, 205))
+    img = gfx.new(tw, th, alpha=True)
+    c = gfx.context(img)
+    gfx.rounded_rect(c, 0, 0, tw, th, int(14 * scale))
+    c.set_source_rgba(14 / 255, 14 / 255, 20 / 255, 205 / 255)
+    c.fill()
     for i, l in enumerate(lines):
-        d.text((tw / 2, int(10 * scale) + lh * i + lh / 2), l, font=font, fill=(245, 246, 252, 255), anchor="mm")
-    arr = np.asarray(img, np.float32) / 255.0
-    return np.concatenate([arr[..., :3][..., ::-1] * arr[..., 3:4], arr[..., 3:4]], axis=2)
+        gfx.label(c, l, tw / 2, int(10 * scale) + lh * i + lh / 2, font, gfx.rgb((245, 246, 252)))
+    return img

@@ -1,9 +1,8 @@
 """Camera/sync regressions from the second VM pass (Omarchy 4.5, VirtualBox, wf-recorder)."""
+import bisect
 import math
 import sys
 from pathlib import Path
-
-import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from dolly import sync  # noqa: E402
@@ -14,10 +13,12 @@ W, H = 1920, 1200
 
 
 def _marker(rgb_edge, rgb_centre):
-    f = np.zeros((sync.PROBE, sync.PROBE, 3), np.uint8)
-    f[:] = rgb_edge
-    f[sync.PROBE // 2 - 1:sync.PROBE // 2 + 1, sync.PROBE // 2 - 1:sync.PROBE // 2 + 1] = rgb_centre
-    return f
+    """The marker square as the decoder gives it: PROBE x PROBE pixels, rows of r, g, b."""
+    f = bytearray(bytes(rgb_edge) * (sync.PROBE * sync.PROBE))
+    for y in (sync.PROBE // 2 - 1, sync.PROBE // 2):
+        for x in (sync.PROBE // 2 - 1, sync.PROBE // 2):
+            f[(y * sync.PROBE + x) * 3:(y * sync.PROBE + x) * 3 + 3] = bytes(rgb_centre)
+    return bytes(f)
 
 
 def test_fading_in_marker_is_still_a_marker():
@@ -44,13 +45,13 @@ def test_no_marker_falls_back_to_the_clocks_not_zero():
 
 def test_marker_times_use_frame_timestamps(monkeypatch, tmp_path):
     """wf-recorder writes frames only on damage (avg 62.5 fps): index / fps is not a time."""
-    frames = np.zeros((6, sync.PROBE, sync.PROBE, 3), np.uint8)
+    frames = [bytes(sync.FRAME_BYTES)] * 6
     frames[3] = frames[4] = _marker((214, 19, 216), (17, 215, 18))
     pts = [0.0, 0.5, 1.0, 3.25, 3.267, 3.5]
     monkeypatch.setattr(sync, "frame_times", lambda raw, ffmpeg="ffmpeg": pts)
 
     class R:  # decoding is replaced: subprocess returns our frames
-        stdout = frames.tobytes()
+        stdout = b"".join(frames)
     monkeypatch.setattr(sync.subprocess, "run", lambda *a, **k: R())
     runs = sync.detect_markers(tmp_path / "raw.mkv", 1.0, 60.0, "ffmpeg")
     assert runs == [(3.25, 3.267)]
@@ -72,7 +73,7 @@ def _typing_tl(bursts, duration=20.0):
 class _Track:
     """Minimal AOITrack: typing at the bottom line, then (after `clear`) at the top line."""
     def __init__(self, spans, line_h=16.0):
-        self.t = np.arange(0, 20, 0.1)
+        self.t = [i * 0.1 for i in range(200)]
         self.rect, self.kind, self.focus = [], [], []
         for t in self.t:
             hit = next(((r, f) for a, b, r, f in spans if a <= t < b), None)
@@ -82,7 +83,7 @@ class _Track:
         self.transitions, self.line_h = [], line_h
 
     def at(self, t):
-        i = int(np.clip(np.searchsorted(self.t, t, side="right") - 1, 0, len(self.t) - 1))
+        i = min(max(bisect.bisect_right(self.t, t) - 1, 0), len(self.t) - 1)
         return self.rect[i], self.kind[i], self.focus[i]
 
     def in_transition(self, t, pad=0.0):

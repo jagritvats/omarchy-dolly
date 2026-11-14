@@ -10,11 +10,10 @@ import threading
 import time
 from pathlib import Path
 
-import numpy as np
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from dolly import analysis, capture  # noqa: E402
+from dolly import analysis, capture, gfx  # noqa: E402
 from dolly import project as projmod  # noqa: E402
 
 pytestmark = pytest.mark.skipif(not (shutil.which("ffmpeg") and shutil.which("ffprobe")),
@@ -26,17 +25,18 @@ def make_raw(pdir: Path, n=120, fps=30, W=640, H=400):
     pdir.mkdir(parents=True)
 
     def frame(i):
-        img = np.full((H, W, 3), 30, np.uint8)
+        img = gfx.new(W, H)
+        gfx.fill_rect(img, 0, 0, W, H, gfx.rgb((30, 30, 30)))
         t = i / fps
         if t > 1.1:
-            img[100:220, 150:450] = (90, 90, 100)
-            img[110:118, 160:160 + int(min(280, max(0, (t - 1.5) * 140)))] = (230, 230, 230)
+            gfx.fill_rect(img, 150, 100, 300, 120, gfx.rgb((100, 90, 90)))
+            gfx.fill_rect(img, 160, 110, int(min(280, max(0, (t - 1.5) * 140))), 8, gfx.rgb((230, 230, 230)))
         return img
-    p = subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{W}x{H}",
+    p = subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgr0", "-s", f"{W}x{H}",
                           "-r", str(fps), "-i", "-", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
                           str(pdir / "raw.mkv")], stdin=subprocess.PIPE)
     for i in range(n):
-        p.stdin.write(frame(i).tobytes())
+        p.stdin.write(gfx.data(frame(i)))
     p.stdin.close()
     p.wait()
     from dolly.monitors import monitor_target

@@ -8,8 +8,6 @@ from the typed line (420 px) to the full 2560 px, and the start of the line left
 import sys
 from pathlib import Path
 
-import numpy as np
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from dolly import aoi as aoimod  # noqa: E402
 from dolly.events import Timeline  # noqa: E402
@@ -36,7 +34,7 @@ def take(toasts, areas=(AREA,), other_area=None):
         blobs[i] = [(LINE[0] + 8 * (i - 12), LINE[1], LINE[2] + 8 * (i - 12), LINE[3], 0.0002)]
     blobs[26] = [(*CARD, 0.003)]                         # the card goes at 2.6 s, typing still "recent"
     blobs[27] = [(CARD[0] + 5, CARD[1] + 5, CARD[2], 75.0, 0.0008)]
-    act = aoimod.Activity(t=np.round(np.arange(n) * 0.1, 3), frac=np.array([sum(b[4] for b in bl) for bl in blobs]),
+    act = aoimod.Activity(t=[round(i * 0.1, 3) for i in range(n)], frac=[sum(b[4] for b in bl) for bl in blobs],
                           blobs=blobs, w=W, h=H)
     return tl, aoimod.build_aoi(tl, act)
 

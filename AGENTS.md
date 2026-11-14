@@ -77,7 +77,7 @@ fresh processes (`dolly/render_chunk.py`). See CHANGELOG.md and "Round 4" below.
    Settings › Auto-zoom and the editor sidebar expose enabled, level,
    triggers (`zoom_clicks`, `follow_typing`, `zoom_windows`), glide,
    `stay_gap` and `motion` (calm 0.75×, normal, quick 1.3× spring speed).
-5. **Render** (`dolly/render.py`), CPU only, on NumPy + Pillow (the image operations live in `dolly/imgops.py`; no OpenCV):
+5. **Render** (`dolly/render.py`), CPU only, drawn with cairo through `dolly/gfx.py` (no NumPy, Pillow or OpenCV):
    - background, padding, rounded corners, shadow
    - re-drawn cursor (optional motion blur), click ripples, shortcut keycaps
    - speed ramps with a "⏩ 4×" badge (`dolly/timemap.py`)
@@ -123,7 +123,7 @@ Dolly perform it. Reference: `docs/storyboard.md`; working example:
 `examples/terminal-demo.toml`.
 
 1. `dolly run --check` once: it says what this machine can perform (stock Omarchy:
-   everything).
+   everything; without `python-cairo` it says so).
 2. Write `demo.toml` next to the change. Keep it under 30 seconds: one idea, three to
    six steps. Put slow or noisy preparation (builds, `cd`, `clear`) in `[[setup]]`,
    which is not recorded. After a command that prints, use `wait = "quiet"`, not a
@@ -170,12 +170,17 @@ you did not write without reading its `--dry-run` plan. Modules: `dolly/storyboa
 
 ```
 manifest.json  BarWidget.qml  RecordPanel.qml   Omarchy plugin (id io.github.jagritvats.dolly)
-bin/dolly  bin/dolly-setup                      CLI launcher, integration (menu rows + hotkeys, --undo)
+DollyTranslations.qml  DollyKeyboardPanel.qml   stand-ins for shells older than 4.5 (no translation catalog, no lazy panel);
+                                                on 4.5+ they pass through to the shell's own. IPC: a plain IpcHandler,
+                                                registered with Commons.IpcRegistry where that exists
+bin/dolly  bin/dolly-setup                      CLI launcher (picks a Python that can import cairo; --print-python),
+                                                integration (menu rows + hotkeys + launcher entry, --undo)
 hypr/dolly-input.lua                            Lua click/key bridge, loaded only while recording
 dolly/  cli capture logger replay events zoom timemap reframe render privacy captions project doctor demo keymap
         aoi (area of interest) sync (markers) health (disk/DND/phases/jobs/focus/other recorders) solid (Glassy)
         guards (menu files) monitors (scale/targets) audio (tracks/mix/meter) camera (bubble) library config i18n
-        render_chunk (export worker process) imgops (resize, place, blur, blend, masks: NumPy + Pillow)
+        render_chunk (export worker process) gfx (all drawing: cairo + Pango) num (list maths) grid (analysis bytes)
+        ff (ffmpeg, ffprobe, quality table) plain (the export without cairo) deps (what is missing; installs nothing)
 i18n/en.json                                    strings for the panel (Commons.Translations) and notifications
 dolly/share/  presets encode clipboard config targets  (+ __init__: flow + history)
 dolly/editor/server.py + static/index.html
@@ -185,8 +190,26 @@ harness/bench/                                  compare two checkouts: stills, z
 harness/  dctl wt.py walkthrough.py chrome-wayland  TEST HARNESS ONLY: drive the Omarchy shell harness
 tests/  test_zoom test_pipeline test_capture_fallback test_share test_features test_aoi test_system
         test_guards test_scaling test_settings test_library test_av editor_smoke pathcheck
-        test_imgops (against frozen OpenCV results) test_no_opencv (cv2 is hidden in every test run)
+        test_gfx test_num test_no_opencv (no numpy/PIL/cv2 import anywhere) test_installs_nothing (the marketplace scan)
+        test_desktop_fixes (Python pick, launcher entry, window pick across workspaces, --app-id terminals, empty trim)
+docs/hardware-smoke.toml                        a 30 s storyboard for a real desktop (`dolly run docs/hardware-smoke.toml --json`)
+docs/live-platform-check.py                     live check through the bar IPC with pause/resume (needs gpu-screen-recorder;
+                                                run from a checkout, it writes to local-verification/)
 ```
+
+Desktop integration (`dolly/integration.py`, `dolly/desktop_entry.py`): Set up writes the
+menu block, the hotkeys, the `dolly` link and the launcher entry
+`~/.local/share/applications/io.github.jagritvats.dolly.desktop` (Name "Dolly Recorder",
+marker `X-Dolly-Managed=true`; a file without the marker is never replaced or removed).
+The entry runs `dolly launch`, which only opens the panel (`omarchy-shell
+io.github.jagritvats.dolly open`), or the library window when no shell answers; it must
+never start a take. Raise `INTEGRATION_REVISION` when what Set up writes changes without a
+version change, so existing setups are rewritten once. Menu labels stay within 18
+characters (Omarchy's menu cuts longer ones off; `tests/test_shortcuts.py`).
+
+The editor window (`dolly/editor/server.py`) opens in its own browser profile with
+hardware video decoding off (black preview on some GPU drivers);
+`DOLLY_EDITOR_ACCELERATED_VIDEO=1` uses a second profile with it on.
 
 ## For agents and scripts (0.6 prototype: `dolly/headless.py`)
 
@@ -232,7 +255,8 @@ dolly export "$DIR" --json --width 1280
 
 - At finalize, every password manager, keyring or authentication prompt window
   (`sensitive.SECRET_CLASSES`/`SECRET_TITLES`) and every stretch with notification toasts
-  on screen becomes an ordinary privacy box with `"source": "auto"`. Computed once for a
+  on screen becomes an ordinary privacy box with `"source": "auto"` (`sensitive.auto_boxes`:
+  timeline logic, no NumPy; `privacy.py` keeps the names and does the pixels). Computed once for a
   new project; deleting one in the editor is final. Setting: `privacy.auto` (default on).
 - Toasts: Hyprland only sees the shell's notification layer, which stays mapped, so the
   logger polls `omarchy-shell notifications count` and the box is sized from the count.
@@ -260,6 +284,52 @@ dolly export "$DIR" --json --width 1280
   `test_library_links.py`.
 - Tests: `tests/test_privacy_auto.py` (synthetic timelines).
 
+## What Dolly runs on: stock Omarchy, nothing installed (0.7.4)
+
+`omarchy plugin add` only clones: no dependency field, no install hook. Dolly therefore uses
+only what a stock Omarchy ships: Python's standard library, `python-cairo` and
+`python-gobject` (Pango), and the programs it already called (`ffmpeg`, `ffprobe`,
+`gpu-screen-recorder`, `tesseract`, `grim`, `slurp`, `wl-copy`, ...). Three layers do the
+work that NumPy, Pillow and OpenCV did until 0.7.3:
+
+- `dolly/gfx.py`: all drawing and pictures, on cairo, text through Pango. The only module
+  that imports `cairo` or `gi`. Importing it never fails: `gfx.available()` says whether
+  cairo is there, and everything else raises `gfx.Unavailable`. Without Pango, text falls
+  back to cairo's own simple font (`gfx.text_engine()`).
+- `dolly/num.py`: the few numeric helpers the planning needs (interp, clip, smoothing,
+  running maximum, percentile...), on plain lists of floats.
+- `dolly/grid.py`: small grey pictures and masks for the screen analysis as plain bytes;
+  ffmpeg scales and compares, Python only reads counts and regions. No cairo needed.
+
+Rules (each one has a test):
+- Nothing under `dolly/`, `bin/`, `tests/` or `harness/` imports `numpy`, `PIL` or `cv2`
+  (`tests/test_no_opencv.py` parses every import). Tests build frames with gfx or bytes.
+- Dolly runs no installer: never a package manager, pip, sudo, pkexec, `omarchy-pkg-add`,
+  systemctl or systemd-run, and no scanned file contains such a command
+  (`tests/test_installs_nothing.py` re-runs the plugin marketplace's published scan rules;
+  the only capability allowed is "installer", for the file name `bin/dolly-setup`).
+  Where something is missing, Dolly names the package and says that Omarchy's package
+  installer adds it (`deps.how()`, "Omarchy menu > Install > Package"). Longer how-to text
+  goes to `docs/` (not scanned), for example `docs/captions.md`.
+- A machine without `python-cairo` still records, finalizes, makes the zoom plan and gives
+  the plain export (`dolly/plain.py`: trim, covers for the privacy boxes, the audio mix).
+  The editor, Settings, the library window and the styled export say what is missing
+  (`deps.ask_for_python`). `deps.missing()["blocking"]` is what a recording cannot start
+  without (a recorder that works here, ffmpeg); `python-cairo` is never in it.
+- Every module imports in a Python without site packages
+  (`tests/test_standard_install.py::test_every_module_imports_without_cairo`).
+
+`tests/test_standard_install.py` runs the real launcher on three machines: stock (cairo
+present; record, stop, plan, styled export with `"engine": "compositor"`, the editor
+serving a frame), without cairo (a Python without site packages), and without `gi`.
+
+How to run the tests: `make test` (in the Omarchy VM or on any machine with `ffmpeg`,
+`python-cairo`, `python-gobject` and `pango`; never with `--basetemp`). It hides NumPy,
+Pillow and OpenCV (`tests/no_numpy/`, `tests/no_cv2/`, switched by `DOLLY_TEST_NO_NUMPY` and
+`DOLLY_TEST_NO_CV2`, both on unless set to 0). One file: `python3 -m pytest -q
+tests/test_x.py`. Lint: `ruff check dolly` (CI uses ruff 0.17.4). The 8 skips of a full run
+are expected (playwright, moto, botocore, rclone missing; one test needs root).
+
 ## Prerequisites (`bin/dolly doctor` checks all of these)
 
 | Need | Package | Notes |
@@ -268,17 +338,17 @@ dolly export "$DIR" --json --width 1280
 | Hyprland Lua config + `hyprctl eval` | ships with Omarchy 4 | click/key logging without the input group |
 | ffmpeg with libx264 | `ffmpeg` | export, probing, audio chain (afftdn, loudnorm) |
 | gpu-screen-recorder | ships with Omarchy | capture, **pause, instant replay** |
-| wf-recorder | `sudo pacman -S wf-recorder` | **install in a VM**: software fallback (no pause/replay, cursor baked in) |
+| wf-recorder | `wf-recorder` (Omarchy menu > Install > Package) | **needed in a VM**: software fallback (no pause/replay, cursor baked in) |
 | gdbus (glib2) | ships with Omarchy | stop cleanly on suspend/lock (login1 PrepareForSleep) |
 | Dolly bar widget enabled | `omarchy plugin add ... --enable` | sync marker overlay + phases; without it events are timed from the logger start |
-| Python 3.10+, numpy, pillow | `bin/dolly deps --install` (omarchy-pkg-add in a floating terminal) | not on a fresh Omarchy; or `bin/dolly-setup` offers a venv. No OpenCV: `dolly/imgops.py` does that work on NumPy + Pillow (tests run with `cv2` hidden) |
+| Python 3.10+, python-cairo, python-gobject (Pango) | ship with Omarchy | cairo draws the editor and the styled export; without it Dolly records, plans and exports plain. Without Pango text uses cairo's simple font. See "What Dolly runs on" above |
 | wl-clipboard | ships with Omarchy | "Copy file", link to clipboard |
-| tesseract + eng data | `sudo pacman -S tesseract tesseract-data-eng` | optional: "Scrub secrets" |
-| rclone | `sudo pacman -S rclone` | optional: links via Drive/Dropbox/OneDrive/... |
-| whisper.cpp (`whisper-cli` + ggml model) or `pip install faster-whisper` | AUR `whisper.cpp` | optional: captions; model at `~/.local/share/dolly/whisper/ggml-base.en.bin` or `$DOLLY_WHISPER_MODEL` |
+| tesseract + eng data | `tesseract`, `tesseract-data-eng` | optional: "Scrub secrets" |
+| rclone | `rclone` | optional: links via Drive/Dropbox/OneDrive/... |
+| whisper.cpp (`whisper-cli` + ggml model) or faster-whisper | AUR `whisper.cpp`; faster-whisper in a private environment (`docs/captions.md`) | optional: captions; model at `~/.local/share/dolly/whisper/ggml-base.en.bin` or `$DOLLY_WHISPER_MODEL` |
 | v4l2 webcam | — | optional; none in a VM is fine |
 | slurp, jq, a Chromium browser | ship with Omarchy | region picking, editor window |
-| For `make test`/`make demo`: playwright (+ moto, boto3 for share tests) | `pip install --user playwright "moto[server]" boto3` | tests skip what is missing |
+| For `make test`/`make demo`: playwright (+ moto, boto3 for share tests) | Python packages `playwright`, `moto[server]`, `boto3` (user or private environment) | tests skip what is missing |
 
 `dolly doctor` prints the capture path (gsr / gsr-cpu / wf), the click/key path
 (lua / evdev / none), replay and pause availability, the share targets
@@ -313,7 +383,7 @@ webcam and transcriber are present. `--json` gives the same as JSON.
 cd /path/to/dolly && git status          # must be committed: the plugin is a clone of HEAD
 make clean && omarchy plugin validate .  # scenarios-out/ holds symlinks the validator rejects
 omarchy plugin add "file://$PWD" --enable --yes
-~/.config/omarchy/plugins/io.github.jagritvats.dolly/bin/dolly-setup   # menu rows, hotkeys, dep check
+~/.config/omarchy/plugins/io.github.jagritvats.dolly/bin/dolly-setup   # menu rows, hotkeys, report of what is missing
 ~/.config/omarchy/plugins/io.github.jagritvats.dolly/bin/dolly doctor
 ```
 
@@ -331,7 +401,7 @@ uses Super+Ctrl+R (reminders) and Super+Ctrl+P (power), so Dolly uses Super+Alt:
 
 dolly-setup also writes a window rule for the live camera bubble (`DollyCam-S|M|L`:
 float, pin, no initial focus). The Omarchy menu is Super+Space: Trigger → Capture
-(Record demo, Dolly recordings, Dolly settings, Mute microphone while recording,
+(Dolly Recorder: record a window, a region or the screen, recordings, settings,
 Instant replay, Open last) and Trigger → Share → Last demo recording.
 `omarchy menu keybindings --print` should list every Dolly binding with its description.
 
@@ -448,22 +518,22 @@ python3 -c "import sys,json;sys.path.insert(0,'.');from dolly import aoi;from do
 | R17 | **Theme change mid-session** | open the editor, switch theme (Super+Ctrl+Shift+Space) | editor colours and "Theme:" follow within ~4 s; bar widget restyles | screenshot |
 | R18 | **Menu guards** | `time bash -c "<each when: from omarchy-menu.jsonc>"` and Omarchy's `test/shell.d/menu-guard-budget-test.sh` | each ≤ 10 ms, batch ≤ 200 ms; rows flip correctly while recording / replay armed / after deleting the last recording | timings |
 | R19 | **Export speed** | `time bin/dolly export --quality high` and `--quality draft` on a 1-min recording | note fps (Reference results: 1080p60 high ~40 fps, draft ~46 fps on 2 vCPU); `DOLLY_WORKERS=1` for comparison | timings |
-| R20 | **Exports from the editor** | with the pacman packages (not the venv: `DOLLY_VENV=/nonexistent`), export the same project 3x from the **editor** (Ctrl+E > Export) and once via `bin/dolly export` | every export finishes at roughly R19 speed with no "no progress" line on stderr (run `bin/dolly edit` from a terminal to see the editor's stderr) | timings, stderr |
+| R20 | **Exports from the editor** | with the system Python (no private environment: `DOLLY_VENV=/nonexistent`), export the same project 3x from the **editor** (Ctrl+E > Export) and once via `bin/dolly export` | every export finishes at roughly R19 speed with no "no progress" line on stderr (run `bin/dolly edit` from a terminal to see the editor's stderr) | timings, stderr |
 
 ## Fresh Omarchy 4.0.4 VM findings (Nov 10) and 0.4.2
 
 On Omarchy 4.0.4 in VirtualBox (VMSVGA): gpu-screen-recorder 6.1 fails with
 "unknown gpu vendor: VMware, Inc." / "failed to load opengl" for both `gsr` and
-`gsr-cpu`, so a VM needs wf-recorder. A fresh install has no python-numpy/pillow (and no python-opencv, which Dolly needed until 0.7.0).
+`gsr-cpu`, so a VM needs wf-recorder. Dolly needs nothing else there since 0.7.4 (python-numpy and python-pillow until 0.7.3, python-opencv until 0.7.0).
 `omarchy bar get` and `omarchy-system` do not exist on 4.0.4 (`omarchy-bar set` is
 best-effort in Dolly; Session Keeper falls back to uwsm/systemctl). Quickshell needs
 `QT_QUICK_BACKEND=software` in `~/.config/uwsm/env` there.
 
 | # | Check | Expected |
 |---|---|---|
-| F1 | `bin/dolly doctor` before installing anything | no traceback; FAIL rows for the python modules and "a capture backend"; "Missing packages" + `dolly deps --install` at the end |
-| F2 | record from the bar or Super+Alt+R with packages missing | no picker/countdown/DND; one notification naming each package with an Install button; Install opens a floating terminal running `omarchy-pkg-add ...` then `dolly doctor` |
-| F3 | `bin/dolly-setup \| tail` (piped) | prints the install command, no hidden prompt; record button on the bar afterwards |
+| F1 | `bin/dolly doctor` in a fresh VM | no traceback; ok rows for cairo and Pango, a FAIL row for "a capture backend" in a VM; "Missing packages: wf-recorder" and where to install it at the end |
+| F2 | record from the bar or Super+Alt+R in a VM without wf-recorder | no picker/countdown/DND; one notification naming wf-recorder and Omarchy's package installer (Omarchy menu > Install > Package); no button that installs |
+| F3 | `bin/dolly-setup \| tail` (piped) | reports what is missing, asks nothing, installs nothing; record button on the bar afterwards |
 | F4 | record button missing after `omarchy plugin add --enable` | `omarchy bar put io.github.jagritvats.dolly --section right` (or `omarchy plugin enable io.github.jagritvats.dolly --section right`) shows it; note which works on 4.0.4 |
 | F5 | `journalctl --user -b \| grep "Local plugin changed"` after a few `dolly` commands | nothing; `~/.cache/dolly/pycache` exists; no `__pycache__` under `~/.config/omarchy/plugins/io.github.jagritvats.dolly` |
 | F6 | record 10 s, then `jq .sync <project>/events.json` | `method` is `markers2` (both markers found) under `QT_QUICK_BACKEND=software`; events log has `flash_ms: 160` |

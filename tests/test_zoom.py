@@ -1,8 +1,9 @@
 """Unit tests for the auto-zoom engine (pure logic, no ffmpeg/Hyprland)."""
+import math
+import random
 import sys
 from pathlib import Path
 
-import numpy as np
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -11,6 +12,22 @@ from dolly.zoom import (CameraGeometry, Segment, ZoomConfig, build_segments, cam
                         cluster_actions, extract_actions, _spring_step)
 
 W, H = 2560, 1600
+
+
+def steps(track):
+    """The change from each value of a track to the next."""
+    return [b - a for a, b in zip(track, track[1:])]
+
+
+def turns(track, least=0.5):
+    """How often a track turns round, not counting steps smaller than `least`."""
+    v = steps(track)
+    return sum((a > 0) != (b > 0) and abs(a) > least and abs(b) > least for a, b in zip(v, v[1:]))
+
+
+def close(a, b, atol):
+    """Two tracks agree value by value, to atol plus a hundred-thousandth of the value."""
+    return len(a) == len(b) and all(abs(x - y) <= atol + 1e-5 * abs(y) for x, y in zip(a, b))
 
 
 def tl_from(events, duration=20.0):
@@ -96,8 +113,8 @@ def test_shortcuts_do_not_count_as_typing():
 
 
 def test_segments_never_overlap_and_are_sorted():
-    rng = np.random.default_rng(1)
-    ev = [click(float(t), float(rng.uniform(0, W)), float(rng.uniform(0, H))) for t in np.sort(rng.uniform(0, 60, 25))]
+    rng = random.Random(1)
+    ev = [click(t, rng.uniform(0, W), rng.uniform(0, H)) for t in sorted(rng.uniform(0, 60) for _ in range(25))]
     segs = build_segments(tl_from(ev, 62))
     for a, b in zip(segs, segs[1:]):
         assert a.end <= b.start + 1e-9
@@ -149,9 +166,8 @@ def test_spring_is_critically_damped_no_overshoot():
     for _ in range(2000):
         x, v = _spring_step(x, v, 1.0, 5.0, 1 / 240)
         xs.append(x)
-    xs = np.array(xs)
-    assert xs.max() <= 1.0 + 1e-9                     # never overshoots
-    assert np.all(np.diff(xs) >= -1e-12)              # monotonic
+    assert max(xs) <= 1.0 + 1e-9                      # never overshoots
+    assert min(steps(xs)) >= -1e-12                   # monotonic
     assert xs[-1] == pytest.approx(1.0, abs=1e-4)
 
 
@@ -171,19 +187,16 @@ def test_camera_path_is_smooth_bounded_and_returns_to_full_view():
     fps = 60
     p = camera_path(tl, segs, geom, fps, 0, tl.duration)
     assert len(p.z) == int(round(tl.duration * fps))
-    assert p.z.min() >= 1.0 - 1e-6
-    assert p.z.max() <= ZoomConfig().zoom_max + 1e-6
+    assert min(p.z) >= 1.0 - 1e-6
+    assert max(p.z) <= ZoomConfig().zoom_max + 1e-6
     assert p.z[0] == pytest.approx(1.0, abs=1e-3)
     assert p.z[-1] < 1.05                             # zoomed back out at the end
     # smoothness: bounded zoom speed and no jitter (velocity sign flips) in pan
-    dlogz = np.abs(np.diff(np.log(p.z))) * fps
-    assert dlogz.max() < 2.0                          # < ~2 e-folds per second
-    k = 1920 * p.z / geom.CW
-    pan = np.hypot(np.diff(p.cx), np.diff(p.cy)) * k[1:]
-    assert pan.max() < 40                             # px per frame at 1080p
-    vx = np.diff(p.cx)
-    flips = np.sum((np.sign(vx[1:]) != np.sign(vx[:-1])) & (np.abs(vx[1:]) > 0.5) & (np.abs(vx[:-1]) > 0.5))
-    assert flips <= 2 * len(segs) + 2
+    dlogz = [abs(d) * fps for d in steps([math.log(z) for z in p.z])]
+    assert max(dlogz) < 2.0                           # < ~2 e-folds per second
+    pan = [math.hypot(dx, dy) * 1920 * z / geom.CW for dx, dy, z in zip(steps(p.cx), steps(p.cy), p.z[1:])]
+    assert max(pan) < 40                              # px per frame at 1080p
+    assert turns(p.cx) <= 2 * len(segs) + 2
 
 
 def test_viewport_stays_inside_canvas():
@@ -191,12 +204,10 @@ def test_viewport_stays_inside_canvas():
     segs = build_segments(tl)
     geom = CameraGeometry(W, H, 150, 150)
     p = camera_path(tl, segs, geom, 30, 0, tl.duration)
-    vw = geom.CW / p.z
-    vh = geom.CH / p.z
-    assert np.all(p.cx - vw / 2 >= -geom.px - 1.0)
-    assert np.all(p.cx + vw / 2 <= geom.W + geom.px + 1.0)
-    assert np.all(p.cy - vh / 2 >= -geom.py - 1.0)
-    assert np.all(p.cy + vh / 2 <= geom.H + geom.py + 1.0)
+    for z, cx, cy in zip(p.z, p.cx, p.cy):
+        vw, vh = geom.CW / z, geom.CH / z
+        assert cx - vw / 2 >= -geom.px - 1.0 and cx + vw / 2 <= geom.W + geom.px + 1.0
+        assert cy - vh / 2 >= -geom.py - 1.0 and cy + vh / 2 <= geom.H + geom.py + 1.0
 
 
 def test_cursor_kept_in_view_while_zoomed():
@@ -205,11 +216,10 @@ def test_cursor_kept_in_view_while_zoomed():
     geom = CameraGeometry(W, H, 0, 0)
     fps = 60
     p = camera_path(tl, segs, geom, fps, 0, tl.duration)
-    t = np.arange(len(p.z)) / fps
-    vw, vh = geom.CW / p.z, geom.CH / p.z
-    inside = (np.abs(p.cur_x - p.cx) <= vw / 2) & (np.abs(p.cur_y - p.cy) <= vh / 2)
+    inside = [abs(x - cx) <= geom.CW / z / 2 and abs(y - cy) <= geom.CH / z / 2
+              for x, y, cx, cy, z in zip(p.cur_x, p.cur_y, p.cx, p.cy, p.z)]
     # allow brief excursions during fast moves (spring catching up)
-    assert inside.mean() > 0.97
+    assert sum(inside) / len(inside) > 0.97
 
 
 def test_path_is_deterministic():
@@ -218,7 +228,7 @@ def test_path_is_deterministic():
     geom = CameraGeometry(W, H, 100, 100)
     a = camera_path(tl, segs, geom, 30, 0, tl.duration)
     b = camera_path(tl, segs, geom, 30, 0, tl.duration)
-    assert np.array_equal(a.z, b.z) and np.array_equal(a.cx, b.cx)
+    assert a.z == b.z and a.cx == b.cx
 
 
 def test_trimmed_path_matches_full_path():
@@ -229,8 +239,8 @@ def test_trimmed_path_matches_full_path():
     full = camera_path(tl, segs, geom, 30, 0, tl.duration)
     part = camera_path(tl, segs, geom, 30, 6.0, 10.0)
     i0 = 6 * 30
-    assert np.allclose(part.z, full.z[i0:i0 + len(part.z)], atol=2e-3)
-    assert np.allclose(part.cx, full.cx[i0:i0 + len(part.cx)], atol=1.5)
+    assert close(part.z, full.z[i0:i0 + len(part.z)], 2e-3)
+    assert close(part.cx, full.cx[i0:i0 + len(part.cx)], 1.5)
 
 
 def test_manual_fixed_focus_is_respected():
@@ -271,7 +281,7 @@ def test_glide_stays_zoomed_and_scrolls_between_nearby_inputs():
     tl, t_last = panel_walk()
     cfg = ZoomConfig()
     p, z = _zoom_during(tl, cfg, 2.0, t_last)
-    assert z.min() > 1.6, f"zoomed out between inputs (min zoom {z.min():.2f})"
+    assert min(z) > 1.6, f"zoomed out between inputs (min zoom {min(z):.2f})"
     # the camera scrolled down the panel with the clicks: every clicked input is in view
     fps = 30
     for c in tl.clicks:
@@ -279,33 +289,30 @@ def test_glide_stays_zoomed_and_scrolls_between_nearby_inputs():
         assert abs(c["y"] - p.cy[i]) < (H / p.z[i]) / 2 * 0.9 and abs(c["x"] - p.cx[i]) < (W / p.z[i]) / 2 * 0.9
     assert p.cy[int(t_last * fps)] - p.cy[int(2.0 * fps)] > 250
     # calm: never faster than the scenario cap (1.6 viewport widths/s), no hunting
-    vw = W / p.z
-    assert (np.abs(np.diff(p.cy)) * fps / vw[1:]).max() < 1.6
-    vy = np.diff(p.cy)
-    flips = np.sum((np.sign(vy[1:]) != np.sign(vy[:-1])) & (np.abs(vy[1:]) > 0.5) & (np.abs(vy[:-1]) > 0.5))
-    assert flips <= 2
+    assert max(abs(dy) * fps / (W / z) for dy, z in zip(steps(p.cy), p.z[1:])) < 1.6
+    assert turns(p.cy) <= 2
 
 
 def test_zoom_out_between_is_still_available():
     tl, t_last = panel_walk()
     _, z = _zoom_during(tl, ZoomConfig(glide=False), 2.0, t_last)
-    assert z.min() < 1.1
+    assert min(z) < 1.1
 
 
 def test_long_pause_or_far_jump_pulls_back():
     tl, t_last = panel_walk(pause=9.0)          # longer than stay_gap
     _, z = _zoom_during(tl, ZoomConfig(), 2.0, t_last)
-    assert z.min() < 1.1
+    assert min(z) < 1.1
     ev = [click(2.0, 200, 200), click(6.0, 2400, 1450)]     # opposite corners
     tl = tl_from(path_moves([(200, 200), (2400, 1450)], 4.0, 5.5) + ev, 10)
     _, z = _zoom_during(tl, ZoomConfig(), 2.0, 6.0)
-    assert z.min() < 1.1
+    assert min(z) < 1.1
 
 
 def test_pointer_wandering_off_in_the_pause_pulls_back():
     tl, t_last = panel_walk(wander=(150, 1500))
     _, z = _zoom_during(tl, ZoomConfig(), 2.0, t_last)
-    assert z.min() < 1.25
+    assert min(z) < 1.25
 
 
 def test_auto_zoom_off_and_triggers():
@@ -344,8 +351,8 @@ def test_trimmed_path_matches_full_path_inside_a_glide():
     part = camera_path(tl, segs, geom, 30, t0, t0 + 3.0, cfg)
     i0 = int(round(t0 * 30))
     n = len(part.z) - 10        # the last few frames see the end of the simulated window (as before)
-    assert np.allclose(part.z[:n], full.z[i0:i0 + n], atol=2e-3)
-    assert np.allclose(part.cy[:n], full.cy[i0:i0 + n], atol=1.5)
+    assert close(part.z[:n], full.z[i0:i0 + n], 2e-3)
+    assert close(part.cy[:n], full.cy[i0:i0 + n], 1.5)
 
 
 # ------------------------------------------- glide across windows (focus, dialogs, layout)

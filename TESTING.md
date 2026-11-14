@@ -6,6 +6,30 @@ in AGENTS.md. Keep evidence in `~/dolly-evidence/<date>/`.
 Machine: ☐ Omarchy VM on Windows (hypervisor: ______)  ☐ real hardware (GPU: ______)
 Omarchy: ______   Hyprland: ______   gpu-screen-recorder: ______   webcam: ______   mic: ______
 
+## Stock Omarchy, nothing installed (0.7.4)
+
+`make test` hides NumPy, Pillow and OpenCV; `tests/test_standard_install.py` also runs the
+launcher without cairo and without Pango, and `tests/test_installs_nothing.py` re-runs the
+marketplace's scan rules. On a desktop, check by hand:
+
+- [ ] Fresh `omarchy plugin add ... --enable`, nothing else: record, stop, the editor opens, a styled export (`dolly export --json` says `"engine": "compositor"`)
+- [ ] `dolly doctor`: ok rows for cairo and Pango; no line names a command that installs
+- [ ] `bin/dolly-setup`: menu rows and hotkeys, then a report of what is missing; it asks nothing and needs no password
+- [ ] In a VM without wf-recorder: the card names wf-recorder and Omarchy menu > Install > Package, and has no Install button
+
+## Desktop fixes of 0.7.4 (`tests/test_desktop_fixes.py` covers the logic; these need a desktop)
+
+- [ ] Update from a set-up 0.7.3 with `omarchy plugin update`: the first `dolly` call renames the menu entry to Dolly Recorder and writes the launcher entry (`desktop-file-validate ~/.local/share/applications/io.github.jagritvats.dolly.desktop`)
+- [ ] Shell log (`qs -p /usr/share/omarchy/shell/shell.qml log`): no QML error from the plugin; `omarchy-shell io.github.jagritvats.dolly open`, `stop` and `refresh` work
+- [ ] Omarchy 4.0.4 (older shell): the bar button and the panel load (own stand-ins `DollyTranslations.qml`, `DollyKeyboardPanel.qml`, a plain `IpcHandler`)
+- [ ] Apps launcher: search "dolly", Return opens the panel and does not record. Omarchy menu search: Dolly Recorder is not cut off; while recording the row is Stop Dolly
+- [ ] Window take with two windows of the same size on two workspaces: the visible one is followed; seven seconds on another workspace do not stop the take
+- [ ] `foot --app-id=my-term`: `capture.json` lists `my-term` under `terminals`
+- [ ] The editor's browser runs with `--user-data-dir=~/.local/share/dolly/editor-browser-software-video` and `--disable-accelerated-video-decode`; with `DOLLY_EDITOR_ACCELERATED_VIDEO=1` it does not
+- [ ] A `python3` without cairo first on PATH (mise, pyenv): `dolly --print-python` says `/usr/bin/python3` and `dolly doctor` says ready
+- [ ] `dolly run docs/hardware-smoke.toml --json`: ok, 6 of 6 steps, no warnings (close any open Omarchy menu first: scripted typing lands in its search box)
+- [ ] `bin/dolly-setup --undo` removes the menu entry, the hotkeys, the command and the launcher entry
+
 ## Verified in the cloud box (no Hyprland/GPU/webcam/network), re-check locally
 
 - [x] `make test`: see AGENTS.md Reference results for the count (cloud). Local: [ ] pass [ ] fail ____

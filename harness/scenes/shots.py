@@ -27,7 +27,7 @@ if "--root" in sys.argv:                 # plan with another checkout's code (be
     del sys.argv[sys.argv.index("--root"):sys.argv.index("--root") + 2]
 sys.path.insert(0, str(ROOT))
 
-import numpy as np  # noqa: E402
+import statistics  # noqa: E402
 
 from dolly import project as projmod  # noqa: E402
 from dolly.events import Timeline  # noqa: E402
@@ -52,8 +52,11 @@ def plan(take: Path) -> dict:
     segs = [s for s in segs if s.end > go]
     fps = 30.0
     crop = reframe_path(tl, segs, VERTICAL, fps, 0.0, tl.duration, cfg, aoi=aoi)
-    for arr in ("cx", "cy", "cw", "ch"):                   # the clip starts at "go"
-        getattr(crop, arr)[:int(go * fps)] = getattr(crop, arr)[min(int(go * fps), len(crop.cw) - 1)]
+    # copied into lists: arrays too when --root names an older checkout
+    k = int(go * fps)
+    cx, cw = (list(map(float, getattr(crop, arr))) for arr in ("cx", "cw"))
+    for a in (cx, cw):                                     # the clip starts at "go"
+        a[:k] = [a[min(k, len(a) - 1)]] * min(k, len(a))
     strip = min(tl.h, tl.w / VERTICAL) * VERTICAL          # the widest crop that fills the card
     cam = camera_path(tl, segs, CameraGeometry(tl.w, tl.h, 0, 0), fps, 0.0, tl.duration, cfg, aoi=aoi)
     shots = []
@@ -61,20 +64,20 @@ def plan(take: Path) -> dict:
         fx, fy = auto_focus(tl, s, cfg, aoi)
         zz = cam.z[int(s.start * fps):max(int(s.start * fps) + 1, int(s.end * fps))]
         # the level it settles at: the springs need the first part of a shot to get there
-        played = float(np.median(zz[int(len(zz) * 0.6):])) if len(zz) else s.zoom
+        played = statistics.median(map(float, zz[int(len(zz) * 0.6):])) if len(zz) else s.zoom
         i0, i1 = int(s.start * fps), max(int(s.start * fps) + 1, int(s.end * fps))
-        cw = crop.cw[i0:i1]
-        mid = min(len(crop.cw) - 1, (i0 + i1) // 2)
+        part = cw[i0:i1]
+        mid = min(len(cw) - 1, (i0 + i1) // 2)
         shots.append({
             "id": s.id, "start": round(s.start, 2), "end": round(s.end, 2), "zoom": round(played, 2),
             "planned": round(s.zoom, 2),
             "reason": s.reason, "view": [round(tl.w / played), round(tl.h / played)], "centre": [round(fx), round(fy)],
-            "v_strips": [round(float(cw.min()) / strip, 2), round(float(cw.max()) / strip, 2)],
-            "v_crop_mid": [round(float(crop.cx[mid] - crop.cw[mid] / 2)), round(float(crop.cx[mid] + crop.cw[mid] / 2))],
+            "v_strips": [round(min(part) / strip, 2), round(max(part) / strip, 2)],
+            "v_crop_mid": [round(cx[mid] - cw[mid] / 2), round(cx[mid] + cw[mid] / 2)],
         })
     def spans_of(flags):
         out, start = [], None
-        for i, f in enumerate(np.append(flags, False)):
+        for i, f in enumerate(list(flags) + [False]):
             if f and start is None:
                 start = i
             elif not f and start is not None:
@@ -82,15 +85,15 @@ def plan(take: Path) -> dict:
                     out.append([round(start / fps, 2), round(i / fps, 2)])
                 start = None
         return out
-    spans = spans_of(crop.cw >= 0.97 * tl.w)               # (nearly) the whole desktop width
-    boxed = spans_of(crop.cw > 1.05 * strip)
-    wide = spans_of(crop.cw > 1.4 * strip)                 # more than a long typed line may get (1.36)
+    spans = spans_of([v >= 0.97 * tl.w for v in cw])       # (nearly) the whole desktop width
+    boxed = spans_of([v > 1.05 * strip for v in cw])
+    wide = spans_of([v > 1.4 * strip for v in cw])                # more than a long typed line may get (1.36)
     return {"take": take.name, "screen": [tl.w, tl.h], "duration": round(tl.duration, 2), "go": round(go, 2),
             "line_h": round(float(getattr(aoi, "line_h", 0) or 0), 1), "shots": shots,
             "v_full_desktop": spans, "v_full_desktop_s": round(sum(b - a for a, b in spans), 2),
             "v_letterboxed_s": round(sum(b - a for a, b in boxed), 2),
             "v_large_bands": wide, "v_large_bands_s": round(sum(b - a for a, b in wide), 2),
-            "v_widest_strips": round(float(crop.cw.max()) / strip, 2),
+            "v_widest_strips": round(max(cw) / strip, 2),
             "actions": [{"t": round(a.t, 2), "kind": a.kind,
                          "rect": [round(v) for v in a.rect] if a.rect else None} for a in acts]}
 

@@ -155,7 +155,7 @@ class RcloneTarget:
 
     def _run(self, *args, timeout=900) -> str:
         if not self.exe:
-            raise UploadError("rclone not installed (sudo pacman -S rclone; then `rclone config`)")
+            raise UploadError("rclone not installed (package rclone; then `rclone config`)")
         r = subprocess.run([self.exe, *args], capture_output=True, text=True, timeout=timeout)
         if r.returncode != 0:
             raise UploadError(f"rclone {args[0]} failed: {(r.stderr or r.stdout).strip()[:400]}")

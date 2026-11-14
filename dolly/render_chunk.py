@@ -1,8 +1,9 @@
 """Export worker: `python -m dolly.render_chunk job.json` renders one chunk of an export.
 
 A fresh interpreter (never a fork of the caller, which may hold threads and locks):
-it re-plans the export from the same inputs (deterministic) and renders frames
-[a, b) of the main part, printing "frames N" progress lines on stdout."""
+it reads the same project, takes the camera path the caller worked out (the job's
+"plan" file) and renders frames [a, b) of the main part, printing "frames N" progress
+lines on stdout."""
 from __future__ import annotations
 
 import json

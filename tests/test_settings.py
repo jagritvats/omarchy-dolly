@@ -8,11 +8,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-import numpy as np
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+from dolly import gfx  # noqa: E402
 
 
 @pytest.fixture()
@@ -41,6 +41,24 @@ def _theme(d: Path, name, accent, bg, mode):
     st.write_text(name + "\n")
 
 
+def grey_frame(w, h, level):
+    img = gfx.new(w, h)
+    gfx.fill_rect(img, 0, 0, w, h, gfx.rgb((level, level, level)))
+    return img
+
+
+def rgb_at(picture, x, y):
+    """One pixel of what the renderer drew: a gfx frame (an array of blue, green, red from a
+    render.py that still works on NumPy)."""
+    if hasattr(picture, "get_width"):
+        return gfx.pixel(picture, x, y)
+    return tuple(int(v) for v in picture[y, x][::-1])
+
+
+def near(a, b, tol):
+    return all(abs(x - y) <= tol for x, y in zip(a, b))
+
+
 def make_project(root: Path, name="2026-11-09_10-00-00", n=90, fps=30, W=640, H=400, typing=True):
     """A small finalized recording: a click at 1 s, typing at 1.5-3.4 s, then idle."""
     from dolly import capture
@@ -48,17 +66,17 @@ def make_project(root: Path, name="2026-11-09_10-00-00", n=90, fps=30, W=640, H=
     pdir.mkdir(parents=True)
 
     def frame(i):
-        img = np.full((H, W, 3), 30, np.uint8)
+        img = grey_frame(W, H, 30)
         t = i / fps
         if t > 1.1:
-            img[100:220, 150:450] = (90, 90, 100)
-            img[110:118, 160:160 + int(min(280, max(0, (t - 1.5) * 140)))] = (230, 230, 230)
+            gfx.fill_rect(img, 150, 100, 300, 120, gfx.rgb((100, 90, 90)))
+            gfx.fill_rect(img, 160, 110, int(min(280, max(0, (t - 1.5) * 140))), 8, gfx.rgb((230, 230, 230)))
         return img
-    p = subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{W}x{H}",
+    p = subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgr0", "-s", f"{W}x{H}",
                           "-r", str(fps), "-i", "-", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
                           str(pdir / "raw.mkv")], stdin=subprocess.PIPE)
     for i in range(n):
-        p.stdin.write(frame(i).tobytes())
+        p.stdin.write(gfx.data(frame(i)))
     p.stdin.close()
     p.wait()
     from dolly.monitors import monitor_target
@@ -155,8 +173,8 @@ def test_look_settings_shape_new_projects_and_renders(home):
     comp = Compositor(tl, data["style"], [Segment.from_dict(s) for s in data["segments"]],
                       ZoomConfig.from_dict(data["zoom_config"]), 0, 3)
     assert comp.ripple is False and comp.keys_top and comp.cursor_size == 2.4
-    out = comp.compose_at(0.5, np.full((400, 640, 3), 30, np.uint8))
-    assert np.allclose(out[5, 5].astype(int), (0x60, 0x40, 0x20), atol=4)    # BGR of #204060 (shadow-tinted edge)
+    out = comp.compose_at(0.5, grey_frame(640, 400, 30))
+    assert near(rgb_at(out, 5, 5), (0x20, 0x40, 0x60), 4)                    # #204060 (shadow-tinted edge)
 
 
 def test_follow_theme_pins_colours_so_reexports_are_stable(home):
@@ -171,7 +189,7 @@ def test_follow_theme_pins_colours_so_reexports_are_stable(home):
     from dolly.render import build_background, make_layout
     lay = make_layout(640, 400, st)
     bg = build_background(lay, {**st, "shadow": 0})
-    assert np.allclose(bg[2, 2].astype(int), (0x26, 0x1b, 0x1a), atol=3)      # ink = the pinned background
+    assert near(rgb_at(bg, 2, 2), (0x1a, 0x1b, 0x26), 3)                      # ink = the pinned background
 
 
 # ------------------------------------------------------------------ Camera

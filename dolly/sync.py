@@ -17,6 +17,9 @@ finalize() then
 Display latency: the marker becomes visible on the first frame captured
 after the request, i.e. 0..1 frame later. The detected time is the first
 marker frame minus half a frame, so the residual error is <= 0.5 frame.
+
+No third-party imports: a recording is finalized on a machine without cairo too,
+and the decoded corner is 8 x 8.
 """
 from __future__ import annotations
 
@@ -24,8 +27,6 @@ import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-
-import numpy as np
 
 MARKER_LOGICAL = 40          # px (logical) square at the region's top-left
 PROBE = 8                    # decoded crop is resized to PROBE x PROBE
@@ -50,18 +51,38 @@ class SyncFit:
                 "drift_pct": round((self.b - 1) * 100, 4), "residual": round(self.residual, 4)}
 
 
-def is_marker(px: np.ndarray) -> bool:
-    """px: PROBE x PROBE RGB crop of the marker square."""
-    p = px.astype(np.int16)
-    edge = np.concatenate([p[0, :], p[-1, :], p[:, 0], p[:, -1]])
-    r, g, b = edge[:, 0], edge[:, 1], edge[:, 2]
+FRAME_BYTES = PROBE * PROBE * 3
+_LAST = PROBE - 1
+# the border of the crop, in the order rows then columns (the corners count twice)
+_EDGE = tuple((y * PROBE + x) * 3 for y, x in
+              [(0, x) for x in range(PROBE)] + [(_LAST, x) for x in range(PROBE)]
+              + [(y, 0) for y in range(PROBE)] + [(y, _LAST) for y in range(PROBE)])
+_CENTRE = tuple((y * PROBE + x) * 3 for y in (PROBE // 2 - 1, PROBE // 2) for x in (PROBE // 2 - 1, PROBE // 2))
+
+
+def is_marker(px) -> bool:
+    """px: the PROBE x PROBE RGB crop of the marker square, as PROBE * PROBE * 3 bytes
+    (rows of r, g, b)."""
     # relative, not absolute: the overlay can fade in over a few frames (software rendering:
     # edge red 142 -> 166 -> 192 -> 214) and yuv420 smears colour; magenta = red and blue far
     # above green, green = green far above both
-    mag = (r - g > 70) & (b - g > 70) & (np.abs(r - b) < 70) & (r > 110)
-    c = p[PROBE // 2 - 1:PROBE // 2 + 1, PROBE // 2 - 1:PROBE // 2 + 1].reshape(-1, 3)
-    grn = (c[:, 1] - np.maximum(c[:, 0], c[:, 2]) > 70) & (c[:, 1] > 110)
-    return mag.mean() > 0.7 and grn.mean() > 0.7
+    mag = 0
+    for i in _EDGE:
+        r, g, b = px[i], px[i + 1], px[i + 2]
+        if r - g > 70 and b - g > 70 and abs(r - b) < 70 and r > 110:
+            mag += 1
+    grn = 0
+    for i in _CENTRE:
+        r, g, b = px[i], px[i + 1], px[i + 2]
+        if g - max(r, b) > 70 and g > 110:
+            grn += 1
+    return mag / len(_EDGE) > 0.7 and grn / len(_CENTRE) > 0.7
+
+
+def _split_frames(buf: bytes) -> list:
+    """The decoder's output as one PROBE x PROBE RGB crop per frame."""
+    view = memoryview(buf)
+    return [view[i:i + FRAME_BYTES] for i in range(0, len(buf) - FRAME_BYTES + 1, FRAME_BYTES)]
 
 
 def detect_markers(raw: Path, scale: float, fps: float, ffmpeg: str = "ffmpeg", frames=None) -> list[tuple[float, float]]:
@@ -76,8 +97,7 @@ def detect_markers(raw: Path, scale: float, fps: float, ffmpeg: str = "ffmpeg", 
         out = subprocess.run([ffmpeg, "-v", "error", "-i", str(raw), "-map", "0:v:0", "-fps_mode", "passthrough",
                               "-vf", f"crop={size}:{size}:0:0,scale={PROBE}:{PROBE}:flags=area",
                               "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], capture_output=True).stdout
-        n = len(out) // (PROBE * PROBE * 3)
-        frames = np.frombuffer(out[: n * PROBE * PROBE * 3], np.uint8).reshape(n, PROBE, PROBE, 3)
+        frames = _split_frames(out)
     runs = []
     cur = None
     for i, f in enumerate(frames):
@@ -108,7 +128,7 @@ _PTS = re.compile(r"pts_time:\s*(-?[0-9.]+)")
 
 def _probe_window(raw: Path, size: int, ffmpeg: str, head: float | None = None, tail: float | None = None,
                   timeout: float = 120.0):
-    """Decode one window of the marker corner: (frames N x PROBE x PROBE x 3, [pts]) with the
+    """Decode one window of the marker corner: (frames, one RGB crop each, [pts]) with the
     presentation time of every decoded frame in the file's own timeline (showinfo), so frame
     i and time i always belong together. `head`: the first seconds; `tail`: the last seconds."""
     cmd = [ffmpeg, "-hide_banner", "-nostats", "-v", "info", "-copyts"]
@@ -120,8 +140,8 @@ def _probe_window(raw: Path, size: int, ffmpeg: str, head: float | None = None, 
             "-vf", f"crop={size}:{size}:0:0,scale={PROBE}:{PROBE}:flags=area,showinfo",
             "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]
     r = subprocess.run(cmd, capture_output=True, timeout=timeout)
-    n = len(r.stdout) // (PROBE * PROBE * 3)
-    frames = np.frombuffer(r.stdout[: n * PROBE * PROBE * 3], np.uint8).reshape(n, PROBE, PROBE, 3)
+    frames = _split_frames(r.stdout)
+    n = len(frames)
     pts = [float(m.group(1)) for line in r.stderr.decode("utf-8", "replace").splitlines()
            if "showinfo" in line and (m := _PTS.search(line))]
     # showinfo can name one more frame than was written (the one that ended the window)

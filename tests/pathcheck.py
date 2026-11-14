@@ -5,37 +5,85 @@
 """
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
 
-import numpy as np
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from dolly import gfx  # noqa: E402
 from dolly import project as projmod  # noqa: E402
 from dolly.events import Timeline  # noqa: E402
 from dolly.render import make_layout, resolve_segments  # noqa: E402
 from dolly.zoom import ZoomConfig, camera_path  # noqa: E402
 
 
+def steps(a):
+    """The change from each value to the next."""
+    return [y - x for x, y in zip(a, a[1:])]
+
+
 def metrics(path, geom):
     z, cx, cy = path.z, path.cx, path.cy
     fps = path.fps
-    # viewport left/top edges in output px (what the viewer perceives)
+    # what the viewer perceives is output px: k of them per video px at zoom z
     OW = 1920
-    k = OW * z / geom.CW
-    vx0 = (cx - geom.CW / (2 * z))
-    vy0 = (cy - geom.CH / (2 * z))
+    k = [OW * v / geom.CW for v in z]
     # screen-space motion of a canvas point at the viewport centre = pan speed
-    pan_px = np.hypot(np.diff(cx), np.diff(cy)) * k[1:]           # output px / frame
-    dz = np.abs(np.diff(np.log(z))) * fps                          # log-zoom / s
-    acc = np.abs(np.diff(pan_px)) * fps                            # px/frame/s
-    jerk_z = np.abs(np.diff(np.log(z), 3)) * fps ** 3
+    pan_px = [math.hypot(dx, dy) * kk for dx, dy, kk in zip(steps(cx), steps(cy), k[1:])]    # output px / frame
+    logz = [math.log(v) for v in z]
+    dz = [abs(d) * fps for d in steps(logz)]                       # log-zoom / s
+    acc = [abs(d) * fps for d in steps(pan_px)]                    # px/frame/s
+    jerk_z = [abs(d) * fps ** 3 for d in steps(steps(steps(logz)))]
     # direction reversals of pan (jitter)
-    vx = np.diff(cx)
-    rev = int(np.sum((np.sign(vx[1:]) != np.sign(vx[:-1])) & (np.abs(vx[1:]) > 0.05) & (np.abs(vx[:-1]) > 0.05)))
-    return {"max_pan_px_per_frame": float(pan_px.max()), "max_dlogz_per_s": float(dz.max()),
-            "max_pan_accel": float(acc.max()), "max_jerk_logz": float(jerk_z.max()),
-            "pan_reversals": rev, "zoom_range": [float(z.min()), float(z.max())]}
+    vx = steps(cx)
+    rev = sum((a > 0) != (b > 0) and abs(a) > 0.05 and abs(b) > 0.05 for a, b in zip(vx, vx[1:]))
+    return {"max_pan_px_per_frame": max(pan_px, default=0.0), "max_dlogz_per_s": max(dz, default=0.0),
+            "max_pan_accel": max(acc, default=0.0), "max_jerk_logz": max(jerk_z, default=0.0),
+            "pan_reversals": rev, "zoom_range": [min(z), max(z)]}
+
+
+def plot(out, t, panels, spans, marks, legend):
+    """Line charts one under the other over the same time axis.
+    panels: [(label, [(values, colour, width, alpha), ...])]; spans: [(t0, t1)] shaded in
+    the first panel (the zoom segments); marks: times drawn as thin lines (the clicks);
+    legend: [(text, colour)]."""
+    W, H, left, right, top, bottom, gap = 1120, 640, 64, 16, 12, 30, 12
+    img = gfx.new(W, H)
+    gfx.fill_rect(img, 0, 0, W, H, (1, 1, 1))
+    c = gfx.context(img)
+    font, ink = gfx.font(None, 12), gfx.rgb("#444444")
+    t0, t1 = t[0], max(t[-1], t[0] + 1e-9)
+    ph = (H - top - bottom - gap * (len(panels) - 1)) / len(panels)
+
+    def X(v):
+        return left + (v - t0) / (t1 - t0) * (W - left - right)
+    for i, (label, lines) in enumerate(panels):
+        y0 = top + i * (ph + gap)
+        lo, hi = min(min(v) for v, *_ in lines), max(max(v) for v, *_ in lines)
+        lo, hi = lo - 0.05 * (hi - lo) - 1e-9, hi + 0.05 * (hi - lo) + 1e-9
+        for a, b in spans if i == 0 else ():
+            gfx.fill_rect(c, X(a), y0, X(b) - X(a), ph, gfx.rgb("#bb9af7"), 0.15)
+        for m in marks:
+            gfx.fill_rect(c, X(m), y0, 0.6, ph, gfx.rgb("#e0af68"), 0.7)
+        for values, colour, width, alpha in lines:
+            for j, (tt, v) in enumerate(zip(t, values)):
+                (c.line_to if j else c.move_to)(X(tt), y0 + ph - (v - lo) / (hi - lo) * ph)
+            c.set_source_rgba(*gfx.rgb(colour), alpha)
+            c.set_line_width(width)
+            c.stroke()
+        c.rectangle(left + 0.5, y0 + 0.5, W - left - right - 1, ph - 1)
+        c.set_source_rgba(*ink, 0.5)
+        c.set_line_width(1)
+        c.stroke()
+        gfx.draw_text(c, f"{hi:.4g}", left - 5, y0, font, ink, anchor="ra")
+        gfx.draw_text(c, label, left - 5, y0 + ph / 2, font, ink, anchor="rm")
+        gfx.draw_text(c, f"{lo:.4g}", left - 5, y0 + ph, font, ink, anchor="rd")
+    for j in range(11):
+        v = t0 + (t1 - t0) * j / 10
+        gfx.draw_text(c, f"{v:.1f} s", X(v), H - bottom + 6, font, ink, anchor="ma")
+    for j, (text, colour) in enumerate(legend):
+        gfx.draw_text(c, text, W - right - 8, top + 6 + 16 * j, font, gfx.rgb(colour), anchor="ra")
+    gfx.save(img, out)
 
 
 def main():
@@ -53,26 +101,12 @@ def main():
     p = camera_path(tl, segs, lay.geom, a.fps, 0, tl.duration, zcfg)
     m = metrics(p, lay.geom)
     print(json.dumps(m, indent=2))
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    t = np.arange(len(p.z)) / a.fps
-    fig, ax = plt.subplots(3, 1, figsize=(14, 8), sharex=True)
-    ax[0].plot(t, p.z, color="#7aa2f7")
-    for s in segs:
-        ax[0].axvspan(s.start, s.end, color="#bb9af7", alpha=0.15)
-    ax[0].set_ylabel("zoom")
-    ax[1].plot(t, p.cx, label="cam x", color="#7aa2f7")
-    ax[1].plot(t, p.cur_x, label="cursor x", color="#f7768e", alpha=0.6, lw=0.8)
-    ax[1].legend(loc="upper right")
-    ax[2].plot(t, p.cy, label="cam y", color="#7aa2f7")
-    ax[2].plot(t, p.cur_y, label="cursor y", color="#f7768e", alpha=0.6, lw=0.8)
-    for c in tl.clicks:
-        for a_ in ax:
-            a_.axvline(c["t"], color="#e0af68", lw=0.6, alpha=0.7)
-    ax[2].set_xlabel("s")
-    fig.tight_layout()
-    fig.savefig(a.out, dpi=80)
+    t = [i / a.fps for i in range(len(p.z))]
+    cam, cursor = "#7aa2f7", "#f7768e"
+    plot(a.out, t, [("zoom", [(p.z, cam, 1.5, 1.0)]),
+                    ("x", [(p.cur_x, cursor, 0.8, 0.6), (p.cx, cam, 1.5, 1.0)]),         # camera over the cursor
+                    ("y", [(p.cur_y, cursor, 0.8, 0.6), (p.cy, cam, 1.5, 1.0)])],
+         [(s.start, s.end) for s in segs], [c["t"] for c in tl.clicks], [("camera", cam), ("cursor", cursor)])
 
 
 if __name__ == "__main__":

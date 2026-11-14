@@ -29,7 +29,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-import numpy as np
+import bisect
 
 HERE = Path(__file__).resolve().parent
 LOGICAL_W, LOGICAL_H = 1280, 800
@@ -200,16 +200,16 @@ async def capture(out: Path, fps: int, scale: int, s: Script, B: dict):
     try:
         from playwright.async_api import async_playwright
     except ImportError:
-        sys.exit("make_demo: needs playwright (pip install --user playwright, or in a venv) and a Chromium browser")
+        sys.exit("make_demo: needs the playwright Python package and a Chromium browser (see TESTING.md)")
     W, H = LOGICAL_W * scale, LOGICAL_H * scale
     duration = s.t
     n = int(math.floor(duration * fps))
-    mt = np.array([m[0] for m in s.moves])
-    mx = np.array([m[1] for m in s.moves])
-    my = np.array([m[2] for m in s.moves])
+    mt = [m[0] for m in s.moves]
+    mx = [m[1] for m in s.moves]
+    my = [m[2] for m in s.moves]
 
     def cur(t):
-        i = int(np.searchsorted(mt, t, side="right"))
+        i = bisect.bisect_right(mt, t)
         if i <= 0:
             return mx[0], my[0]
         if i >= len(mt):
@@ -253,36 +253,36 @@ async def capture(out: Path, fps: int, scale: int, s: Script, B: dict):
 
 def burn_cursor(out: Path, fps: int, scale: int, s: Script):
     """'Before' reference: raw capture with a plain cursor, no zoom/frame."""
-    from PIL import Image, ImageDraw
+    sys.path.insert(0, str(HERE.parent))
+    from dolly import gfx
     sz = int(22 * scale)
-    img = Image.new("RGBA", (sz, sz), (0, 0, 0, 0))
     k = sz / 27
     pts = [(2 * k, 1.5 * k), (2 * k, 21 * k), (7 * k, 16.5 * k), (10.4 * k, 24.6 * k), (13.6 * k, 23.2 * k), (10.2 * k, 15.4 * k), (17 * k, 15.2 * k)]
-    ImageDraw.Draw(img).polygon(pts, fill=(0, 0, 0, 255), outline=(255, 255, 255, 255))
-    arr = np.asarray(img, np.float32) / 255
-    mt = np.array([m[0] for m in s.moves])
-    W, H = LOGICAL_W * scale, LOGICAL_H * scale
-    dec = subprocess.Popen(["ffmpeg", "-v", "error", "-i", str(out / "raw.mp4"), "-f", "rawvideo", "-pix_fmt", "bgr24", "-"],
-                           stdout=subprocess.PIPE)
-    enc = subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{W}x{H}",
+    arrow = gfx.new(sz, sz, alpha=True)
+    c = gfx.context(arrow)
+    gfx.polygon(c, pts, 0.5, 0.5)                 # black inside, a one-pixel white outline
+    c.set_source_rgb(0, 0, 0)
+    c.fill_preserve()
+    c.set_source_rgb(1, 1, 1)
+    c.set_line_width(1)
+    c.stroke()
+    mt = [m[0] for m in s.moves]
+    W, H = int(LOGICAL_W * scale), int(LOGICAL_H * scale)
+    dec = subprocess.Popen(["ffmpeg", "-v", "error", "-i", str(out / "raw.mp4"), "-f", "rawvideo", "-pix_fmt", "bgr0", "-"],
+                           stdout=subprocess.PIPE, bufsize=W * H * 4 * 2)
+    enc = subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgr0", "-s", f"{W}x{H}",
                             "-r", str(fps), "-i", "-", "-c:v", "libx264", "-preset", "veryfast", "-crf", "16",
                             "-pix_fmt", "yuv420p", str(out / "raw-cursor.mp4")], stdin=subprocess.PIPE)
     i = 0
     while True:
-        buf = dec.stdout.read(W * H * 3)
-        if len(buf) < W * H * 3:
+        f = gfx.read_frame(dec.stdout, W, H)
+        if f is None:
             break
-        f = np.frombuffer(buf, np.uint8).reshape(H, W, 3).copy()
         t = i / fps
-        j = max(0, int(np.searchsorted(mt, t, side="right")) - 1)
+        j = max(0, bisect.bisect_right(mt, t) - 1)
         x, y = int(s.moves[j][1] * scale - 2 * k), int(s.moves[j][2] * scale - 1.5 * k)
-        h, w = arr.shape[:2]
-        x0, y0, x1, y1 = max(0, x), max(0, y), min(W, x + w), min(H, y + h)
-        if x1 > x0 and y1 > y0:
-            a = arr[y0 - y:y1 - y, x0 - x:x1 - x]
-            roi = f[y0:y1, x0:x1].astype(np.float32)
-            f[y0:y1, x0:x1] = (a[..., 2::-1] * 255 * a[..., 3:] + roi * (1 - a[..., 3:])).astype(np.uint8)
-        enc.stdin.write(f.tobytes())
+        gfx.place(f, arrow, 1, 1, x, y)
+        enc.stdin.write(gfx.data(f))
         i += 1
     enc.stdin.close()
     enc.wait()

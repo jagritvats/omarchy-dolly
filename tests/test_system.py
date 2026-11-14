@@ -8,6 +8,7 @@ cancelling during the countdown with the same hotkey, and sync-marker
 detection with clock drift.
 """
 import json
+import math
 import os
 import signal
 import stat
@@ -16,27 +17,12 @@ import sys
 import time
 from pathlib import Path
 
-import numpy as np
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-HYPRCTL = r'''#!/usr/bin/env bash
-case "$*" in
-  *monitors*) echo '[{"name":"DP-1","focused":true,"x":0,"y":0,"width":1280,"height":800,"scale":1.0,"transform":0,"activeWorkspace":{"id":1}}]';;
-  *cursorpos*) python3 -c "import time,math;t=time.time()%6;print('{\"x\":%d,\"y\":%d}'%(300+150*math.floor(t/1.5),300+60*math.floor(t/1.5)))";;
-  *activewindow*) echo '{"address":"0xa1","at":[10,36],"size":[620,754],"title":"~/app","class":"Alacritty"}';;
-  *clients*) echo '[{"address":"0xa1","at":[10,36],"size":[620,754],"title":"~/app","class":"Alacritty","workspace":{"id":1},"floating":false,"fullscreen":0,"mapped":true}]';;
-  eval*) echo "error: lua disabled in stub"; exit 1;;
-  *) echo "{}";;
-esac
-'''
-GSR = r'''#!/usr/bin/env bash
-out=""; fps=60; size=1280x800
-while [[ $# -gt 0 ]]; do case "$1" in -o) out="$2"; shift;; -f) fps="$2"; shift;; -region) size="${2%%+*}"; shift;; -w) case "$2" in *x*+*) size="${2%%+*}";; esac; shift;; esac; shift; done
-exec ffmpeg -v error -y -re -f lavfi -i "testsrc2=size=${size}:rate=${fps}" -c:v libx264 -preset ultrafast -g 15 -pix_fmt yuv420p -f matroska "$out"
-'''
+from tests.desktop_stubs import GSR, HYPRCTL  # noqa: E402
 
 
 @pytest.fixture()
@@ -195,20 +181,22 @@ def test_sync_markers_offset_and_drift():
     n = int(120 * fps)
     a_true, b_true = -0.27, 1 / 1.003                     # logger clock: 0.27 s late, 0.3 % fast
     log_marks = [0.6, 118.0]
-    frames = np.zeros((n, sync.PROBE, sync.PROBE, 3), np.uint8)
+    frames = [bytes(sync.FRAME_BYTES)] * n                 # black, as the decoder gives them: rows of r, g, b
+    marker = bytearray(bytes((255, 0, 255)) * (sync.PROBE * sync.PROBE))
+    for y in (3, 4):
+        marker[(y * sync.PROBE + 3) * 3:(y * sync.PROBE + 5) * 3] = bytes((0, 255, 0)) * 2
     shown = []
     for lm in log_marks:
         tv = a_true + b_true * lm                          # when the overlay really appeared
-        i0 = int(np.ceil(tv * fps))
+        i0 = math.ceil(tv * fps)
         shown.append(tv)
         for i in range(i0, i0 + 2):
-            frames[i] = (255, 0, 255)
-            frames[i, 3:5, 3:5] = (0, 255, 0)
+            frames[i] = bytes(marker)
     runs = sync.detect_markers(None, 1.0, fps, frames=frames)
     assert len(runs) == 2
     fit = sync.fit(log_marks, runs, fps)
     assert fit.method == "markers2"
-    for t_log in np.linspace(0, 118, 50):
+    for t_log in (118 * i / 49 for i in range(50)):
         assert abs(fit.map(t_log) - (a_true + b_true * t_log)) < 1.0 / fps    # < 1 frame everywhere
     trim = sync.marker_trim(runs, fps, n / fps)
     assert trim[0] > runs[0][1] and trim[1] < runs[1][0]                    # markers trimmed out

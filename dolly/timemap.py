@@ -14,12 +14,10 @@ detect_speedups() proposes segments from
 from __future__ import annotations
 
 import bisect
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-import numpy as np
-
+from . import grid
 from .events import Timeline
 
 
@@ -48,43 +46,58 @@ def idle_speed(length: float) -> float:
     return 2.0 if length < 3.5 else 4.0 if length < 8 else 8.0
 
 
-def visual_activity(raw: Path, fps: float = 5.0, width: int = 320) -> tuple[np.ndarray, np.ndarray]:
+def visual_activity(raw: Path, fps: float = 5.0, width: int = 320) -> tuple[list, list]:
     """(times, number of pixels that changed by > 10 levels since the previous sample)."""
-    from .render import ffmpeg_bin, probe
+    from .ff import ffmpeg_bin, probe
     p = probe(raw)
     v = next((s for s in p.get("streams", []) if s.get("codec_type") == "video"), {})
     w, h = int(v.get("width", 16)), int(v.get("height", 9))
     hh = max(2, int(round(width * h / w / 2)) * 2)
-    # no timeout: decodes the whole recording (time grows with its length)
-    out = subprocess.run([ffmpeg_bin(), "-v", "error", "-i", str(raw), "-vf", f"fps={fps},scale={width}:{hh}",
-                          "-f", "rawvideo", "-pix_fmt", "gray", "-"], capture_output=True, check=True).stdout
-    n = len(out) // (width * hh)
-    fr = np.frombuffer(out[: n * width * hh], np.uint8).reshape(n, hh, width).astype(np.int16)
-    diff = np.zeros(n)
-    if n > 1:
-        diff[1:] = (np.abs(np.diff(fr, axis=0)) > 10).sum(axis=(1, 2))
-    return np.arange(n) / fps, diff
+    # ffmpeg takes each sample off the next one and marks what is more than 10 apart (tpad
+    # repeats the first sample, so it is compared with itself); only the marks are counted
+    # here. No timeout: it decodes the whole recording (time grows with its length)
+    cmd = [ffmpeg_bin(), "-v", "error", "-filter_threads", "1", "-i", str(raw), "-vf",
+           f"fps={fps},scale={width}:{hh},format=gray,tpad=start=1:start_mode=clone,"
+           "tblend=all_mode=difference,lut=y='gt(val,10)*255'", "-f", "rawvideo", "-pix_fmt", "gray", "-"]
+    diff = [float(mask.count(grid.SET)) for mask in grid.read(cmd, width * hh)]
+    return [i / fps for i in range(len(diff))], diff
+
+
+ACTIVITY_CACHE = "activity-v3.json"
+OLD_ACTIVITY_CACHES = ("activity-v2.npz",)     # NumPy's file format: never read again, deleted unread
 
 
 def cached_activity(project_dir: Path):
-    project_dir = Path(project_dir)
-    cache = project_dir / "activity-v2.npz"
+    """visual_activity of a take, kept next to it as JSON (numbers only, whoever wrote the
+    file: a recording folder may come from someone else)."""
+    import json
+    from . import fsutil
     from .project import Project
+    project_dir = Path(project_dir)
     raw = Project(project_dir).raw
+    for name in OLD_ACTIVITY_CACHES:
+        try:
+            (project_dir / name).unlink(missing_ok=True)
+        except OSError:
+            pass
+    cache = project_dir / ACTIVITY_CACHE
     try:
         if cache.stat().st_mtime >= raw.stat().st_mtime:
-            with np.load(cache, allow_pickle=False) as d:      # numbers only, whoever wrote the file
-                t, a = np.asarray(d["t"], dtype=float), np.asarray(d["a"], dtype=float)
-            if t.ndim == a.ndim == 1 and len(t) == len(a):
+            doc = json.loads(cache.read_text(encoding="utf-8"))
+            t, a = [float(v) for v in doc["t"]], [float(v) for v in doc["a"]]
+            if len(t) == len(a):
                 return t, a
-    except Exception:
+    except (OSError, ValueError, TypeError, KeyError, AttributeError, RecursionError):
         pass                                                   # missing or damaged: work it out again
     t, a = visual_activity(raw)
-    np.savez(cache, t=t, a=a)
+    try:
+        fsutil.atomic_write_text(cache, json.dumps({"t": t, "a": a}, separators=(",", ":")), durable=False)
+    except OSError:
+        pass                                                   # a read-only folder: the result still stands
     return t, a
 
 
-def _input_times(tl: Timeline, jitter_px: float = 12.0) -> np.ndarray:
+def _input_times(tl: Timeline, jitter_px: float = 12.0) -> list:
     """Input instants; cursor micro-movements (a resting hand) do not count."""
     ts = [c["t"] for c in tl.clicks] + [k["t"] for k in tl.keys]
     ax, ay = None, None
@@ -92,7 +105,7 @@ def _input_times(tl: Timeline, jitter_px: float = 12.0) -> np.ndarray:
         if ax is None or abs(x - ax) + abs(y - ay) > jitter_px:
             ts.append(t)
             ax, ay = x, y
-    return np.array(sorted(ts))
+    return sorted(ts)
 
 
 def detect_speedups(tl: Timeline, activity=None, cfg: SpeedConfig | None = None,
@@ -101,10 +114,10 @@ def detect_speedups(tl: Timeline, activity=None, cfg: SpeedConfig | None = None,
     t1 = tl.duration if t1 is None else t1
     segs: list[dict] = []
     # ---- idle: gaps between "activity instants" (input or visual change)
-    inst = list(_input_times(tl))
+    inst = _input_times(tl)
     if activity is not None:
         at, ad = activity
-        inst += list(at[ad > cfg.visual_thresh])
+        inst += [t for t, d in zip(at, ad) if d > cfg.visual_thresh]
     inst = sorted(t for t in inst if t0 <= t <= t1)
     bounds = [t0] + inst + [t1]
     for a, b in zip(bounds, bounds[1:]):
