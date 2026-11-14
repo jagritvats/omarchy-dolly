@@ -1227,6 +1227,9 @@ def plan_timing(project_dir, style_over=None, t_range=None) -> dict:
     tl = Timeline.load(proj.events)
     trim = t_range or data.get("trim") or [0.0, tl.duration]
     t0, t1 = max(0.0, float(trim[0])), min(tl.duration, float(trim[1]))
+    if not (math.isfinite(t0) and math.isfinite(t1) and t1 > t0):
+        raise ValueError(f"no video remains in the selected trim ({t0:g}–{t1:g} s); "
+                         "adjust the trim in the editor or record another take")
     speed = (data.get("speed") or []) if style.get("speed", {}).get("enabled", True) else []
     tm = TimeMap(t0, t1, speed)
     title = style.get("title", {})
@@ -1390,6 +1393,8 @@ def export(project_dir: str | Path, out_path: str | Path | None = None, fmt: str
     n_main = int(round(tm.duration * fps))
     n_intro, n_outro = int(round(plan["intro"] * fps)), int(round(plan["outro"] * fps))
     n_all = n_intro + n_main + n_outro
+    if n_all <= 0:
+        raise ValueError("the selected trim is shorter than one output frame; extend the trim")
     total = n_all / fps
     gop = int(fps * 2)
 

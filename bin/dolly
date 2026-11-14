@@ -5,15 +5,36 @@ set -euo pipefail
 SELF="$(readlink -f "${BASH_SOURCE[0]}")"
 ROOT="$(cd "$(dirname "$SELF")/.." && pwd)"
 VENV="${DOLLY_VENV:-${XDG_DATA_HOME:-$HOME/.local/share}/dolly/venv}"
-PY=python3
-if [[ -x "$VENV/bin/python" ]]; then
-  PY="$VENV/bin/python"
-fi
 export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
 # Never write into the plugin folder: Omarchy reloads a plugin whenever its folder
 # changes, so __pycache__ written next to the code reset the bar widget again and
 # again (VM, Nov 10: "Local plugin changed, reloading: io.github.jagritvats.dolly" x12).
 export PYTHONPYCACHEPREFIX="${PYTHONPYCACHEPREFIX:-${XDG_CACHE_HOME:-$HOME/.cache}/dolly/pycache}"
+# A PATH Python may be managed by mise and cannot see Arch's numpy/Pillow.
+# Prefer a working Dolly venv, then PATH, then the distro interpreter. A Python
+# without these imports must still run doctor/deps/setup to repair them.
+PY=""
+FALLBACK=""
+for candidate in "$VENV/bin/python" "$(command -v python3 || true)" /usr/bin/python3; do
+  [[ -x "$candidate" ]] || continue
+  if "$candidate" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' >/dev/null 2>&1; then
+    [[ -n "$FALLBACK" ]] || FALLBACK="$candidate"
+    if "$candidate" -c 'import numpy; from PIL import Image' >/dev/null 2>&1; then
+      PY="$candidate"
+      break
+    fi
+  fi
+done
+PY="${PY:-$FALLBACK}"
+if [[ -z "$PY" ]]; then
+  printf '%s\n' 'dolly: Python 3.10+ is required (install python or repair DOLLY_VENV)' >&2
+  exit 1
+fi
+# Used by setup for its stdlib-only helpers; also useful when diagnosing runtimes.
+if [[ ${1:-} == --print-python ]]; then
+  printf '%s\n' "$PY"
+  exit 0
+fi
 # TEST HARNESS ONLY: the headless Omarchy harness has no Hyprland input, camera or
 # Chromium; its walkthrough script writes DOLLY_* overrides (labelled test feeds) here.
 # The file lives in the private runtime dir and is never created by Dolly itself.

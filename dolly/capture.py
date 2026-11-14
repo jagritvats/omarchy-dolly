@@ -359,11 +359,25 @@ class Cancelled(Exception):
     """Esc in the region/window picker (or the countdown cancelled): nothing to clean up."""
 
 
-def window_at(geo_rect) -> dict | None:
-    """The Hyprland client whose geometry matches a picked rect (logical)."""
+def window_at(geo_rect, clients=None, mons=None) -> dict | None:
+    """The visible Hyprland client matching a picked rect (logical).
+
+    Tiled windows on inactive workspaces often have identical geometry. They
+    must not steal a pick made on the current workspace (including stage=clean).
+    """
     x, y, w, h = geo_rect
     best, err = None, 1e9
-    for c in hypr_json("clients") or []:
+    clients = clients if clients is not None else (hypr_json("clients") or [])
+    mons = mons if mons is not None else (hypr_json("monitors") or [])
+    visible_ws = {(m.get("activeWorkspace") or {}).get("id") for m in mons}
+    visible_ws.update((m.get("specialWorkspace") or {}).get("id") for m in mons)
+    visible_ws.discard(None)
+    visible_ws.discard(0)
+    for c in sorted(clients, key=lambda c: c.get("focusHistoryID", 1 << 30)):
+        if not c.get("mapped", True) or c.get("hidden"):
+            continue
+        if visible_ws and not c.get("pinned") and (c.get("workspace") or {}).get("id") not in visible_ws:
+            continue
         (cx, cy), (cw, ch) = c.get("at", (0, 0)), c.get("size", (0, 0))
         e = abs(cx - x) + abs(cy - y) + abs(cw - w) + abs(ch - h)
         if e < err:
@@ -676,16 +690,18 @@ def start(a):
     if time.monotonic() - t_pick > 0.5:
         toasts_before = _toast_count()     # a pick by hand took a while: count again
     target_addr = None
-    if a.mode == "window" and tgt.kind == "region":
-        from .monitors import monitor_target
+    if a.mode == "window":
+        from .monitors import monitor_for_rect, monitor_target
         addr = getattr(a, "window_address", None)                # named with --window: no geometry guess
-        win = next((c for c in hypr_json("clients") or [] if c.get("address") == addr), None) if addr else None
-        win = win or window_at(tgt.region)
-        x, y, w, h = tgt.region
-        mon = monitor_of(x + w / 2, y + h / 2)
-        if win and mon:
-            target_addr = win.get("address")
-            tgt = monitor_target(mon)      # record the monitor, follow the window
+        win = (next((c for c in hypr_json("clients") or [] if c.get("address") == addr), None)
+               if addr else window_at(tgt.region))
+        if not win or not win.get("mapped", True) or win.get("hidden"):
+            raise SystemExit("dolly: the selected window is no longer visible; choose it again")
+        mon, _ = monitor_for_rect(hypr_json("monitors") or [], [*win["at"], *win["size"]])
+        if not mon:
+            raise SystemExit("dolly: the selected window is not on a connected monitor")
+        target_addr = win["address"]
+        tgt = monitor_target(mon)          # record the monitor, follow this exact window
     region, scale, monitor = tgt.region, tgt.scale, tgt.monitor
     pdir = root / time.strftime("%Y-%m-%d_%H-%M-%S")
     try:
@@ -810,7 +826,7 @@ def start(a):
             "camera_mode": cam_mode, "webcam_clock": cam_clock, "live_bubble": bool(bubble),
             "cursor_size": int(os.environ.get("HYPRCURSOR_SIZE") or os.environ.get("XCURSOR_SIZE") or 24),
             "notification_layers": _notification_layers(), "toasts_before": toasts_before,
-            "terminals": TERMINALS, "solid_windows": solid_on, "ttff_ms": round(ttff * 1000), "hotkey_to_first_frame_ms":
+            "terminals": terminal_classes(), "solid_windows": solid_on, "ttff_ms": round(ttff * 1000), "hotkey_to_first_frame_ms":
             round((time.time() - t_invoke) * 1000), "countdown": n_count,
             "webcam": bool(cam_proc), "webcam_launch_mono": cam_launch}
     fsutil.atomic_write_json(pdir / "capture.json", meta, indent=2)
@@ -920,6 +936,27 @@ def stop_bubble(p):
 
 
 TERMINALS = ["Alacritty", "com.mitchellh.ghostty", "kitty", "foot", "footclient", "org.wezfurlong.wezterm"]
+
+
+def terminal_classes() -> list[str]:
+    """Recognise terminal processes even when --app-id overrides their class.
+
+    Store only the class, not process arguments or titles. This metadata is
+    shared by typing AOI, reframing and the renderer's I-beam cursor.
+    """
+    classes = set(TERMINALS)
+    binaries = {"alacritty", "ghostty", "kitty", "foot", "footclient", "wezterm", "wezterm-gui"}
+    for client in hypr_json("clients") or []:
+        cls, pid = client.get("class") or client.get("initialClass"), client.get("pid")
+        if not cls or not isinstance(pid, int) or pid <= 0:
+            continue
+        try:
+            binary = Path(os.readlink(f"/proc/{pid}/exe")).name
+        except OSError:
+            continue
+        if binary in binaries:
+            classes.add(cls)
+    return sorted(classes)
 
 
 def _recover_stale():

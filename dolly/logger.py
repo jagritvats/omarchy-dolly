@@ -380,7 +380,15 @@ class Logger:
         if not any(str(c.get("address", "")).replace("0x", "") == tgt for c in clients):
             return              # closed: closewindow handles it
         w = next((w for w in wins if str(w.get("address", "")).replace("0x", "") == tgt), None)
-        on = w is not None and window_on_region(w["rect"], self.region)
+        # Not visible on the active workspace does not mean it changed monitor.
+        # Hyprland still reports the client's logical geometry on inactive workspaces.
+        if w is None:
+            c = next(c for c in clients if str(c.get("address", "")).replace("0x", "") == tgt)
+            if not c.get("at") or not c.get("size"):
+                self._left_since = None     # unknown geometry is not evidence of leaving
+                return
+            w = {"rect": [*c["at"], *c["size"]]}
+        on = window_on_region(w["rect"], self.region)
         now = time.monotonic()
         if on:
             self._left_since = None

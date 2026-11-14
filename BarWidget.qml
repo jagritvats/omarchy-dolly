@@ -6,6 +6,7 @@ import Qt.labs.folderlistmodel
 import qs.Commons
 import qs.Commons as Commons
 import qs.Ui
+import "." as Compat
 
 // Dolly bar widget.
 //
@@ -56,7 +57,7 @@ BarWidget {
   property bool muted: false
   property var config: ({})
 
-  Commons.Translations { id: tr; directory: Qt.resolvedUrl("i18n") }
+  Compat.DollyTranslations { id: tr; directory: Qt.resolvedUrl("i18n") }
 
   // bar-widget key -> config.json "group.key" (dolly/config.py BAR_KEYS)
   readonly property var barKeys: ({ mode: "capture.mode", countdown: "capture.countdown", fps: "capture.fps",
@@ -477,8 +478,19 @@ BarWidget {
     return "ok"
   }
 
-  ShellIpc {
+  // Omarchy 4.0.4 has only IpcHandler. On newer shells, keep ShellIpc's
+  // registry lifecycle so socket IPC still works. 4.5 registers handlers; later
+  // shells also elect a per-target leader, so detect that API independently.
+  // Keep this property off the handler: Quickshell warns about extra change signals there.
+  readonly property var ipcRegistry: typeof Commons.IpcRegistry !== "undefined" ? Commons.IpcRegistry : null
+  IpcHandler {
+    id: ipc
     target: "io.github.jagritvats.dolly"
+    enabled: root.ipcRegistry && typeof root.ipcRegistry.leads === "function"
+             ? root.ipcRegistry.leads(ipc, root.ipcRegistry.revision) : true
+    onTargetChanged: if (root.ipcRegistry && typeof root.ipcRegistry.touch === "function") root.ipcRegistry.touch()
+    Component.onCompleted: if (root.ipcRegistry) root.ipcRegistry.register(ipc)
+    Component.onDestruction: if (root.ipcRegistry) root.ipcRegistry.unregister(ipc)
     function syncFlash(arg: string): string { return root.syncFlash(arg) }
     function syncArm(arg: string): string { return root.syncArm(arg) }
     function syncDisarm(): string { return root.syncDisarm() }
@@ -511,12 +523,13 @@ BarWidget {
         : (root.replay ? "󰑊 󰑓" : "󰑊")
     active: (root.recording && !root.paused) || root.phase === "countdown"
     horizontalMargin: (root.recording || root.replay || root.phase !== "idle" || root.jobProgress >= 0) ? 8.75 : 6
-    tooltipText: root.phase === "countdown" ? tr.t("bar.tooltip.countdown")
-               : root.phase === "finalizing" ? tr.t("bar.tooltip.finalizing")
-               : root.jobProgress >= 0 ? tr.t("bar.tooltip.job").arg(root.jobKind).arg(Math.round(root.jobProgress * 100))
-               : root.recording ? tr.t("bar.tooltip.recording")
-               : root.replay ? tr.t("bar.tooltip.replay").arg(root.replaySeconds)
-               : tr.t("bar.tooltip.idle")
+    tooltipText: (root.phase === "countdown" || root.phase === "starting") ? tr.t("bar.tooltip.countdown", "Dolly · Starting…")
+               : root.phase === "finalizing" ? tr.t("bar.tooltip.finalizing", "Dolly · Saving…")
+               : root.jobProgress >= 0 ? tr.t("bar.tooltip.job", "Dolly · %1 %2%").arg(root.jobKind).arg(Math.round(root.jobProgress * 100))
+               : root.recording ? (root.paused ? tr.t("bar.tooltip.paused", "Dolly · Paused")
+                                             : tr.t("bar.tooltip.recording", "Dolly · Recording — click to stop"))
+               : root.replay ? tr.t("bar.tooltip.replay", "Dolly · Replay (%1 s)").arg(root.replaySeconds)
+               : tr.t("bar.tooltip.idle", "Dolly Screen Recorder")
     onPressed: function(b) {
       if (root.phase === "countdown") { root.run(["cancel"]); return }
       // while recording, right-click opens the controls (pause, mute mic, stop, discard)

@@ -5,3 +5,4 @@ __pycache__/
 /demo-out/
 *.tmp.mp4
 /scenarios-out/
+/local-verification/

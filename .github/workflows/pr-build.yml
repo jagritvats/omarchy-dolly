@@ -1,0 +1,50 @@
+name: PR test build
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    name: Non-release plugin package
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Package the exact PR commit, without publishing a release
+        id: package
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number || 'manual' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha=$(git rev-parse HEAD)
+          name="dolly-pr-${PR_NUMBER}-${sha:0:12}"
+          out="$RUNNER_TEMP/dolly-test-build"
+          mkdir -p "$out"
+          git archive --format=tar.gz --prefix="${name}/" --output="$out/${name}.tar.gz" HEAD
+          git bundle create "$out/${name}.bundle" HEAD
+          git bundle verify "$out/${name}.bundle"
+          cp docs/PR-TESTING.md "$out/INSTALL-PR.md"
+          printf 'Dolly non-release test build\nCommit: %s\nPR: %s\nFull Omarchy 4.5 VM testing: PENDING\n' "$sha" "$PR_NUMBER" > "$out/BUILD-INFO.txt"
+          (cd "$out" && sha256sum "${name}.tar.gz" "${name}.bundle" INSTALL-PR.md BUILD-INFO.txt > SHA256SUMS)
+          printf 'name=%s\npath=%s\n' "$name" "$out" >> "$GITHUB_OUTPUT"
+          printf '### Non-release test package\n\nCommit: `%s`\n\nDownload the workflow artifact below. It contains the source archive, an offline-cloneable Git bundle, install instructions and SHA-256 checksums. Packaging success is not an Omarchy 4.5 runtime pass. No tag or release was created.\n' "$sha" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: ${{ steps.package.outputs.path }}
+          if-no-files-found: error
+          retention-days: 30
