@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.7.6 (2026-11-15)
+
+Set up keeps dotfile links. Checked with the test suite and on an Omarchy 4.5.0 virtual
+machine; not yet on real hardware.
+
+- When `~/.config/hypr/bindings.lua` or `~/.config/omarchy/extensions/omarchy-menu.jsonc`
+  is a symbolic link (for example into a dotfiles repository), Set up, the refresh after
+  an update and `dolly-setup --undo` now write to the file the link points to. Until
+  0.7.5 they replaced the link with a plain file. The `.dolly-bak` copy stays next to the
+  link, outside the repository.
+- If an earlier version already replaced your link, the file in `~/.config` now holds
+  your lines plus Dolly's block: move your own lines back into the repository and link it
+  again; Dolly writes through the link from then on.
+
 ## 0.7.5 (2026-11-15)
 
 The recorder panel fits on short screens, Recents shows exports while they run, and

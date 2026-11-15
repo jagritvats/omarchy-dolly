@@ -54,3 +54,32 @@ def test_no_hyprctl_means_no_conflicts_reported(tmp_path, monkeypatch):
     _home(tmp_path, monkeypatch, bindings=BLOCK, menu="{\n}\n")
     monkeypatch.setattr(I, "live_binds", lambda timeout=2.0: None)
     assert I.status()["conflicts"] == []
+
+
+def test_dotfile_links_stay_links(tmp_path, monkeypatch):
+    """Config files linked into a dotfiles repository: set up and undo write through the
+    link, the link stays, and the backup is kept next to the link, not in the repository."""
+    _home(tmp_path, monkeypatch)
+    monkeypatch.setattr(I, "live_binds", lambda timeout=2.0: [])
+    monkeypatch.setattr(I, "_reload_hyprland", lambda: False)
+    repo = tmp_path / "dotfiles"
+    repo.mkdir()
+    (repo / "bindings.lua").write_text("o.bind('SUPER + Q', 'x', 'y')\n")
+    (repo / "menu.jsonc").write_text("{\n}\n")
+    bf, mf = tmp_path / ".config/hypr/bindings.lua", tmp_path / ".config/omarchy/extensions/omarchy-menu.jsonc"
+    bf.symlink_to(repo / "bindings.lua")
+    mf.symlink_to(repo / "menu.jsonc")
+
+    res = I.apply(parts=("menu", "binds"), reload=False)
+    assert res["menu"] == "written" and res["binds_file"] == "written"
+    assert bf.is_symlink() and mf.is_symlink()
+    assert "-- >>> dolly" in (repo / "bindings.lua").read_text()
+    assert "// >>> dolly" in (repo / "menu.jsonc").read_text()
+    assert (repo / "bindings.lua").read_text().startswith("o.bind('SUPER + Q'")
+    assert (bf.parent / "bindings.lua.dolly-bak").read_text() == "o.bind('SUPER + Q', 'x', 'y')\n"
+    assert sorted(p.name for p in repo.iterdir()) == ["bindings.lua", "menu.jsonc"]
+
+    I.undo()
+    assert bf.is_symlink() and mf.is_symlink()
+    assert (repo / "bindings.lua").read_text() == "o.bind('SUPER + Q', 'x', 'y')\n"
+    assert "dolly" not in (repo / "menu.jsonc").read_text()

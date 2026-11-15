@@ -381,7 +381,11 @@ def _binds_with(text: str, block: str | None) -> str:
 
 # ------------------------------------------------------------------ writing
 def _replace(p: Path, new: str) -> bool:
-    """Write `new` if it differs (a `.dolly-bak` copy of the old file first). -> changed"""
+    """Write `new` if it differs (a `.dolly-bak` copy of the old file first). -> changed
+
+    A file that is a symbolic link (dotfiles kept in a repository) is written where the
+    link points, so the link stays a link. The backup sits next to the link, not in the
+    repository."""
     try:
         old = p.read_text()
     except OSError:
@@ -394,7 +398,8 @@ def _replace(p: Path, new: str) -> bool:
             shutil.copyfile(p, p.with_name(p.name + ".dolly-bak"))
         except OSError:
             pass
-    fsutil.atomic_write_text(p, new, durable=False)
+    target = Path(os.path.realpath(p)) if p.is_symlink() else p
+    fsutil.atomic_write_text(target, new, durable=False)
     return True
 
 
