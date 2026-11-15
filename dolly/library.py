@@ -26,6 +26,15 @@ INDEX_VERSION = 3          # 3: no share links in the index (0.7.3)
 VIDEO_EXT = (".mp4", ".gif", ".webm", ".mkv")
 
 
+def project_identity(path: str | Path) -> str:
+    """Canonical job/row identity; `dir` stays the user's path for actions.
+
+    A library root or the project folder itself may be a symlink (only links
+    *inside* a project are refused). Resolve both sides of the association.
+    """
+    return str(Path(path).expanduser().resolve())
+
+
 def cache_path() -> Path:
     base = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
     return base / "dolly" / "library.json"
@@ -150,7 +159,7 @@ def entry(d: Path, with_poster: bool = True) -> dict | None:
     title = data.get("title").strip() if isinstance(data.get("title"), str) else ""
     thumb = poster(d) if with_poster else (d / "thumb.jpg" if (d / "thumb.jpg").exists() else None)
     return {
-        "dir": str(d), "id": d.name, "title": title or default_title(d.name, meta),
+        "dir": str(d), "projectdir": project_identity(d), "id": d.name, "title": title or default_title(d.name, meta),
         "named": bool(title), "created": created, "duration": round(duration, 2),
         "bytes": _du(d), "raw_bytes": raw.stat().st_size if raw.exists() else 0, "raw": raw.exists(),
         "exports": exports, "exported": bool(exports),
@@ -192,6 +201,11 @@ def _load_cache() -> dict:
     try:
         c = json.loads(cache_path().read_text())
         if c.get("version") == INDEX_VERSION:
+            # Additive cache migration: reuse v3 entries without probing videos,
+            # making posters or discarding their original action paths.
+            for e in c.get("items", []):
+                if isinstance(e, dict) and isinstance(e.get("dir"), str):
+                    e["projectdir"] = project_identity(e["dir"])
             return c
     except (OSError, ValueError):
         pass

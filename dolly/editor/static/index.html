@@ -671,7 +671,7 @@ function applyTheme(th){ const c=th.colors||{}, R=document.documentElement.style
   if(P&&P.theme){ P.theme.name=th.name } }
 // theme switches (Omarchy Super+Ctrl+Shift+Space) and recorder/export phases reach an open editor
 async function pollState(){ try{ const st=await api('/api/state'); if(st.theme&&(!THEME||st.theme.name!==THEME.name||st.theme.font!==THEME.font)){ applyTheme(st.theme); if(P) render(); if(VIEW==='settings') drawSettingsPreview() }
-  const j=(st.jobs||[])[0]; const el=$('#phase'); if(el) el.textContent= st.phase==='recording'?'● recording': st.phase==='finalizing'?'saving…': j? `${j.kind} ${Math.round(j.progress*100)}%`:'' }catch(e){} }
+  const j=(st.jobs||[])[0]; const el=$('#phase'); if(el) el.textContent= st.phase==='recording'?'● recording': st.phase==='finalizing'?'saving…': j? (typeof j.progress==='number' ? `${j.kind} ${Math.round(j.progress*100)}%` : `${j.kind}…`):'' }catch(e){} }
 // A take opens as soon as it is recorded; its automatic zooms are worked out in the
 // background and arrive here (no reload). Until then the zoom lane says so and the
 // page's own "no zooms" is not saved over the plan (the server ignores it as well).

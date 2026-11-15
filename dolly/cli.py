@@ -250,7 +250,9 @@ def cmd_panel(a):
 
     def recent():
         from . import library
-        return library.index(refresh=True, posters=True)["items"][:5]
+        # The view bounds the list after prioritising active jobs. Keep older
+        # entries available so a render outside the newest five can be surfaced.
+        return library.index(refresh=True, posters=True)["items"]
 
     def audio():
         from . import audio as audiomod

@@ -450,18 +450,28 @@ class Job:
     def __init__(self, kind: str, project: str, out: str = ""):
         self.path = runtime_dir() / "jobs" / f"{os.getpid()}-{int(time.time() * 1000)}.json"
         self.path.parent.mkdir(exist_ok=True)
-        self.info = {"kind": kind, "project": project, "out": out, "pid": os.getpid(), "progress": 0.0}
+        # Older renderers pass the folder name, analysis passes the full path.
+        # Keep `project` compatible, but give the UI an unambiguous directory key.
+        from .project import videos_root
+        from .library import project_identity
+        pdir = Path(project).expanduser()
+        if not pdir.is_absolute():
+            export_dir = Path(out).expanduser().absolute().parent if out else None
+            pdir = (export_dir.parent if export_dir and export_dir.name == "exports"
+                    and export_dir.parent.name == project else videos_root() / project)
+        self.info = {"kind": kind, "project": project, "projectdir": project_identity(pdir),
+                     "out": out, "pid": os.getpid(), "progress": None}
         self.last = 0.0
-        self.update(0.0, force=True)
+        self.update(None, force=True)     # no denominator yet: do not invent 0 %
 
-    def update(self, frac: float, force=False):
+    def update(self, frac: float | None, force=False):
         if getattr(self, "finished", False):
             return                      # a late progress callback must not resurrect the job file
         now = time.time()
         if not force and now - self.last < 0.5:
             return
         self.last = now
-        self.info["progress"] = round(float(frac), 3)
+        self.info["progress"] = round(float(frac), 3) if frac is not None else None
         try:
             fsutil.atomic_write_json(self.path, self.info, durable=False)
         except OSError:

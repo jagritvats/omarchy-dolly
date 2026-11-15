@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.7.5 (2026-11-15)
+
+The recorder panel fits on short screens, Recents shows exports while they run, and
+portrait (9:16) exports frame clicks and typing more steadily. Checked with the test suite,
+the benchmark recordings and by hand on the desktop of an Omarchy 4.5.0 virtual machine;
+not yet on real hardware.
+
+Panel
+- When the screen is too short for the panel (for example at display scale 2), the panel
+  stays on screen and scrolls. The header and the Stop row stay in place.
+- PageUp, PageDown, the arrow keys, Home and End scroll the panel; Escape closes it.
+- Tab moves between the panel's buttons and switches; it no longer jumps to the next bar
+  panel.
+- Return on the open panel no longer starts a recording by accident. Use Start recording
+  or Super+Alt+R.
+
+Recents
+- A recording that is being exported moves to the top of Recents with its progress, and
+  the bar button shows the percentage. When the export ends, the row goes back to its
+  place.
+- An export that has not reported progress yet shows no made-up 0 %, in the panel and in
+  the editor ("exporting…").
+- Recordings opened through a linked folder are matched with their exports.
+
+Portrait (9:16) exports
+- A clicked button stays whole in the frame from just before the click until the shot
+  moves on. When what the click opened sits next to it, the view widens a little, within
+  the existing letterbox limit.
+- While typing, the crop keeps one width for the whole shot instead of zooming in and out
+  as the line grows and the screen repaints. It never gets wider than a full-height strip
+  for typing, so text stays as large as in 0.7.4.
+- 16:9 exports are unchanged: the camera paths of the seven benchmark recordings are
+  identical to 0.7.4's.
+
 ## 0.7.4 (2026-11-14)
 
 Dolly now runs entirely on what a stock Omarchy ships, and installs nothing. Checked with

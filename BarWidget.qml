@@ -205,12 +205,11 @@ BarWidget {
   property var ph: null
   property var rp: null
   property var jobInfo: null
-  property string jobName: ""
-  property var deadJobs: ({})
+  property var jobFiles: ({})
+  readonly property var activeJobs: Object.keys(jobFiles).sort().map(function(name) { return root.jobFiles[name] })
   property bool recorderAlive: true
   property bool phaseAlive: true
   property bool replayAlive: true
-  property bool jobAlive: true
   property bool stopRequested: false
   property int retries: 0
 
@@ -243,8 +242,9 @@ BarWidget {
     var rp = root.rp
     root.replay = !!(rp && rp.recorder_pid && root.replayAlive)
     root.replaySeconds = root.replay ? Number(rp.seconds || 0) : 0
-    var j = root.jobAlive ? root.jobInfo : null
-    root.jobProgress = j ? Number(j.progress || 0) : -1
+    var j = root.activeJobs.length ? root.activeJobs[0] : null
+    root.jobInfo = j
+    root.jobProgress = j && typeof j.progress === "number" && isFinite(j.progress) ? Math.max(0, Math.min(1, j.progress)) : -1
     root.jobKind = j ? String(j.kind || "rendering") : ""
   }
 
@@ -267,29 +267,20 @@ BarWidget {
     rpProc.path = procPath(o ? o.recorder_pid : 0)
     derive()
   }
-  function setJob(o) {
-    root.jobInfo = o
-    root.jobAlive = true
-    jobProc.path = procPath(o ? o.pid : 0)
+  function setJobFile(name, info) {
+    var files = Object.assign({}, root.jobFiles)
+    if (info) files[name] = info
+    else delete files[name]
+    root.jobFiles = files
     derive()
-  }
-  // the first export whose process is still there (like `dolly status`: jobs()[0])
-  function pickJob() {
-    var m = jobsLoader.item, name = ""
-    for (var i = 0; m && i < m.count; i++) {
-      var n = m.get(i, "fileName")
-      if (n && !root.deadJobs[n]) { name = n; break }
-    }
-    if (name === root.jobName) return
-    root.jobName = name
-    jobFile.path = name ? root.runDir + "/jobs/" + name : ""
-    if (!name) setJob(null)
   }
   function reloadAll() {
     if (!root.ready) return
     stateFile.reload(); phaseFile.reload(); replayFile.reload(); configFile.reload()
-    if (jobFile.path) jobFile.reload()
-    pickJob()
+    for (var i = 0; i < jobWatchers.count; i++) {
+      var watcher = jobWatchers.itemAt(i)
+      if (watcher) watcher.reload()
+    }
   }
 
   FileView {
@@ -333,18 +324,45 @@ BarWidget {
         nameFilters: ["*.json"]
         showDirs: false
         sortField: FolderListModel.Name
-        onCountChanged: root.pickJob()
-        onStatusChanged: root.pickJob()
       }
     }
   }
-  FileView {
-    id: jobFile
-    path: ""
-    watchChanges: true; printErrors: false
-    onFileChanged: reload()
-    onLoaded: { var o = root.parseObj(text()); if (o !== null) root.setJob(o) }
-    onLoadFailed: root.setJob(null)
+  // Watch every job, not just the first: Recents can show simultaneous exports.
+  // FolderListModel notices additions/removals; FileView notices atomic progress writes.
+  Repeater {
+    id: jobWatchers
+    model: jobsLoader.item
+    delegate: Item {
+      id: watcher
+      required property string fileName
+      property var info: null
+      property bool alive: false
+      visible: false
+      function reload() { jobFile.reload(); checkAlive() }
+      function checkAlive() { if (processFile.path) processFile.reload() }
+      function publish() { root.setJobFile(fileName, alive ? info : null) }
+      onInfoChanged: publish()
+      onAliveChanged: publish()
+      Component.onDestruction: root.setJobFile(fileName, null)
+      FileView {
+        id: jobFile
+        path: root.runDir + "/jobs/" + watcher.fileName
+        watchChanges: true; printErrors: false
+        onFileChanged: reload()
+        onLoaded: {
+          var o = root.parseObj(text())
+          if (o !== null) { watcher.info = o; watcher.checkAlive() }
+        }
+        onLoadFailed: watcher.info = null
+      }
+      FileView {
+        id: processFile
+        path: root.procPath(watcher.info ? watcher.info.pid : 0)
+        printErrors: false
+        onLoaded: watcher.alive = root.procAlive(text())
+        onLoadFailed: watcher.alive = false
+      }
+    }
   }
   // is the process behind what the bar shows still there? (read, never started)
   FileView {
@@ -362,16 +380,6 @@ BarWidget {
     onLoaded: { var a = root.procAlive(text()); if (a !== root.replayAlive) { root.replayAlive = a; root.derive() } }
     onLoadFailed: if (path !== "" && root.replayAlive) { root.replayAlive = false; root.derive() }
   }
-  FileView {
-    id: jobProc; path: ""; printErrors: false
-    onLoaded: if (!root.procAlive(text())) root.jobDied()
-    onLoadFailed: if (path !== "") root.jobDied()
-  }
-  function jobDied() {
-    if (!root.jobName) return
-    root.deadJobs[root.jobName] = true        // an export that crashed left its file behind
-    pickJob()
-  }
   Timer {
     id: aliveCheck
     interval: 3000
@@ -381,7 +389,10 @@ BarWidget {
       if (recProc.path) recProc.reload()
       if (phProc.path) phProc.reload()
       if (rpProc.path) rpProc.reload()
-      if (jobProc.path) jobProc.reload()
+      for (var i = 0; i < jobWatchers.count; i++) {
+        var watcher = jobWatchers.itemAt(i)
+        if (watcher) watcher.checkAlive()
+      }
     }
   }
   Timer { id: retry; interval: 80; repeat: false; onTriggered: root.reloadAll() }
@@ -519,13 +530,15 @@ BarWidget {
     text: root.phase === "countdown" ? ("󰑊 " + Math.max(1, root.countdownLeft))
         : root.recording ? ((root.paused ? "󰏤 " : "󰑋 ") + root.timerText + (root.muted ? " 󰍭" : ""))
         : (root.phase === "finalizing" || root.phase === "starting") ? "󰑊 …"
-        : root.jobProgress >= 0 ? ("󰑊 " + Math.round(root.jobProgress * 100) + "%")
+        : root.jobInfo ? ("󰑊 " + (root.jobProgress >= 0 ? Math.round(root.jobProgress * 100) + "%" : "…"))
         : (root.replay ? "󰑊 󰑓" : "󰑊")
     active: (root.recording && !root.paused) || root.phase === "countdown"
-    horizontalMargin: (root.recording || root.replay || root.phase !== "idle" || root.jobProgress >= 0) ? 8.75 : 6
+    horizontalMargin: (root.recording || root.replay || root.phase !== "idle" || root.jobInfo) ? 8.75 : 6
     tooltipText: (root.phase === "countdown" || root.phase === "starting") ? tr.t("bar.tooltip.countdown", "Dolly · Starting…")
                : root.phase === "finalizing" ? tr.t("bar.tooltip.finalizing", "Dolly · Saving…")
-               : root.jobProgress >= 0 ? tr.t("bar.tooltip.job", "Dolly · %1 %2%").arg(root.jobKind).arg(Math.round(root.jobProgress * 100))
+               : root.jobInfo ? (root.jobProgress >= 0
+                   ? tr.t("bar.tooltip.job", "Dolly · %1 %2%").arg(root.jobKind).arg(Math.round(root.jobProgress * 100))
+                   : "Dolly · " + root.jobKind + "…")
                : root.recording ? (root.paused ? tr.t("bar.tooltip.paused", "Dolly · Paused")
                                              : tr.t("bar.tooltip.recording", "Dolly · Recording — click to stop"))
                : root.replay ? tr.t("bar.tooltip.replay", "Dolly · Replay (%1 s)").arg(root.replaySeconds)
