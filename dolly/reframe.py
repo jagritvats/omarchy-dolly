@@ -15,7 +15,7 @@ from dataclasses import dataclass
 
 from . import num
 from .events import Timeline
-from .zoom import (CameraGeometry, Segment, ZoomConfig, _aoi_of, _dead_zone_rect, _span, _spring_step,
+from .zoom import (CameraGeometry, Segment, ZoomConfig, _aoi_of, _dead_zone_rect, _seg_actions, _span, _spring_step,
                    camera_path, smooth_cursor, subject_track)
 
 
@@ -135,6 +135,60 @@ def text_x(c: float, lo: float, hi: float, half: float, anchor: float = math.nan
     return left
 
 
+def _action_framing(tl, segs, cfg, aoi, times, subj, aspect, fill, max_ui, max_text, protected):
+    """Offline framing for automatic actions, not arbitrary pointer activity.
+
+    A click's reaction can vanish from the activity track in half a second. Keep
+    its bounded rectangle for the shot and aim early enough for the edge springs
+    to land before the click. Typing gets one width for the whole shot; the caret
+    and line can still move within it. Do not change explicit/manual framing or
+    invent automatic actions when their settings are off.
+    """
+    widths = [0.0] * len(times)
+    if not cfg.enabled:
+        return widths
+    clicks = []
+    for s in segs:
+        if s.source != "auto" or s.focus is not None or not s.follow or not cfg.follow:
+            continue
+        acts = _seg_actions(tl, s, cfg, aoi)
+        typed = [a for a in acts if a.kind == "type" and a.rect is not None] if cfg.follow_typing else []
+        if typed:
+            w = min(max_text, max(max((a.rect[2] - a.rect[0]) / fill,
+                                     (a.rect[3] - a.rect[1]) / fill * aspect) for a in typed))
+            for i in _span(times, s.start, s.end):
+                if not protected[i]:
+                    widths[i] = max(widths[i], w)
+        if cfg.zoom_clicks:
+            clicks.extend((a, s) for a in acts if a.kind == "click" and a.rect is not None)
+    clicks.sort(key=lambda pair: pair[0].t)
+    for j, (a, s) in enumerate(clicks):
+        r = a.rect
+        need = max((r[2] - r[0]) / fill, (r[3] - r[1]) / fill * aspect)
+        if need > max_ui:
+            continue                    # a whole wide page is still a strip, not a thumbnail
+        start = max(s.start - 0.45, a.t - 1.2)
+        if j:
+            start = max(start, clicks[j - 1][0].t + 0.12)   # never pre-empt the preceding click
+        end = min(s.end, a.t + cfg.hold_click)
+        if j + 1 < len(clicks):
+            end = min(end, max(a.t + 0.12, clicks[j + 1][0].t - 1.2))
+        # An upcoming workspace does not exist on screen yet: never pre-aim across its cut.
+        for _, hi in aoi.transitions:
+            if start < hi <= a.t:
+                start = max(start, hi)
+        for i in _span(times, start, end):
+            if protected[i] or aoi.in_transition(times[i]):
+                continue
+            # A real text/dialog subject has priority over pointer-click context.
+            if subj.kind[i] not in (None, "cursor", "pointer", "click"):
+                continue
+            subj.x0[i], subj.y0[i], subj.x1[i], subj.y1[i] = r
+            subj.ax[i] = subj.ay[i] = math.nan
+            subj.kind[i] = "click"
+    return widths
+
+
 def _reframe_aoi(tl, segments, aspect, fps, t_start, t_end, cfg, zoom_gain, omega, cursor_sigma, lookahead, aoi):
     """AOI-aware crop: the whole subject (a dialog, a typed line, what a click changed)
     stays in the crop. A subject a little wider than the full-height strip widens the
@@ -164,6 +218,19 @@ def _reframe_aoi(tl, segments, aspect, fps, t_start, t_end, cfg, zoom_gain, omeg
     line_h = aoi.line_h or 18.0
     max_w_text = min(max_w, line_h * 0.88 / (cfg.min_line_frac * 1.12))
     fill_ = 0.9
+    max_w_ui = min(max_w, max(base_w, 1.3 * max_w_text), LETTERBOX_MAX * base_w)
+    protected = [False] * n
+    for s in segs:
+        if s.source != "auto" or s.focus is not None or not s.follow:
+            for i in _span(st, s.start, s.end):
+                protected[i] = True
+    # Preserve the old width requests under explicit shots, including the
+    # look-ahead before a later automatic click. Its wider reaction must not
+    # silently widen a manual zoom that is still on screen.
+    pointer_need = [max((x1 - x0) / fill_, (y1 - y0) / fill_ * aspect) if kind == "pointer" else 0.0
+                    for x0, y0, x1, y1, kind in zip(subj.x0, subj.y0, subj.x1, subj.y1, subj.kind)]
+    pointer_need = [w if w <= base_w else 0.0 for w in pointer_need]
+    shot_width = _action_framing(tl, segs, cfg, aoi, st, subj, aspect, fill_, max_w_ui, max_w_text, protected)
     seg_of = [-1] * n
     # abutting segments form one shot for the crop (no width change mid-action)
     sid = -1
@@ -193,7 +260,6 @@ def _reframe_aoi(tl, segments, aspect, fps, t_start, t_end, cfg, zoom_gain, omeg
     slack = 0.18
     # nothing gets wider than keeps ordinary UI text readable on a phone (a whole 4K screen
     # in a 9:16 card is a thumbnail), nor wider than LETTERBOX_MAX strips (large empty bands)
-    max_w_ui = min(max_w, max(base_w, 1.3 * max_w_text), LETTERBOX_MAX * base_w)
     need_r = []                                # the crop width each step's subject asks for
     for i, kind in enumerate(subj.kind):
         if kind in (None, "cursor") or not has_a[i]:
@@ -233,6 +299,10 @@ def _reframe_aoi(tl, segments, aspect, fps, t_start, t_end, cfg, zoom_gain, omeg
     # caps it so the text stays legible
     real = [kind not in (None, "cursor") and has for kind, has in zip(subj.kind, has_a)]
     need_f = num.running_max(need_r, int(0.6 / sim_dt), int(1.5 / sim_dt))
+    explicit_need = need_f
+    if any(protected):
+        explicit_need = num.running_max([pointer_need[i] if subj.kind[i] == "click" else w
+                                        for i, w in enumerate(need_r)], int(0.6 / sim_dt), int(1.5 / sim_dt))
     from .aoi import TERMINAL_CLASSES
     terms = {c.lower() for c in (tl.capture.get("terminals") or [])} | TERMINAL_CLASSES
 
@@ -259,7 +329,11 @@ def _reframe_aoi(tl, segments, aspect, fps, t_start, t_end, cfg, zoom_gain, omeg
     for i in range(n):
         z = 1.0 + (lz[i] - 1.0) * zoom_gain
         w_zoom = base_w / z if seg_of[i] >= 0 else base_w
-        w = max(w_zoom, min(need_f[i], max_w))
+        w = max(w_zoom, min(explicit_need[i] if protected[i] else need_f[i], max_w))
+        if shot_width[i] and subj.kind[i] in (None, "cursor", "pointer", "typing"):
+            # Fit the growing line once, before typing, rather than widening and
+            # tightening whenever the short activity lookback loses old glyphs.
+            w = max(w_zoom, shot_width[i])
         if typ_f[i]:
             w = min(w, max(max_w_text, w_zoom))
         ch = w / aspect
