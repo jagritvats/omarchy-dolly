@@ -62,6 +62,8 @@ class ZoomConfig:
     aoi_lookahead: float = 0.12    # offline: aim at where the AOI is about to be (s)
     min_line_frac: float = 0.0145  # typed text line height >= this x output height (~16 px at 1080p)
     cut_transitions: bool = True   # workspace switches / full-screen changes: cut, never whip-pan
+    zoom_keeps_subject: bool = True  # 0.8.0: a zoom-in only goes as deep as still shows where the camera is heading
+    zoom_keep_frac: float = 0.8    # ... that point stays within this fraction of the half-view from the centre
     follow_typing: bool = True     # Settings > Auto-zoom: zoom in on what is being typed
     # Settings > Auto-zoom (0.4.1)
     enabled: bool = True           # False: no automatic zooms (manual segments and "zoom here" marks still apply)
@@ -933,6 +935,7 @@ class SubjectTrack:
 
 
 READ_HOLD = 0.5     # s a finished subject (command output, typed line) stays framed for reading
+BIG_SUBJECT = 0.3   # a subject over this fraction of the screen gives way to the action about to come
 
 
 def subject_track(tl: Timeline, aoi, sim_t, curx, cury, cfg: ZoomConfig,
@@ -949,7 +952,12 @@ def subject_track(tl: Timeline, aoi, sim_t, curx, cury, cfg: ZoomConfig,
     # parked out of the way) frames the upcoming subject, not the travelling pointer
     acts = [a for a in _cached_actions(tl, cfg, aoi) if a.rect is not None]
     act_t = [a.t for a in acts]
-    click_t = sorted(c["t"] for c in tl.clicks)
+    # a click that only focuses where the typing happens (a terminal clicked anywhere) is not
+    # in the way: the pointer travelling to it already anticipates the typing, so the camera
+    # goes to the prompt, not to the empty spot that was clicked
+    focus_clicks = {c["t"] for c in tl.clicks if cfg.follow_typing and aoi is not None
+                    and focus_only_click(tl, aoi, c, float(tl.capture.get("scale", 1.0) or 1.0))}
+    click_t = sorted(c["t"] for c in tl.clicks if c["t"] not in focus_clicks)
     la = cfg.aoi_lookahead if lookahead is None else lookahead
     last_real = -9.0
     held, held_t = None, -9.0          # last real subject, kept READ_HOLD s for reading
@@ -974,6 +982,16 @@ def subject_track(tl: Timeline, aoi, sim_t, curx, cury, cfg: ZoomConfig,
                 if kc >= len(click_t) or click_t[kc] > acts[j].t:
                     r, kind, foc = acts[j].rect, "typing" if acts[j].kind == "type" else acts[j].kind, None
                     rest = False
+        if r is not None and kind in ("scroll", "output", "layout") and not rest and act_t \
+                and (r[2] - r[0]) * (r[3] - r[1]) > BIG_SUBJECT * tl.w * tl.h:
+            # a whole window changing (one that just opened paints itself) while the next
+            # action is about to come: aim at that action, which the shot is for. Its zoom-in
+            # went to the middle of the window and then climbed to the prompt
+            j = bisect_left(act_t, t)
+            while j < len(acts) and acts[j].kind in ("scroll", "output", "layout") and acts[j].t - t < cfg.lead + 0.15:
+                j += 1                   # the window's own painting samples are not what comes next
+            if j < len(acts) and acts[j].t - t < cfg.lead + 0.15 and acts[j].kind in ("type", "click"):
+                r, kind, foc = acts[j].rect, ("typing" if acts[j].kind == "type" else "pointer"), None
         fresh_real = r is not None and kind in ("typing", "scroll", "layout", "output") and not rest
         if (r is None or rest) and held is not None and t - held_t < READ_HOLD and not aoi.in_transition(t):
             r, kind, foc = held          # the result stays the subject while it is being read
@@ -1286,6 +1304,16 @@ def camera_path(tl: Timeline, segments: list[Segment], geom: CameraGeometry,
         # free; jump it to the target so the zoom scales straight toward focus.
         if base is None and lz < math.log(1.004) and tlz > lz:
             cx, cy, vx, vy = tcx[i], tcy[i], 0.0, 0.0
+        if tlz > lz and cfg.zoom_keeps_subject and i not in cut_set:
+            # zooming in never leaves the subject behind: only as deep as still shows where
+            # the camera is heading from where it is now, so the pan leads and the zoom
+            # follows (zoom and pan are separate springs; a fast zoom with a far pan framed
+            # empty screen for a moment, e.g. a prompt at the top of a window just opened)
+            dx, dy = abs(tcx[i] - cx), abs(tcy[i] - cy)
+            reach = cfg.zoom_keep_frac
+            z_ok = min(geom.CW * reach / (2 * dx) if dx > 1e-6 else 1e9,
+                       geom.CH * reach / (2 * dy) if dy > 1e-6 else 1e9)
+            tlz = max(lz, min(tlz, math.log(max(z_ok, 1.0))))
         om = (cfg.omega_zoom_in if tlz > lz else cfg.omega_zoom_out) * mf
         lz, vz = _spring_step(lz, vz, tlz, om, sim_dt)
         cx, vx = _spring_step(cx, vx, tcx[i], cfg.omega_pan * mf, sim_dt)

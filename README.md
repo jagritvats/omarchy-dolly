@@ -130,7 +130,8 @@ If the first `python3` on your PATH comes from mise or pyenv, it cannot see the 
 shows which Python it picked.
 
 **Optional**: `tesseract` and `tesseract-data-eng` (scrub secrets), `rclone`
-(Drive/Dropbox/... links), whisper.cpp or faster-whisper (captions), a camera, `mpv`
+(Drive/Dropbox/... links), a speech-to-text engine for Transcribe: Omarchy's own Dictation (Voxtype), whisper.cpp or
+faster-whisper (`docs/captions.md`; captions can also be typed), a camera, `mpv`
 (camera preview and live bubble).
 
 ## Use
@@ -140,7 +141,7 @@ shows which Python it picked.
 | Bar button | click: the Dolly panel (capture mode, audio, camera, Start, recent recordings, **Settings**) · right-click: quick record · while recording: click stops, right-click shows pause / mute mic / stop / discard · Omarchy's `Super+Ctrl+<n>` opens the panel by its place in the bar's right section. The button watches Dolly's state files; nothing runs in the background while you are not recording · from the keyboard: Super+Ctrl+1 to 9 toggles the panel (the number is the button's place among the panels on the right of the bar) |
 | Hotkeys (after **Set up**) | Super+Alt+R record/stop · Super+Alt+P pause · Super+Alt+N mute mic · Super+Alt+M zoom here · Super+Alt+Shift+R save last 30 s (instant replay) · Super+Alt+L recordings (Omarchy 4.5 uses it, so it is skipped there). Change any of them, or switch one off, in **Settings › Shortcuts** (or `dolly config set shortcuts.toggle="SUPER + CTRL + D"`; empty = off); only Dolly's own marked block in `~/.config/hypr/bindings.lua` is rewritten. A combination that is already bound is never taken; if an Omarchy update later claims one, the panel says so and **Fix** gives those keys up. Omarchy's Super+K lists them |
 | Menu (Super+Space, after **Set up**) | Trigger → Capture → **Dolly Recorder**: record a window, a region or the screen · open last · recordings · share last recording · instant replay · settings. While a take is running the entry is **Stop Dolly** |
-| Editor | opens after you stop, without taking focus. Library · Editor · Settings. Timeline lanes for zoom, speed and privacy; 16:9 / 9:16 / 1:1 preview; In/Out trim; camera bubble shape, size and position (drag it); camera-only ranges; per-track volume and mute; blur boxes; Scrub secrets; captions; title card; **Share** (Ctrl+E) |
+| Editor | opens after you stop, without taking focus. Library · Editor · Settings. Timeline lanes for zoom, speed, privacy and captions (type them, or Transcribe with Omarchy's Dictation); 16:9 / 9:16 / 1:1 preview; In/Out trim; camera bubble shape, size and position (drag it); camera-only ranges; per-track volume and mute; blur boxes; Scrub secrets; captions; title card; **Share** (Ctrl+E) |
 | Settings | the editor's Settings view (also `dolly settings`): Capture, Audio, Camera, Look, Auto-zoom, Privacy, Export, Sharing, Storage. Stored in `~/.config/dolly/config.json`; the bar widget's own options stay in sync |
 | CLI | `dolly record [--mode screen|window|region] [--audio none|mic|system|both] [--camera off|edit|live] · stop · pause · mute · mark · replay · edit · library [--open] · settings · config get/set · export [--aspect 16:9|9:16|1:1|4:5] [--quality draft|fast|high|best] [--gif] · share … · run demo.toml [--dry-run] [--json] · recover · deps · setup · update · integration · doctor` |
 

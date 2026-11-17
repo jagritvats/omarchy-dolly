@@ -445,7 +445,7 @@ def cmd_captions(a):
     except CaptionsUnavailable as e:
         print(f"captions skipped: {e}", file=sys.stderr)
         raise SystemExit(2) from e
-    print(f"{len(cues)} caption cues -> {d / 'captions.srt'}")
+    print(f"{len(cues)} captions on the timeline of {d} (also in captions.srt)")
 
 
 def cmd_export(a):
@@ -699,7 +699,7 @@ def _main(argv=None):
     sp.add_argument("dir", nargs="?"); sp.add_argument("--clear", action="store_true")
     sc = sub.add_parser("scrub", help="OCR the recording and blur things that look like secrets")
     sc.add_argument("dir", nargs="?"); sc.add_argument("--every", type=float, default=1.0)
-    cp = sub.add_parser("captions", help="local transcription (whisper.cpp / faster-whisper)")
+    cp = sub.add_parser("captions", help="transcribe the recording on this computer into its caption lane (Omarchy Dictation / whisper)")
     cp.add_argument("dir", nargs="?"); cp.add_argument("--language")
     rp = sub.add_parser("replay", help="instant replay buffer")
     rp.add_argument("replay_cmd", choices=["start", "save", "stop", "status"])

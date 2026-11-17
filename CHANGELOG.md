@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.8.0 (2026-11-17)
+
+Captions you can type, Transcribe through Omarchy's own Dictation, and a calmer camera
+between windows. Checked with the test suite, the scenario suite and on an Omarchy 4.5.0
+virtual machine (Voxtype on a synthesized voice, a scripted take across windows); not yet
+on real hardware or with a real microphone.
+
+Caption lane
+- The editor's timeline has a caption lane under Privacy. **C** (or **+ Caption**) adds a
+  line at the playhead; click a line to change its words, drag it or its edges to time it,
+  **S** splits it at the playhead (the words are shared out), Delete removes it, Ctrl+Z
+  undoes. The preview and the export show the lines; the export also writes an `.srt`.
+- Typing captions needs nothing installed.
+- The lines are kept in the recording's `project.json`. Recordings made before 0.8.0 show
+  their `captions.srt` in the lane.
+
+Transcribe
+- **Transcribe** (and `dolly captions`) can now use Voxtype, the engine behind Omarchy's
+  Dictation (Omarchy menu > Setup > Defaults > Dictation > Voxtype), as well as
+  whisper.cpp or faster-whisper. Dolly still installs nothing: without a transcriber the
+  button is greyed out and the sidebar says where Omarchy turns Dictation on.
+- Voxtype gives text without times, so Dolly cuts the speech at its pauses, transcribes each
+  stretch on its own and spreads its words over the stretch. Lines are short; the timing
+  is exact at the pauses and approximate inside a long sentence. A 28 s clip with five
+  sentences took 8 s on a 4-CPU virtual machine.
+- The microphone track is transcribed (else the video's own sound, else system audio).
+  Spans muted with the mute hotkey are silenced first and never written down.
+- A new transcription asks before it replaces the lines already on the timeline, and can
+  be undone.
+
+Camera
+- A zoom-in never leaves what it is going to behind: it only goes as deep as still shows
+  where the camera is heading, so the pan leads and the zoom follows. Before, zoom and pan
+  ran separately, and a zoom toward the prompt of a window that had just opened, or toward
+  the top of a terminal, showed empty screen for a moment on the way.
+- Clicking into a terminal (or any window) only to type there: the camera goes to the
+  prompt as the pointer travels, not to the empty spot that was clicked first.
+- A window that has just opened and is still painting itself no longer pulls the zoom-in
+  to its middle when typing in it is about to start.
+- Camera motion blur: quick pans and zooms are softened in the export, as a camera
+  shutter would (the cursor, keycaps and captions stay sharp). On by default; Editor ›
+  Cursor & effects › Camera motion blur. It costs time only on the frames where the
+  camera moves quickly (a 41 s take: 57 s to export instead of 51 s in the test VM).
+- With wf-recorder (virtual machines), the recorded pointer hiding at the first key press
+  after a click was taken for typing at that spot.
+
+Storyboards
+- A step no longer fails with "the window is gone" when Hyprland is slow to answer for a
+  moment (seen with a recording running on a busy machine): the window list is asked again.
+
 ## 0.7.6 (2026-11-15)
 
 Set up keeps dotfile links. Checked with the test suite and on an Omarchy 4.5.0 virtual

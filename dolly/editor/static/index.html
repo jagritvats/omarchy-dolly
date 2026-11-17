@@ -101,7 +101,7 @@ button.danger{color:var(--red)}
 button:disabled{opacity:.45;cursor:default}
 select{background:var(--bg-d)}
 input[type=text]{width:100%;background:var(--bg-d)}
-.app{display:grid;grid-template-rows:44px 1fr 262px;grid-template-columns:1fr 340px;flex:1;min-height:0}
+.app{display:grid;grid-template-rows:44px 1fr 286px;grid-template-columns:1fr 340px;flex:1;min-height:0}
 .top{grid-column:1/3;display:flex;align-items:center;gap:10px;padding:0 14px;border-bottom:1px solid var(--line);background:var(--bg)}
 .top .name{color:var(--fg-b);font-weight:700}.top .meta{color:var(--fg-d);font-size:11.5px}.sp{flex:1}
 .dot{width:10px;height:10px;border-radius:50%;background:var(--red)}
@@ -136,12 +136,12 @@ canvas#view.drawing{cursor:crosshair}
 .tl{grid-column:1;border-top:1px solid var(--line);background:var(--bg);padding:8px 14px;position:relative;user-select:none}
 .ctrl{display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:12px}
 .tc{color:var(--fg-b);min-width:70px}
-#tlwrap{position:relative;height:200px}
+#tlwrap{position:relative;height:226px}
 #ruler{position:absolute;left:0;right:0;top:0;height:18px;font-size:10px;color:var(--fg-d);border-bottom:1px solid var(--line)}
 #ruler span{position:absolute;top:2px;transform:translateX(-50%)}
 .lane{position:absolute;left:0;right:0}
 .lane .lbl{position:absolute;left:0;top:-12px;font-size:9.5px;color:var(--fg-d);letter-spacing:.12em}
-#zlane{top:34px;height:36px}#slane{top:88px;height:24px}#plane{top:130px;height:24px}#clane{top:170px;height:28px}
+#zlane{top:32px;height:34px}#slane{top:82px;height:22px}#plane{top:120px;height:22px}#caplane{top:158px;height:22px}#clane{top:196px;height:28px}
 .it{position:absolute;top:0;bottom:0;border:1px solid var(--accent);background:rgba(122,162,247,.18);color:var(--fg-b);font-size:11px;padding:3px 8px;cursor:grab;overflow:hidden;white-space:nowrap}
 .it .r{color:var(--accent);font-size:10px;margin-left:6px}
 .it.manual{border-style:dashed;border-color:var(--magenta);background:rgba(187,154,247,.16)}
@@ -149,6 +149,8 @@ canvas#view.drawing{cursor:crosshair}
 .it.privacy{border-color:var(--red);background:rgba(247,118,142,.14);font-size:10.5px;padding:2px 6px}
 .it.privacy.auto{border-style:dashed}
 .it.privacy.secret{background:repeating-linear-gradient(45deg,rgba(247,118,142,.22) 0 6px,rgba(247,118,142,.1) 6px 12px)}
+.it.cap{border-color:var(--cyan);background:rgba(125,207,255,.13);font-size:10.5px;padding:2px 6px}
+.it.cap.manual{border-style:dashed}
 .it.off{opacity:.4}
 .it.sel{box-shadow:0 0 0 2px rgba(192,202,245,.5);filter:brightness(1.25)}
 .it .hd{position:absolute;top:0;bottom:0;width:8px;cursor:ew-resize}.it .hd.l{left:-1px}.it .hd.r{right:-1px}
@@ -272,7 +274,8 @@ canvas#view.drawing{cursor:crosshair}
       <div class="row"><label>Smooth</label><input type="range" min="0" max="1" step="0.05" id="csmooth"><span class="v" id="csmoothv"></span></div>
       <div class="tg" data-k="cursor.enabled"><span>Re-drawn cursor</span><i></i></div>
       <div class="tg" data-k="cursor.ripple"><span>Click ripple</span><i></i></div>
-      <div class="tg" data-k="cursor.motion_blur"><span>Motion blur</span><i></i></div>
+      <div class="tg" data-k="cursor.motion_blur"><span>Cursor motion blur</span><i></i></div>
+      <div class="tg" data-k="camera.motion_blur" title="Softens quick pans and zooms in the export, like a camera shutter"><span>Camera motion blur</span><i></i></div>
       <div class="tg" data-k="keys.enabled"><span>Shortcut overlay</span><i></i></div>
       <div class="tg" data-k="spotlight.enabled"><span>Spotlight while zoomed</span><i></i></div>
     </div>
@@ -295,7 +298,8 @@ canvas#view.drawing{cursor:crosshair}
       <div class="tg" data-k="audio.normalize"><span>Loudness normalise the mix</span><i></i></div>
       <div class="small" id="muteInfo"></div>
       <div class="tg" data-k="captions.enabled" id="tgCap"><span>Burn in captions</span><i></i></div>
-      <div class="row"><button id="transcribe" style="height:24px;font-size:11px">Transcribe locally</button><span class="small" id="capInfo"></span></div>
+      <div class="row"><button id="transcribe" style="height:24px;font-size:11px">Transcribe</button><span class="small" id="capInfo"></span></div>
+      <div class="small" id="capHint"></div>
     </div>
     <div class="grp" id="camGrp"><div class="h">Camera</div>
       <div class="tg" data-k="webcam.enabled" id="tgCam"><span>Camera bubble</span><i></i></div>
@@ -339,6 +343,7 @@ canvas#view.drawing{cursor:crosshair}
       <span class="sp"></span>
       <button id="addz">+ Zoom <span class="kbd">Z</span></button>
       <button id="adds">+ Speed</button>
+      <button id="addc" title="Add a caption at the playhead (C)">+ Caption <span class="kbd">C</span></button>
       <button id="split" title="Split selected at playhead (S)">Split <span class="kbd">S</span></button>
       <button id="trimIn">[ In</button><button id="trimOut">Out ]</button>
     </div>
@@ -347,6 +352,7 @@ canvas#view.drawing{cursor:crosshair}
       <div class="lane" id="zlane"><span class="lbl">ZOOM</span></div>
       <div class="lane" id="slane"><span class="lbl">SPEED</span></div>
       <div class="lane" id="plane"><span class="lbl">PRIVACY</span></div>
+      <div class="lane" id="caplane"><span class="lbl">CAPTIONS</span></div>
       <div class="lane" id="clane"><span class="lbl">CLIP</span><div id="clip"></div></div>
       <div id="hover"></div>
       <div id="ph"></div>
@@ -399,12 +405,12 @@ const vid=$('#vid'), cv=$('#view'), ctx=cv.getContext('2d');
 let bgCanvas=null, bgPlain=null, wallImgs=[], drawingBox=null, pickingFocus=false;
 
 function toast(msg){ const t=$('#toast'); t.textContent=msg; t.style.display='block'; clearTimeout(toast.h); toast.h=setTimeout(()=>t.style.display='none',2600) }
-function snapshot(){ return JSON.stringify({segments:S.segments, style:S.style, trim:S.trim, speed:S.speed, privacy:S.privacy}) }
+function snapshot(){ return JSON.stringify({segments:S.segments, style:S.style, trim:S.trim, speed:S.speed, privacy:S.privacy, captions:S.captions}) }
 function commit(){ hist.push(lastSnap); if(hist.length>100) hist.shift(); fut=[]; lastSnap=snapshot(); scheduleSave(); scheduleRepath() }
 function undo(){ if(!hist.length) return; fut.push(snapshot()); restore(hist.pop()) }
 function redo(){ if(!fut.length) return; hist.push(snapshot()); restore(fut.pop()) }
 function restore(s){ Object.assign(S, JSON.parse(s)); lastSnap=s; syncControls(); drawTimeline(); scheduleSave(); scheduleRepath() }
-let saveT=null; function scheduleSave(){ clearTimeout(saveT); saveT=setTimeout(async()=>{ const r=await api('/api/save', {segments:S.segments, style:S.style, trim:S.trim, speed:S.speed, privacy:S.privacy}); if(r&&r.error) toast('Not saved: '+r.error) }, 400) }
+let saveT=null; function scheduleSave(){ clearTimeout(saveT); saveT=setTimeout(async()=>{ const r=await api('/api/save', {segments:S.segments, style:S.style, trim:S.trim, speed:S.speed, privacy:S.privacy, captions:S.captions}); if(r&&r.error) toast('Not saved: '+r.error) }, 400) }
 let pathT=null; function scheduleRepath(){ clearTimeout(pathT); pathT=setTimeout(repath, 250) }
 async function repath(){ PATH = await api('/api/path', {fps:30, segments:S.segments, style:S.style, aspect}); buildBg(); render() }
 
@@ -488,7 +494,7 @@ function buildKeyEvents(){ keyEvents=[]; for(const k of P.keys){ const mods=['su
   const caps=mods.map(m=>KL[m]).concat([KL[k.key]||(k.key.length===1?k.key.toUpperCase():k.key)]); const l=keyEvents[keyEvents.length-1]; if(l&&l.caps.join()==caps.join()&&k.t-l.tl<0.9){l.n++;l.tl=k.t;continue} keyEvents.push({t:k.t,tl:k.t,caps,n:1}) } }
 function pill(text,x,y,fs,align,bg){ ctx.font=`700 ${fs}px JBM`; const w=ctx.measureText(text).width+fs*1.2, h=fs*1.75; const X=align==='center'?x-w/2:x-w; ctx.fillStyle=bg||'rgba(14,14,20,.82)'; rr(ctx,X,y,w,h,h/2.6); ctx.fill(); ctx.fillStyle='#f3f4fb'; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(text,X+w/2,y+h/2+1) }
 function drawKeys(t){ const G=PATH.geom, sc=Math.min(G.OW,G.OH)/1080; for(const e of keyEvents){ if(t<e.t-0.05||t>e.tl+1.1) continue; pill(e.caps.join(' + ')+(e.n>1?'  ×'+e.n:''),G.OW/2,(S.style.keys.position==='top'?0.07*G.OH:G.OH-0.17*G.OH),26*sc,'center'); break } }
-function drawCaption(t){ const G=PATH.geom, sc=Math.min(G.OW,G.OH)/1080; for(const c of P.caption_cues||[]){ if(t>=c.start&&t<=c.end){ ctx.font=`400 ${28*sc}px JBM`; pill(c.text,G.OW/2,G.OH-0.1*G.OH,28*sc,'center'); break } } }
+function drawCaption(t){ const G=PATH.geom, sc=Math.min(G.OW,G.OH)/1080; for(const c of S.captions||[]){ if(t>=c.start&&t<=c.end){ ctx.font=`400 ${28*sc}px JBM`; pill(c.text,G.OW/2,G.OH-0.1*G.OH,28*sc,'center'); break } } }
 function drawBadge(sp){ const G=PATH.geom, sc=Math.min(G.OW,G.OH)/1080, m=0.035*Math.min(G.OW,G.OH); const top=PATH.aspect?G.card[1]+m:m, right=PATH.aspect?G.card[2]-m:G.OW-m; pill('⏩ '+sp+'×',right,top,24*sc,'right') }
 
 // ------------------------------------------------------------ timeline
@@ -496,7 +502,8 @@ const wrap=$('#tlwrap');
 const X=t=>t/P.video.duration*wrap.clientWidth, T=x=>Math.max(0,Math.min(P.video.duration,x/wrap.clientWidth*P.video.duration));
 const LANES={zoom:{el:'#zlane',arr:()=>S.segments,cls:s=>'it'+(s.source==='manual'?' manual':''),label:s=>`${(+s.zoom).toFixed(1)}×<span class="r">${esc(s.source==='manual'?'manual':(s.reason||'auto'))}</span>`},
   speed:{el:'#slane',arr:()=>S.speed,cls:s=>'it speed'+(S.style.speed.enabled?'':' off'),label:s=>`⏩ ${esc(s.speed)}× <span class="r" style="color:var(--orange)">${esc(s.reason||'')}</span>`},
-  privacy:{el:'#plane',arr:()=>S.privacy,cls:s=>'it privacy'+(s.source==='secret'?' secret':'')+(s.source==='auto'?' auto':'')+(s.enabled===false?' off':''),label:s=>(s.source==='secret'?'⚠ ':s.source==='auto'?'auto · ':'▦ ')+esc(s.label||s.mode)}};
+  privacy:{el:'#plane',arr:()=>S.privacy,cls:s=>'it privacy'+(s.source==='secret'?' secret':'')+(s.source==='auto'?' auto':'')+(s.enabled===false?' off':''),label:s=>(s.source==='secret'?'⚠ ':s.source==='auto'?'auto · ':'▦ ')+esc(s.label||s.mode)},
+  captions:{el:'#caplane',arr:()=>S.captions,cls:s=>'it cap'+(s.source==='manual'?' manual':'')+(S.style.captions.enabled?'':' off'),label:s=>'<span class="ct">'+esc(s.text)+'</span>'}};
 function laneOf(id){ for(const [n,L] of Object.entries(LANES)){ const it=L.arr().find(s=>s.id===id); if(it) return [n,it] } return [null,null] }
 function drawRuler(){ const r=$('#ruler'); r.innerHTML=''; const d=P.video.duration, step=d>120?15:d>60?10:d>20?5:d>8?2:1; for(let t=0;t<=d+1e-6;t+=step){ const s=document.createElement('span'); s.style.left=X(t)+'px'; s.textContent=fmtT(t).replace(/\.\d+$/,''); r.appendChild(s) } }
 function drawTimeline(){
@@ -511,7 +518,6 @@ function drawTimeline(){
   for(const c of P.clicks){ const e=document.createElement('div'); e.className='clk'; e.style.left=X(c.t)+'px'; cl.appendChild(e) }
   let burst=null; const bursts=[]; for(const k of P.keys){ if(burst&&k.t-burst[1]<0.8) burst[1]=k.t; else { burst=[k.t,k.t]; bursts.push(burst) } }
   for(const b of bursts){ const e=document.createElement('div'); e.className='key'; e.style.left=X(b[0])+'px'; e.style.width=Math.max(3,X(b[1])-X(b[0]))+'px'; cl.appendChild(e) }
-  for(const c of P.caption_cues||[]){ const e=document.createElement('div'); e.className='cue'; e.style.left=X(c.start)+'px'; e.style.width=Math.max(3,X(c.end)-X(c.start))+'px'; cl.appendChild(e) }
   const sh1=document.createElement('div'); sh1.className='shade'; sh1.style.left='0'; sh1.style.width=X(S.trim[0])+'px'; cl.appendChild(sh1);
   const sh2=document.createElement('div'); sh2.className='shade'; sh2.style.left=X(S.trim[1])+'px'; sh2.style.width=(wrap.clientWidth-X(S.trim[1]))+'px'; cl.appendChild(sh2);
   for(const [i,side] of [[0,'in'],[1,'out']]){ const e=document.createElement('div'); e.className='trim'; e.dataset.side=side; e.style.left=(X(S.trim[i])-(i?0:9))+'px'; cl.appendChild(e) }
@@ -520,7 +526,7 @@ function drawTimeline(){
   $('#privList').innerHTML=S.privacy.map(b=>`<div><span>${b.source==='secret'?'⚠':b.source==='auto'?'auto ·':'▦'} ${fmtT(b.start)}–${fmtT(b.end)} · ${esc(b.label||b.mode)}</span><span><span class="x" data-tog="${esc(b.id)}">${b.enabled===false?'enable':'disable'}</span> · <span class="x" data-del="${esc(b.id)}">delete</span></span></div>`).join('')||'<div class="small">None.</div>';
   drawSelPanel(); updatePH() }
 function updatePH(){ $('#ph').style.left=X(vid.currentTime)+'px'; $('#tc').textContent=fmtT(vid.currentTime) }
-function newId(p){ let i=1; const all=[...S.segments,...S.speed,...S.privacy]; while(all.find(s=>s.id===p+i)) i++; return p+i }
+function newId(p){ let i=1; const all=[...S.segments,...S.speed,...S.privacy,...S.captions]; while(all.find(s=>s.id===p+i)) i++; return p+i }
 function drawSelPanel(){
   const [lane,s]=laneOf(sel), body=$('#segbody');
   if(!s){ $('#segtitle').textContent='Selection'; body.className='empty'; body.innerHTML='Click an item on the timeline to edit it. <span class="kbd">Z</span> adds a zoom at the playhead, <span class="kbd">Del</span> deletes.'; return }
@@ -533,6 +539,10 @@ function drawSelPanel(){
     const uf=$('#sunfocus'); if(uf) uf.onclick=()=>{ s.focus=null; commit(); drawTimeline() } }
   else if(lane==='speed'){ body.innerHTML=`<div class="seg3" id="spdopts">${[1.5,2,4,8].map(v=>`<div class="opt ${s.speed==v?'on':''}" data-v="${v}">${v}×</div>`).join('')}</div><div style="margin-top:8px"><button class="danger" id="sdel">Delete</button></div>`;
     $('#spdopts').style.gridTemplateColumns='repeat(4,1fr)'; $('#spdopts').querySelectorAll('.opt').forEach(o=>o.onclick=()=>{ s.speed=+o.dataset.v; s.source='manual'; commit(); drawTimeline() }) }
+  else if(lane==='captions'){ body.innerHTML=`<textarea id="ctext" rows="2" maxlength="300" style="width:100%;resize:vertical"></textarea><div class="small" style="margin:4px 0 8px">Enter keeps the text; drag the edges on the timeline to time it.</div><div style="display:flex;gap:6px"><button id="cplay">Play it</button><button class="danger" id="sdel">Delete</button></div>`;
+    const ta=$('#ctext'); ta.value=s.text; ta.oninput=()=>{ s.text=ta.value.replace(/\s+/g,' '); s.source='manual'; for(const d of document.querySelectorAll('.it')) if(d.dataset.id===s.id){ const ct=d.querySelector('.ct'); if(ct) ct.textContent=s.text } render() };
+    ta.onchange=()=>{ s.text=s.text.trim(); if(!s.text){ delSel(); return } commit(); drawTimeline() }; ta.onkeydown=e=>{ if(e.key==='Enter'){ e.preventDefault(); ta.blur() } };
+    $('#cplay').onclick=()=>{ seek(s.start); if(vid.paused) $('#play').click() } }
   else { body.innerHTML=`<div class="seg2" id="pmode"><div class="opt ${s.mode!=='pixelate'?'on':''}" data-v="blur">Blur</div><div class="opt ${s.mode==='pixelate'?'on':''}" data-v="pixelate">Pixelate</div></div>
     <div class="small" style="margin:6px 0">${s.source==='secret'?'Flagged by OCR: '+esc(s.label||''):'Drawn by you.'} Drag on the preview to redraw.</div><div style="display:flex;gap:6px"><button id="predraw">Redraw box</button><button class="danger" id="sdel">Delete</button></div>`;
     $('#pmode').querySelectorAll('.opt').forEach(o=>o.onclick=()=>{ s.mode=o.dataset.v; commit(); drawTimeline() }); $('#predraw').onclick=()=>startDraw(s) }
@@ -542,8 +552,13 @@ function addZoom(){ const t=vid.currentTime, d=P.video.duration; let st=Math.max
   for(const s of S.segments){ if(s.start<=st&&st<s.end) st=s.end; if(st<s.start&&en>s.start) en=s.start } if(en-st<0.4){ toast('No room for a zoom here'); return }
   const s={id:newId('m'),start:st,end:en,zoom:1.8,focus:null,follow:true,source:'manual',reason:''}; S.segments.push(s); sel=s.id; commit(); drawTimeline() }
 function addSpeed(){ const t=vid.currentTime; const s={id:newId('s'),start:t,end:Math.min(P.video.duration,t+2),speed:2,source:'manual',reason:''}; S.speed.push(s); sel=s.id; commit(); drawTimeline() }
+function addCaption(){ const t=vid.currentTime, d=P.video.duration; let st=t, en=Math.min(d,t+2.5);
+  for(const c of S.captions){ if(c.start<=st&&st<c.end) st=c.end; if(st<c.start&&en>c.start) en=c.start } if(en-st<0.4){ toast('No room for a caption here'); return }
+  const c={id:newId('c'),start:st,end:en,text:'Caption',source:'manual'}; S.captions.push(c); S.style.captions.enabled=true; sel=c.id; commit(); syncControls(); drawTimeline(); capInfo(); setTimeout(()=>{ const ta=$('#ctext'); if(ta){ ta.focus(); ta.select() } },0) }
 function splitSel(){ const [lane,s]=laneOf(sel), t=vid.currentTime; if(!s||t<=s.start+0.3||t>=s.end-0.3){ toast('Select an item and put the playhead inside it'); return }
-  const b={...s,id:newId(lane==='zoom'?'m':lane==='speed'?'s':'b'),start:t,source:s.source==='secret'?'secret':'manual'}; s.end=t; LANES[lane].arr().push(b); commit(); drawTimeline() }
+  const b={...s,id:newId(lane==='zoom'?'m':lane==='speed'?'s':lane==='captions'?'c':'b'),start:t,source:s.source==='secret'?'secret':'manual'};
+  if(lane==='captions'){ const w=s.text.split(' '), k=Math.max(1,Math.min(w.length-1,Math.round(w.length*(t-s.start)/(s.end-s.start)))); if(w.length>1){ s.text=w.slice(0,k).join(' '); b.text=w.slice(k).join(' ') } s.source=b.source='manual' }
+  s.end=t; LANES[lane].arr().push(b); commit(); drawTimeline() }
 
 let drag=null;
 wrap.addEventListener('pointerdown',e=>{ const r=wrap.getBoundingClientRect(), x=e.clientX-r.left; const it=e.target.closest('.it'), tr=e.target.closest('.trim');
@@ -627,7 +642,7 @@ async function doExport(){ $('#exportBtn').disabled=true; const fmt=pick('fmt');
 
 // ------------------------------------------------------------ share sheet
 let presets=[], chosen='github', lastFile=null;
-async function openShare(){ $('#share').classList.add('open'); await api('/api/save',{segments:S.segments,style:S.style,trim:S.trim,speed:S.speed,privacy:S.privacy});
+async function openShare(){ $('#share').classList.add('open'); await api('/api/save',{segments:S.segments,style:S.style,trim:S.trim,speed:S.speed,privacy:S.privacy,captions:S.captions});
   const [pr,tg]=await Promise.all([api('/api/share/presets'),api('/api/share/targets')]); presets=pr.presets; drawPresets();
   $('#shMeta').textContent=`${P.name} · output ${fmtT(presets[0].duration)}`;
   const sel=$('#shTarget'); sel.innerHTML=tg.targets.map(t=>`<option value="${esc(t.name)}" ${t.name===tg.default?'selected':''}>${esc(t.name)} · ${esc(t.type)}${t.public?' · public':''}</option>`).join('');
@@ -651,11 +666,11 @@ async function drawHistory(){ const h=(await api('/api/share/history')).history.
 
 document.addEventListener('keydown',e=>{
   if(e.key==='Escape'){ $('#share').classList.remove('open'); sel=null; pickingFocus=false; drawingBox=null; cv.classList.remove('drawing'); drawTimeline(); return }
-  if(e.target.tagName==='INPUT'||e.target.tagName==='SELECT'||$('#share').classList.contains('open')) return;
+  if(e.target.tagName==='INPUT'||e.target.tagName==='SELECT'||e.target.tagName==='TEXTAREA'||$('#share').classList.contains('open')) return;
   if(e.key===' '){ e.preventDefault(); $('#play').click() }
   else if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='z'){ e.preventDefault(); e.shiftKey?redo():undo() }
   else if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='e'){ e.preventDefault(); openShare() }
-  else if(e.key==='z'||e.key==='Z') addZoom(); else if(e.key==='s'&&!e.ctrlKey) splitSel();
+  else if(e.key==='z'||e.key==='Z') addZoom(); else if((e.key==='c'||e.key==='C')&&!e.ctrlKey&&!e.metaKey) addCaption(); else if(e.key==='s'&&!e.ctrlKey) splitSel();
   else if(e.key==='Delete'||e.key==='Backspace') delSel();
   else if(e.key==='ArrowLeft') seek(vid.currentTime-(e.shiftKey?1:1/30)); else if(e.key==='ArrowRight') seek(vid.currentTime+(e.shiftKey?1:1/30));
   else if(e.key==='['){ S.trim[0]=Math.min(vid.currentTime,S.trim[1]-0.5); commit(); drawTimeline() } else if(e.key===']'){ S.trim[1]=Math.max(vid.currentTime,S.trim[0]+0.5); commit(); drawTimeline() } });
@@ -692,9 +707,13 @@ function waitForPlan(){ planNote(); clearInterval(planT); planT=setInterval(asyn
       toast(`${S.segments.length} zoom${S.segments.length===1?'':'s'} planned`) }
     if(P.analysis!=='pending'&&P.preview!=='pending') clearInterval(planT)
   }catch(e){}finally{ planBusy=false } }, 700) }
+function capInfo(){ const n=(S.captions||[]).length, tr=P.transcriber;
+  $('#capInfo').textContent=!P.has_audio?'no sound recorded':n?`${n} captions`:'';
+  $('#transcribe').disabled=!P.has_audio||!tr; $('#transcribe').title=tr?`Transcribe on this computer with ${tr}`:'';
+  $('#capHint').textContent=tr||!P.has_audio?'':'To transcribe, turn on Dictation in Omarchy (Omarchy menu › Setup › Defaults › Dictation › Voxtype). You can also type captions: C adds one at the playhead.' }
 async function init(){
   if(P) return;
-  P=await api('/api/project'); if(P.error){ P=null; show('library'); return } S={segments:P.segments,style:P.style,trim:P.trim,speed:P.speed||[],privacy:P.privacy||[]}; lastSnap=snapshot();
+  P=await api('/api/project'); if(P.error){ P=null; show('library'); return } S={segments:P.segments,style:P.style,trim:P.trim,speed:P.speed||[],privacy:P.privacy||[],captions:P.captions||[]}; lastSnap=snapshot();
   if(P.analysis==='pending'||P.preview==='pending') waitForPlan();
   $('#pname').textContent=P.name; $('#pmeta').textContent=`${fmtT(P.video.duration)} · ${P.video.w}×${P.video.h} · ${P.capture.fps&&Math.abs(P.capture.fps-P.video.fps)>1?`${P.capture.fps} fps (file ${Math.round(P.video.fps)})`:`${Math.round(P.video.fps)} fps`} · ${P.capture.backend||''}${P.capture.click_source?' · clicks: '+P.capture.click_source:''}`;
   $('#dur').textContent='/ '+fmtT(P.video.duration); $('#themeName').textContent='Theme: '+P.theme.name;
@@ -710,10 +729,10 @@ async function init(){
   const baked=!!(P.capture||{}).cursor_baked; $('#bakedNote').style.display=baked?'block':'none';
   for(const k of BAKED_OFF){ const e=document.querySelector(`.tg[data-k="${k}"]`); if(e){ e.classList.toggle('dis',baked); e.title=baked?'Not available: this recording has the real cursor (wf-recorder)':'' } }
   syncControls();
-  if(!P.has_audio){ $('#tgDenoise').classList.add('dis'); $('#tgDuck').classList.add('dis'); $('#transcribe').disabled=true; $('#capInfo').textContent='no audio track' }
+  if(!P.has_audio){ $('#tgDenoise').classList.add('dis'); $('#tgDuck').classList.add('dis') }
   else if(!P.capture.mic) $('#tgDenoise').title='Applies to microphone recordings only';
   initAudioCam();
-  if(P.has_captions) $('#capInfo').textContent=`${(P.caption_cues||[]).length} cues`;
+  capInfo();
   optGroup('camShape',v=>{ S.style.webcam.shape=v; commit(); render() });
   for(const [id,k] of [['tText','text'],['tSub','subtitle'],['tOut','outro_text']]) $('#'+id).onchange=e=>{ S.style.title[k]=e.target.value; if(k==='text'&&e.target.value) S.style.title.enabled=true; commit(); syncControls() };
   const ss=$('#stylesel'); const fillStyles=list=>{ ss.innerHTML='<option value="">Load a preset…</option>'+list.map(s=>`<option>${esc(s.name)}</option>`).join(''); ss._list=list }; fillStyles(P.styles||[]);
@@ -730,15 +749,15 @@ async function init(){
   $('#useSettingsLook').onclick=async()=>{ const r=await api('/api/settings/look'); if(r.error){ toast(r.error); return } const snap=snapshot(); hist.push(snap);
     for(const k of ['background','padding','radius','shadow','theme']) if(r.style[k]!==undefined) S.style[k]=r.style[k];
     for(const k of ['cursor','keys']) S.style[k]=Object.assign({},S.style[k],r.style[k]); if(r.gradients) P.theme.gradients=r.gradients; lastSnap=snapshot(); scheduleSave(); syncControls(); buildBg(); scheduleRepath(); toast('Applied Settings › Look to this recording') };
-  $('#undo').onclick=undo; $('#redo').onclick=redo; $('#addz').onclick=addZoom; $('#adds').onclick=addSpeed; $('#split').onclick=splitSel; $('#addBlur').onclick=()=>startDraw(null);
+  $('#undo').onclick=undo; $('#redo').onclick=redo; $('#addz').onclick=addZoom; $('#adds').onclick=addSpeed; $('#addc').onclick=addCaption; $('#split').onclick=splitSel; $('#addBlur').onclick=()=>startDraw(null);
   $('#trimIn').onclick=()=>{ S.trim[0]=Math.min(vid.currentTime,S.trim[1]-0.5); commit(); drawTimeline() }; $('#trimOut').onclick=()=>{ S.trim[1]=Math.max(vid.currentTime,S.trim[0]+0.5); commit(); drawTimeline() };
   $('#reauto').onclick=async()=>{ const snap=snapshot(); const r=await api('/api/auto',{}); hist.push(snap); S.segments=r.segments; sel=null; lastSnap=snapshot(); drawTimeline(); scheduleRepath(); toast(`${r.segments.length} auto zooms`) };
   initAutoZoom();
   $('#speedDetect').onclick=async()=>{ const snap=snapshot(); const r=await api('/api/speed/detect',{}); hist.push(snap); S.speed=r.speed; S.style.speed.enabled=true; lastSnap=snapshot(); syncControls(); drawTimeline(); toast(`${r.speed.length} speed-ups found`) };
   $('#scrub').onclick=async()=>{ $('#scrub').disabled=true; await api('/api/scrub',{}); const bar={style:{}}; pollJob(bar,{set textContent(v){ $('#scrub').textContent=v.startsWith('Done')?'Scrub secrets':'Scanning…' }},s=>{ $('#scrub').disabled=false;
     if(s.result){ const snap=snapshot(); hist.push(snap); S.privacy=s.result.privacy; lastSnap=snapshot(); drawTimeline(); render(); toast(`${s.result.found} possible secrets blurred, review them`) } else if(s.error) toast(s.error) }) };
-  $('#transcribe').onclick=async()=>{ $('#transcribe').disabled=true; await api('/api/captions',{}); pollJob({style:{}},{set textContent(v){ $('#capInfo').textContent=v }},async s=>{ $('#transcribe').disabled=false;
-    if(s.result){ P.caption_cues=s.result.cues; S.style.captions.enabled=true; commit(); syncControls(); drawTimeline(); $('#capInfo').textContent=`${s.result.cues.length} cues` } else toast(s.error||'failed') }) };
+  $('#transcribe').onclick=async()=>{ if(S.captions.length&&!confirm('Replace the captions on the timeline with a new transcription?')) return; $('#transcribe').disabled=true; await api('/api/captions',{}); pollJob({style:{}},{set textContent(v){ $('#capInfo').textContent=v }},async s=>{ $('#transcribe').disabled=false;
+    if(s.result){ hist.push(snapshot()); fut=[]; S.captions=s.result.cues; S.style.captions.enabled=true; lastSnap=snapshot(); scheduleSave(); syncControls(); drawTimeline(); render(); capInfo(); toast(s.result.cues.length?`${s.result.cues.length} captions: check them on the timeline`:'No speech found') } else { capInfo(); toast(s.error||'failed') } }) };
   $('#privList').addEventListener('click',e=>{ const t=e.target; if(t.dataset.del){ sel=t.dataset.del; delSel() } else if(t.dataset.tog){ const b=S.privacy.find(x=>x.id===t.dataset.tog); b.enabled=b.enabled===false; commit(); drawTimeline(); render() } });
   syncControls(); if(P.preview!=='pending'){ vid.src='/media/raw.mp4?t='+TOKEN; if(P.has_webcam&&P.camera_mode!=='live') camv.src='/media/webcam.mp4?t='+TOKEN } drawRuler(); drawTimeline(); await repath(); if(P.preview!=='pending') seek(Math.min(P.video.duration*0.1,2)); loop();
   new ResizeObserver(()=>{ drawRuler(); drawTimeline() }).observe(wrap) }

@@ -478,6 +478,9 @@ class Compositor:
         # motion blur streaks the re-drawn cursor only; with the real cursor baked in it would
         # do nothing visible but still turn off frame reuse (slower exports)
         self.motion_blur = bool(cs.get("motion_blur", False)) and self.draw_cursor
+        # camera motion blur (0.8.0): quick pans and zooms are softened like a film shutter would
+        self.camera_blur = bool((style.get("camera") or {}).get("motion_blur", True))
+        self.blurred = 0                     # frames drawn with it (export stats)
         self.cursor_size = float(cs.get("size", 1.5))
         self.hide_idle = float(cs.get("hide_idle", 0) or 0)
         self.keys = key_overlay_events(tl) if style.get("keys", {}).get("enabled", True) else []
@@ -708,32 +711,14 @@ class Compositor:
                 self._priv_cache = (frame, act, blurred)
                 frame = blurred
         z, k, vx0, vy0 = self.affine_at(ts)
+        out = self._base_blurred(frame, ts) if self.camera_blur else self._base(frame, ts)
+        c = gfx.context(out)
         if self.reframe:
-            out = gfx.copy(self.bg)
-            c = gfx.context(out)
             x0, y0, x1, y1 = self.card
-            cwid, chgt = x1 - x0, y1 - y0
-            gfx.rounded_rect(c, x0, y0, cwid, chgt, self.card_r)
+            gfx.rounded_rect(c, x0, y0, x1 - x0, y1 - y0, self.card_r)
             c.clip()
-            # crop wider/taller than the screen (letterbox): the card shows a dimmed
-            # background around a rounded screen instead of black bars
-            # window mode: only the followed window, like the 16:9 card
-            scr = self.window_rect(ts) if self.window_target else (0, 0, self.tl.w, self.tl.h)
-            VX0, VY0 = (scr[0] - vx0) * k - x0, (scr[1] - vy0) * k - y0
-            VX1, VY1 = (scr[2] - vx0) * k - x0, (scr[3] - vy0) * k - y0
-            if VX0 > 0.5 or VY0 > 0.5 or VX1 < cwid - 0.5 or VY1 < chgt - 0.5:
-                gfx.fill_rect(c, x0, y0, cwid, chgt, (0, 0, 0), 0.45)
-                c.save()
-                gfx.rounded_rect(c, *self._box(scr, k, vx0, vy0), self.vmask_r * k * 2)
-                c.clip()                 # clips add up: the card and the screen in it
-                self._place(c, frame, k, vx0, vy0)
-                c.restore()
-            else:
-                self._place(c, frame, k, vx0, vy0)
-            view = (x0, y0, cwid, chgt)  # ripples, cursor and spotlight stay inside the card: its clip is still on
+            view = (x0, y0, x1 - x0, y1 - y0)  # ripples, cursor and spotlight stay inside the card
         else:
-            out = self._landscape(frame, z, k, vx0, vy0, ts)
-            c = gfx.context(out)
             view = (0, 0, lay.OW, lay.OH)
         # ripples + cursor (clipped to the card in reframe mode)
         cxv, cyv = self.cursor_at(ts)
@@ -776,6 +761,58 @@ class Compositor:
         # the camera never looks more than a fraction of a pixel past the canvas: its edge continued
         gfx.place(out, self.bg, z, z, tx, ty, extend=gfx.PAD, operator=gfx.SOURCE)
         return out
+
+    def _base(self, frame, ts: float):
+        """The background with the recording under the camera at ts: everything that moves
+        with the camera (the overlays are drawn on top, sharp)."""
+        z, k, vx0, vy0 = self.affine_at(ts)
+        if not self.reframe:
+            return self._landscape(frame, z, k, vx0, vy0, ts)
+        out = gfx.copy(self.bg)
+        c = gfx.context(out)
+        x0, y0, x1, y1 = self.card
+        cwid, chgt = x1 - x0, y1 - y0
+        gfx.rounded_rect(c, x0, y0, cwid, chgt, self.card_r)
+        c.clip()
+        # crop wider/taller than the screen (letterbox): the card shows a dimmed
+        # background around a rounded screen instead of black bars
+        # window mode: only the followed window, like the 16:9 card
+        scr = self.window_rect(ts) if self.window_target else (0, 0, self.tl.w, self.tl.h)
+        VX0, VY0 = (scr[0] - vx0) * k - x0, (scr[1] - vy0) * k - y0
+        VX1, VY1 = (scr[2] - vx0) * k - x0, (scr[3] - vy0) * k - y0
+        if VX0 > 0.5 or VY0 > 0.5 or VX1 < cwid - 0.5 or VY1 < chgt - 0.5:
+            gfx.fill_rect(c, x0, y0, cwid, chgt, (0, 0, 0), 0.45)
+            c.save()
+            gfx.rounded_rect(c, *self._box(scr, k, vx0, vy0), self.vmask_r * k * 2)
+            c.clip()                 # clips add up: the card and the screen in it
+            self._place(c, frame, k, vx0, vy0)
+            c.restore()
+        else:
+            self._place(c, frame, k, vx0, vy0)
+        return out
+
+    def camera_motion(self, ts: float) -> float:
+        """Output pixels the recording moves during the shutter before ts (corners of the
+        screen, the most any point of it moves): 0 while the camera is still."""
+        dt = CAMERA_SHUTTER / self.fps
+        _, k1, ax, ay = self.affine_at(ts)
+        _, k0, bx, by = self.affine_at(max(self.t_start, ts - dt))
+        W, H = self.tl.w, self.tl.h
+        return max(math.hypot((x - ax) * k1 - (x - bx) * k0, (y - ay) * k1 - (y - by) * k0)
+                   for x, y in ((0, 0), (W, 0), (0, H), (W, H)))
+
+    def _base_blurred(self, frame, ts: float):
+        """Camera motion blur: while the camera pans or zooms quickly, the base layer is the
+        average of sub-frames over half a frame's time, as a film camera's shutter would
+        record it. A still or slow camera draws one frame (no cost)."""
+        moved = self.camera_motion(ts)
+        if moved < CAMERA_BLUR_FROM:
+            return self._base(frame, ts)
+        n = int(min(CAMERA_BLUR_SAMPLES, 2 + moved // 6))
+        dt = CAMERA_SHUTTER / self.fps
+        subs = [self._base(frame, max(self.t_start, ts - dt * (1 - i / (n - 1)))) for i in range(n)]
+        self.blurred += 1
+        return gfx.average(subs)
 
     def _landscape(self, frame, z, k, vx0, vy0, ts=None):
         lay, g = self.lay, self.lay.geom
@@ -1080,6 +1117,11 @@ class Compositor:
         if subtitle:
             gfx.label(c, subtitle, OW / 2, y + int(8 * sc), small, gfx.rgb((235, 236, 248)))
         return img
+
+
+CAMERA_SHUTTER = 0.5        # camera motion blur: the shutter is open this fraction of a frame
+CAMERA_BLUR_FROM = 3.0      # ... once the recording moves this many output px in that time
+CAMERA_BLUR_SAMPLES = 5     # at most this many sub-frames (2 + one per 6 px moved)
 
 
 def captions_mod():

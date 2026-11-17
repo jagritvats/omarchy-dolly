@@ -213,7 +213,7 @@ def test_captions_skip_cleanly_without_backend(tmp_path, monkeypatch):
                     "-f", "lavfi", "-i", "sine=duration=1", "-shortest", "-c:v", "libx264", "-c:a", "aac",
                     str(tmp_path / "raw.mp4")], check=True)
     monkeypatch.setattr(captions, "backend", lambda: None)
-    with pytest.raises(captions.CaptionsUnavailable, match="whisper"):
+    with pytest.raises(captions.CaptionsUnavailable, match="Dictation"):
         captions.transcribe(tmp_path)
 
 

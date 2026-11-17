@@ -197,7 +197,15 @@ class Desktop:
 
     # ---------------------------------------------------------- windows
     def clients(self) -> list[dict]:
-        return hypr_json("clients") or []
+        """The windows. No answer from Hyprland is asked again (for about 4 s) rather than read
+        as "no windows": on a busy machine, with the recorder running, one request can time
+        out, and a storyboard step then failed with "the window is gone" (seen in the VM)."""
+        for wait in (0.1, 0.25, 0.5, 1.0, 2.0, 0.0):
+            got = hypr_json("clients")
+            if isinstance(got, list):
+                return got
+            time.sleep(wait)
+        return []
 
     def find(self, selector: str) -> dict | None:
         """"class:foot", "title:README", "address:0x…": the most recently focused match."""

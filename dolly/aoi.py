@@ -575,6 +575,19 @@ def build_aoi(tl: Timeline, act: Activity | None, cfg: AOIConfig | None = None) 
         elif abs(x - lx) + abs(y - ly) > 10 * scale:   # a resting hand jitters a few px
             pmoves.append(t)
             lx, ly = x, y
+    # the instants the recorded pointer disappears: the first key after the pointer moved or
+    # clicked. Right after a click (a terminal clicked to focus it) the hiding pointer is a
+    # change right where the click was, which read as typing there: the camera went to the
+    # empty spot that was clicked before finding the prompt
+    hides: list = []
+    if baked:
+        acts_p = sorted(pmoves + [c["t"] for c in tl.clicks])
+        last_key = -1.0
+        for kt in keys:
+            pi = bisect_right(acts_p, kt)
+            if pi > 0 and acts_p[pi - 1] > last_key:
+                hides.append(kt)
+            last_key = kt
     layout_t = sorted(c["t"] for c in tl.layout_changes if c["reason"] in ("close", "move", "resize", "fullscreen"))
     open_t = sorted(c["t"] for c in tl.layout_changes if c["reason"] == "open")
 
@@ -645,8 +658,9 @@ def build_aoi(tl: Timeline, act: Activity | None, cfg: AOIConfig | None = None) 
                 bx, by = (x0 + x1) / 2, (y0 + y1) / 2
                 if toasts and any(_inside(bx, by, r, pad=4) for r in toasts):
                     continue
-                if baked and not pointer and abs(bx - cx) < ptr_r and abs(by - cy) < ptr_r \
-                        and (x1 - x0) < 2 * ptr_r and (y1 - y0) < 2 * ptr_r:
+                if baked and abs(bx - cx) < ptr_r and abs(by - cy) < ptr_r \
+                        and (x1 - x0) < 2 * ptr_r and (y1 - y0) < 2 * ptr_r \
+                        and (not pointer or recent(hides, act.t[j], 0.25)):
                     continue                        # the recorded pointer hiding/showing while typing
                 in_win = _inside(bx, by, wrect)
                 near_ptr = pointer and math.hypot(bx - cx, by - cy) < cfg.near_cursor
