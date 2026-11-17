@@ -936,6 +936,9 @@ class SubjectTrack:
 
 READ_HOLD = 0.5     # s a finished subject (command output, typed line) stays framed for reading
 BIG_SUBJECT = 0.3   # a subject over this fraction of the screen gives way to the action about to come
+OPEN_LEAD = 0.45    # s before a window opens that the camera sets off toward where it will be
+OPEN_HOLD = 1.0     # s after it opened that it stays the subject while nothing else is
+CLICK_LEAD = 0.6    # s before a click that its target becomes the subject
 
 
 def subject_track(tl: Timeline, aoi, sim_t, curx, cury, cfg: ZoomConfig,
@@ -958,6 +961,9 @@ def subject_track(tl: Timeline, aoi, sim_t, curx, cury, cfg: ZoomConfig,
     focus_clicks = {c["t"] for c in tl.clicks if cfg.follow_typing and aoi is not None
                     and focus_only_click(tl, aoi, c, float(tl.capture.get("scale", 1.0) or 1.0))}
     click_t = sorted(c["t"] for c in tl.clicks if c["t"] not in focus_clicks)
+    # windows about to open, with where Hyprland puts them (window mode follows its own window)
+    opens = [] if tl.capture.get("mode") == "window" else         sorted((c["t"], c["address"]) for c in tl.layout_changes if c["reason"] == "open")
+    open_t = [o[0] for o in opens]
     la = cfg.aoi_lookahead if lookahead is None else lookahead
     last_real = -9.0
     held, held_t = None, -9.0          # last real subject, kept READ_HOLD s for reading
@@ -974,7 +980,7 @@ def subject_track(tl: Timeline, aoi, sim_t, curx, cury, cfg: ZoomConfig,
             # leave the last result on screen ~1 s (reading time) before moving to what's next
             # (a moving pointer is already on its way: follow where it is going)
             horizon = 2.0 if (kind == "pointer" or t - last_real > cfg.hold_typing * 0.8) else 0.6
-            if j < len(acts) and acts[j].kind == "click" and acts[j].t - t < 0.6:
+            if j < len(acts) and acts[j].kind == "click" and acts[j].t - t < CLICK_LEAD:
                 r, kind, foc = acts[j].rect, "pointer", None      # frame the click target before it happens
                 rest = False
             elif j < len(acts) and acts[j].t - t < horizon and acts[j].kind in ("type", "scroll", "layout", "output"):
@@ -992,6 +998,21 @@ def subject_track(tl: Timeline, aoi, sim_t, curx, cury, cfg: ZoomConfig,
                 j += 1                   # the window's own painting samples are not what comes next
             if j < len(acts) and acts[j].t - t < cfg.lead + 0.15 and acts[j].kind in ("type", "click"):
                 r, kind, foc = acts[j].rect, ("typing" if acts[j].kind == "type" else "pointer"), None
+        if kind != "typing" and open_t and not rest:
+            # a window about to open (known offline: the take is planned after it was
+            # recorded): set off toward where it lands, so the pan is there when it has
+            # popped in, not ~0.8 s later
+            k = bisect_right(open_t, t + la)
+            if not (k < len(open_t) and open_t[k] - (t + la) < OPEN_LEAD):
+                # one that has just opened stays the subject while it settles, unless the
+                # screen shows something else going on (no subject for a moment drew the
+                # camera back toward where it came from, then down again)
+                k = k - 1 if k > 0 and t + la - open_t[k - 1] < OPEN_HOLD and r is None else -1
+            if k >= 0:
+                wr = tl.window_rect_at(open_t[k] + 0.35, opens[k][1])
+                wr = None if wr is None else (max(0.0, wr[0]), max(0.0, wr[1]), min(float(tl.w), wr[2]), min(float(tl.h), wr[3]))
+                if wr is not None and wr[2] - wr[0] > 8 and wr[3] - wr[1] > 8:
+                    r, kind, foc = wr, "layout", None
         fresh_real = r is not None and kind in ("typing", "scroll", "layout", "output") and not rest
         if (r is None or rest) and held is not None and t - held_t < READ_HOLD and not aoi.in_transition(t):
             r, kind, foc = held          # the result stays the subject while it is being read

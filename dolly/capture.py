@@ -42,9 +42,14 @@ def _have(cmd):
     return shutil.which(cmd) is not None
 
 
+NOTIFIED = False      # this process showed a notification (cli: no second toast for its exit)
+
+
 def notify(title, body="", *actions, urgency="normal", timeout=4000, image=None):
     """omarchy-notification-send (glyph, urgency, actions, preview image) like
     Omarchy's own recorder; notify-send elsewhere. Strings come from dolly.i18n."""
+    global NOTIFIED
+    NOTIFIED = True
     if _have("omarchy-notification-send"):
         cmd = ["omarchy-notification-send", "--app-name", "Dolly", "-g", "󰑊", "-u", urgency, "-t", str(timeout)]
         if image and Path(image).exists():
@@ -383,6 +388,33 @@ def window_at(geo_rect, clients=None, mons=None) -> dict | None:
     return best if err < 40 else None
 
 
+def follow_window(tgt, addr=None):
+    """Window mode: the window that was picked (or named with --window: `addr`) -> (its
+    address, the target of its monitor, which is recorded while the window is followed).
+    A pick that is no window (the desktop clicked: the whole monitor) says so in a toast."""
+    from . import health
+    from .monitors import monitor_for_rect, monitor_target
+    win = (next((c for c in hypr_json("clients") or [] if c.get("address") == addr), None)
+           if addr else window_at(tgt.region))
+    if not win or not win.get("mapped", True) or win.get("hidden"):
+        health.set_phase("idle")
+        dolly = str(Path(__file__).resolve().parents[1] / "bin" / "dolly")
+        if not addr and tgt.kind == "monitor":
+            # a click on the desktop picks the whole monitor: there is no window to follow
+            notify(t("notify.pickedDesktopTitle"), t("notify.pickedDesktopBody"),
+                   (t("notify.recordScreen"), dolly, "record", "--mode", "screen"), timeout=8000)
+            raise SystemExit("dolly: that was the desktop, not a window: pick a window, "
+                             "or record the screen (dolly record --mode screen)")
+        notify(t("notify.windowGoneTitle"), t("notify.windowGoneBody"), timeout=6000)
+        raise SystemExit("dolly: the selected window is no longer visible; choose it again")
+    mon, _ = monitor_for_rect(hypr_json("monitors") or [], [*win["at"], *win["size"]])
+    if not mon:
+        health.set_phase("idle")
+        notify(t("notify.windowGoneTitle"), t("notify.windowOffMonitorBody"), timeout=6000)
+        raise SystemExit("dolly: the selected window is not on a connected monitor")
+    return win["address"], monitor_target(mon)          # record the monitor, follow this exact window
+
+
 def _monitor_snapshot() -> list[dict]:
     from .monitors import effective_scale, logical_rect
     out = []
@@ -691,17 +723,7 @@ def start(a):
         toasts_before = _toast_count()     # a pick by hand took a while: count again
     target_addr = None
     if a.mode == "window":
-        from .monitors import monitor_for_rect, monitor_target
-        addr = getattr(a, "window_address", None)                # named with --window: no geometry guess
-        win = (next((c for c in hypr_json("clients") or [] if c.get("address") == addr), None)
-               if addr else window_at(tgt.region))
-        if not win or not win.get("mapped", True) or win.get("hidden"):
-            raise SystemExit("dolly: the selected window is no longer visible; choose it again")
-        mon, _ = monitor_for_rect(hypr_json("monitors") or [], [*win["at"], *win["size"]])
-        if not mon:
-            raise SystemExit("dolly: the selected window is not on a connected monitor")
-        target_addr = win["address"]
-        tgt = monitor_target(mon)          # record the monitor, follow this exact window
+        target_addr, tgt = follow_window(tgt, getattr(a, "window_address", None))
     region, scale, monitor = tgt.region, tgt.scale, tgt.monitor
     pdir = root / time.strftime("%Y-%m-%d_%H-%M-%S")
     try:
@@ -1059,8 +1081,7 @@ def stop(_a=None, defer: bool | None = None):
     if not st:
         if reason:
             return            # a watchdog raced a manual stop
-        print("not recording", file=sys.stderr)
-        raise SystemExit(1)
+        _nothing_to_act_on("not recording", "notify.nothingToStop")
     if _counting_down(st):
         if not reason:             # nothing of the take exists yet: stopping the countdown is a cancel
             cancel(_a)
@@ -1310,8 +1331,7 @@ def pause(_a=None):
     paused and finalize closes the gap, so events stay in sync with the video."""
     st = _live_state()
     if not st:
-        print("not recording", file=sys.stderr)
-        raise SystemExit(1)
+        _nothing_to_act_on("not recording", "notify.nothingToPause")
     if st["backend"] == "wf":
         notify(t("notify.pauseNeedsGsr"), t("notify.pauseNeedsGsrBody"))
         print("cannot pause: this recording uses wf-recorder, and pausing needs gpu-screen-recorder",
@@ -1335,8 +1355,7 @@ def mute(_a=None):
     export), not a cut. The logger records the span on the shared time base."""
     st = _live_state()
     if not st:
-        print("not recording", file=sys.stderr)
-        raise SystemExit(1)
+        _nothing_to_act_on("not recording", "notify.nothingToMute")
     if st.get("logger_pid") and _alive(st["logger_pid"]):
         os.kill(st["logger_pid"], signal.SIGRTMIN + 1)
     st["muted"] = not st.get("muted", False)
@@ -1379,12 +1398,20 @@ def camera_cmd(a):
         stop_bubble(p)
 
 
+def _nothing_to_act_on(line: str, body_key: str, title_key: str = "notify.notRecordingTitle"):
+    """A hotkey (pause, mute, zoom here, stop) pressed with nothing to act on: the line for a
+    terminal, and from a hotkey or the bar, where nobody sees it, a short toast. Exit code 1."""
+    print(line, file=sys.stderr)
+    if not sys.stderr.isatty():
+        notify(t(title_key), t(body_key), timeout=3000)
+    raise SystemExit(1)
+
+
 def mark(_a=None):
     """'Zoom here' marker at the cursor (logger SIGUSR1) -> becomes a zoom segment."""
     st = _live_state()
     if not st:
-        print("not recording: there is nothing to mark", file=sys.stderr)
-        raise SystemExit(1)
+        _nothing_to_act_on("not recording: there is nothing to mark", "notify.nothingToMark")
     if st.get("logger_pid") and _alive(st["logger_pid"]):
         os.kill(st["logger_pid"], signal.SIGUSR1)
         notify(t("notify.marked"), "", timeout=900)

@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.8.1 (2026-11-22)
+
+Camera polish across windows, and no more silent ends. Checked with the test suite and the
+scenario suite on an Omarchy 4.5.0 virtual machine; not yet on real hardware.
+
+- A window that opens is in frame once it has popped in: the camera sets off toward where
+  it lands a moment before it opens (the take is planned after it was recorded), instead
+  of starting when it appears and arriving ~0.5 s later.
+- Typing into the Omarchy menu or a launcher in a 9:16 export keeps the whole menu in the
+  crop. The typed text was taken as wider than the menu, and the crop, keeping the caret
+  near its middle, cut the menu's far side.
+- Window recording with the desktop clicked instead of a window: a notification says so
+  ("No window there") with a Record the screen button. It used to end without a word.
+  A window that closed while it was being picked is said too.
+- Pause, mute, "zoom here" and stop pressed with nothing recording, and "save the last
+  30 s" with instant replay off, show a short notification instead of doing nothing.
+- Any other command that stops with a message, started from the bar, the menu or a
+  hotkey, shows that message as a notification (it only went to a terminal nobody sees).
+
 ## 0.8.0 (2026-11-17)
 
 Captions you can type, Transcribe through Omarchy's own Dictation, and a calmer camera

@@ -133,8 +133,9 @@ def _wait_new_file(d: Path, since: float, timeout: float = 20.0) -> Path | None:
 def save(a):
     st = replay_state()
     if not st:
-        print("replay buffer is not running (dolly replay start)", file=sys.stderr)
-        raise SystemExit(1)
+        from .capture import _nothing_to_act_on
+        _nothing_to_act_on("replay buffer is not running (dolly replay start)", "notify.replayNotRunningBody",
+                           "notify.replayNotRunningTitle")
     last = getattr(a, "last", None)
     wall0 = time.time()
     save_mono = time.monotonic()

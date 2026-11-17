@@ -348,7 +348,12 @@ def _reframe_aoi(tl, segments, aspect, fps, t_start, t_end, cfg, zoom_gain, omeg
         if has_a[i]:
             kind, half = subj.kind[i], 0.5 * w * 0.94
             sx0, sx1 = subj.x0[i], subj.x1[i]
-            if sx1 - sx0 <= 2 * half or kind == "typing":
+            if 2 * half < sx1 - sx0 <= w * 0.99 and kind in ("typing", "pointer"):
+                # it fits the crop, only not inside its margin (a launcher menu being typed
+                # into, about as wide as the strip): centred, all of it shows. Keeping the
+                # caret nearer the middle pushed the crop off the menu's far side
+                fc[0] = (sx0 + sx1) / 2
+            elif sx1 - sx0 <= 2 * half or kind == "typing":
                 # it fits; or typed text, shown from the start of its line with the caret in view
                 fc[0] = _dead_zone_rect(fc[0], sx0, sx1, half, subj.ax[i])
                 if kind in TEXT_KINDS:

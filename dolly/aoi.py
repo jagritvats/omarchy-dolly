@@ -697,7 +697,14 @@ def build_aoi(tl: Timeline, act: Activity | None, cfg: AOIConfig | None = None) 
             x0 = u[0] - m
             if win is not None and wrect is not None and str(win.get("class", "")).lower() in terms:
                 x0 = wrect[0]      # a command line reads from the prompt, not from the last few glyphs
-            rects.append(_clip((x0, u[1] - m, u[2] + m, u[3] + m), W, H)); kinds.append("typing")
+            tr = _clip((x0, u[1] - m, u[2] + m, u[3] + m), W, H)
+            kb = [l["rect"] for l in _open_layers(tl, t) if l.get("keyboard") and l.get("rect")]
+            if kb and tr is not None and _inside((tr[0] + tr[2]) / 2, (tr[1] + tr[3]) / 2, kb[-1]):
+                # typing into a menu or launcher: its text is no wider than the menu (the margin
+                # round the glyphs made it wider than the 9:16 strip, which then cut the menu)
+                L = kb[-1]
+                tr = _clip((max(tr[0], L[0]), max(tr[1], L[1]), min(tr[2], L[2]), min(tr[3], L[3])), W, H) or tr
+            rects.append(tr); kinds.append("typing")
             # the caret is where the newest glyphs are. A window painting itself while the
             # first keys arrive is not glyphs: its middle is not a caret (the camera would
             # frame, and the vertical crop widen for, the middle of the window)

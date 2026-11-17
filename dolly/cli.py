@@ -597,13 +597,33 @@ def _report_error(e: BaseException, argv: list[str]) -> None:
             log.swallowed("error toast")
 
 
+def _toast_unseen_exit(e: SystemExit, argv: list[str]) -> None:
+    """A command that stops with a message (`raise SystemExit("dolly: ...")`) and has shown no
+    notification: launched from the bar or a hotkey, nobody would see why nothing happened
+    (window mode with the desktop picked said nothing). The message becomes a toast."""
+    if not isinstance(e.code, str) or sys.stderr.isatty():
+        return
+    cmd = argv[0] if argv else ""
+    if cmd in QUIET_CMDS or "--json" in argv:
+        return
+    try:
+        from . import capture
+        if capture.NOTIFIED:
+            return                           # it already said what happened
+        capture.notify(t("notify.errorTitle"), e.code.removeprefix("dolly: "), urgency="normal", timeout=8000)
+    except Exception:
+        from . import log
+        log.swallowed("exit toast")
+
+
 def main(argv=None):
     """Errors end as one clear line (and a toast when launched from the bar or a hotkey),
     exit code 1; unexpected ones also leave their traceback in last-error.log."""
     try:
         _after_update(list(sys.argv[1:] if argv is None else argv))
         return _main(argv)
-    except SystemExit:
+    except SystemExit as e:
+        _toast_unseen_exit(e, list(sys.argv[1:] if argv is None else argv))
         raise
     except KeyboardInterrupt:
         raise SystemExit(130) from None
