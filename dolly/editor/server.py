@@ -288,6 +288,8 @@ class Editor:
         elif segs is None:
             segs = [s.to_dict() for s in _plan(tl, zcfg, self.aoi(tl, zcfg))]
         colors = projmod.theme_colors()
+        from .. import captions as captions_mod
+        cues = captions_mod.load(self.proj.dir)
         return {
             "analysis": "pending" if waiting else "ready",
             "preview": "pending" if self.preview_pending() else "ready",
@@ -299,11 +301,11 @@ class Editor:
             "segments": segs, "style": data["style"], "trim": data["trim"] or [0, tl.duration],
             "speed": data.get("speed") or [], "privacy": data.get("privacy") or [],
             "has_audio": self.has_audio(), "has_webcam": any((self.proj.dir / n).exists() for n in ("webcam.mkv", "webcam.mp4")),
-            "has_captions": (self.proj.dir / "captions.srt").exists(),
+            "has_captions": bool(cues),
             "audio_tracks": tl.capture.get("audio_tracks") or [], "mic_mutes": tl.capture.get("mic_mutes") or [],
             "camera_mode": tl.capture.get("camera_mode", "off"),
             "webcam_offset": float(tl.capture.get("webcam_offset", 0.0) or 0.0),
-            "caption_cues": __import__("dolly.captions", fromlist=["load"]).load(self.proj.dir),
+            "captions": cues, "transcriber": captions_mod.backend(),
             "styles": list_styles(),
             "zoom_config": zcfg.to_dict(),
             "title": (data.get("title") or ""),
@@ -382,6 +384,9 @@ class Editor:
         for k in ("segments", "style", "trim", "zoom_config", "speed", "privacy"):
             if k in body:
                 data[k] = body[k]
+        if "captions" in body:
+            from ..captions import clean_cues
+            data["captions"] = clean_cues(body["captions"])
         bg = (data.get("style") or {}).get("background")
         if isinstance(bg, dict) and bg.get("type") == "wallpaper":
             # export opens this path: only a checked image (never an arbitrary file the page names)
@@ -479,7 +484,7 @@ class Editor:
         from ..captions import transcribe
 
         def fn(progress):
-            cues = transcribe(self.proj.dir)
+            cues = transcribe(self.proj.dir, progress=progress)
             return {"cues": cues}
         self.start_job("Transcribing", fn)
 

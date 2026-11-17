@@ -138,7 +138,7 @@ def check(as_json=False) -> dict:
         cb = cap_backend()
     except Exception:
         cb = None
-    add("captions transcriber", cb, cb or "optional: whisper.cpp (whisper-cli + ggml model) or faster-whisper; see docs/captions.md", "warn")
+    add("captions transcriber", cb, cb or "optional: turn on Dictation in Omarchy (Setup > Defaults > Dictation > Voxtype); captions can also be typed in the editor", "warn")
     try:
         from . import camera as cammod
         cams = cammod.devices()

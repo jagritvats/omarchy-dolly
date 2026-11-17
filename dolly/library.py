@@ -104,6 +104,13 @@ def poster(pdir: Path, refresh: bool = False, duration: float | None = None) -> 
     return None
 
 
+def _has_captions(d: Path, data) -> bool:
+    """The caption lane has lines: project.json "captions", else captions.srt (before 0.8.0)."""
+    if isinstance(data, dict) and isinstance(data.get("captions"), list):
+        return bool(data["captions"])
+    return (d / "captions.srt").exists()
+
+
 def entry(d: Path, with_poster: bool = True) -> dict | None:
     d = Path(d)
     if not d.is_dir() or d.name.startswith("."):
@@ -164,7 +171,7 @@ def entry(d: Path, with_poster: bool = True) -> dict | None:
         "bytes": _du(d), "raw_bytes": raw.stat().st_size if raw.exists() else 0, "raw": raw.exists(),
         "exports": exports, "exported": bool(exports),
         "shared": any(s.get("action") in ("upload", "copy") for s in shares if isinstance(s, dict)),
-        "captions": (d / "captions.srt").exists(),
+        "captions": _has_captions(d, data),
         "vertical": any(e["vertical"] for e in exports),
         "recovered": reason == "recovered" or (not finalized and raw.exists()),
         "partial": reason in ("recorder-died", "disk-full", "suspend", "lock", "monitor-removed", "hyprland-exit"),

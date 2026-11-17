@@ -77,9 +77,17 @@ fresh processes (`dolly/render_chunk.py`). See CHANGELOG.md and "Round 4" below.
    Settings › Auto-zoom and the editor sidebar expose enabled, level,
    triggers (`zoom_clicks`, `follow_typing`, `zoom_windows`), glide,
    `stay_gap` and `motion` (calm 0.75×, normal, quick 1.3× spring speed).
+   0.8.0 (`camera_path`, `subject_track`): a zoom-in only goes as deep as still shows where
+   the camera is heading (`zoom_keeps_subject`, `zoom_keep_frac` 0.8): zoom and pan are
+   separate springs, and a fast zoom with a far pan framed empty screen. A focus-only click
+   (`focus_only_click`) no longer blocks the anticipation of the typing after it, and a
+   window-sized subject (a window painting itself, > `BIG_SUBJECT` of the screen) gives way
+   to the type/click action due within the lead-in. Camera motion blur
+   (`style.camera.motion_blur`, `Compositor._base_blurred`): the base layer averaged over
+   half a frame while it moves >= 3 output px; overlays stay sharp.
 5. **Render** (`dolly/render.py`), CPU only, drawn with cairo through `dolly/gfx.py` (no NumPy, Pillow or OpenCV):
    - background, padding, rounded corners, shadow
-   - re-drawn cursor (optional motion blur), click ripples, shortcut keycaps
+   - re-drawn cursor (optional motion blur), camera motion blur (0.8.0), click ripples, shortcut keycaps
    - speed ramps with a "⏩ 4×" badge (`dolly/timemap.py`)
    - vertical 9:16 / square 1:1 auto-reframe (`dolly/reframe.py`): frames the whole AOI, widening to a letterboxed view when needed (edge springs, jump cuts for big subject switches)
    - cursor: theme size, hidden while typing and off-monitor, I-beam over terminals, grab while dragging
@@ -345,7 +353,7 @@ are expected (playwright, moto, botocore, rclone missing; one test needs root).
 | wl-clipboard | ships with Omarchy | "Copy file", link to clipboard |
 | tesseract + eng data | `tesseract`, `tesseract-data-eng` | optional: "Scrub secrets" |
 | rclone | `rclone` | optional: links via Drive/Dropbox/OneDrive/... |
-| whisper.cpp (`whisper-cli` + ggml model) or faster-whisper | AUR `whisper.cpp`; faster-whisper in a private environment (`docs/captions.md`) | optional: captions; model at `~/.local/share/dolly/whisper/ggml-base.en.bin` or `$DOLLY_WHISPER_MODEL` |
+| a transcriber: Voxtype (Omarchy's Dictation), whisper.cpp or faster-whisper | Omarchy menu > Setup > Defaults > Dictation > Voxtype; AUR `whisper.cpp`; faster-whisper in a private environment (`docs/captions.md`) | optional: Transcribe fills the caption lane; captions can always be typed in the editor |
 | v4l2 webcam | — | optional; none in a VM is fine |
 | slurp, jq, a Chromium browser | ship with Omarchy | region picking, editor window |
 | For `make test`/`make demo`: playwright (+ moto, boto3 for share tests) | Python packages `playwright`, `moto[server]`, `boto3` (user or private environment) | tests skip what is missing |
@@ -662,8 +670,10 @@ rm -rf ~/.local/share/dolly ${XDG_RUNTIME_DIR}/dolly ~/.local/state/dolly   # op
 15. **Sync overlay** is a Quickshell `PanelWindow` on the Overlay layer with an
     empty input mask. Check it is captured by gsr (it is a normal layer
     surface) and does not flash elsewhere on multi-monitor.
-11. **Captions** were never run with a real model here. Only the SRT/remap/burn
-    paths and the clean skip are tested.
+11. **Captions** (0.8.0): the caption lane lives in project.json `captions` (`captions.clean_cues`;
+    older takes fall back to captions.srt). Voxtype (Omarchy's Dictation) ran for real in the VM on
+    a synthesized voice: stretch timing from silencedetect, words spread by length. whisper.cpp and
+    faster-whisper were never run with a real model; their SRT/remap/burn paths are tested.
 
 ## Reference results (cloud box, 2 vCPU, Nov 9 2026)
 

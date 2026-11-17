@@ -33,6 +33,7 @@ DEFAULT_STYLE = {
         "hide_idle": 0,        # seconds of stillness before fading out (0 = never)
     },
     "keys": {"enabled": True, "position": "bottom"},
+    "camera": {"motion_blur": True},   # soften quick pans and zooms (camera motion blur)
     "webcam": {"enabled": True, "corner": "bottom-left", "size": 0.22, "shape": "circle", "auto_move": True,
                "mirror": True, "border": 3, "shadow": True, "pos": None, "full": []},
     "audio": {"denoise": True, "normalize": True, "duck": True, "rnnoise_model": None,
