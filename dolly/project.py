@@ -275,6 +275,7 @@ class Project:
         data.setdefault("zoom_config", {})
         data.setdefault("speed", None)       # speed ramps [{start,end,speed,...}] (None = not detected yet)
         data.setdefault("privacy", [])       # blur boxes
+        data.setdefault("cuts", [])          # removed stretches [{start,end,source,reason}] (0.9.0)
         return data
 
     def save(self, data: dict) -> None:

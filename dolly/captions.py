@@ -244,6 +244,41 @@ def _mute_filter(mutes: list, offset: float, scale: float) -> str | None:
     return ",".join(parts) or None
 
 
+def _extract_wav(src: dict, wav: Path) -> None:
+    """The sound to transcribe as 16 kHz mono WAV, muted spans silenced."""
+    from .ff import ffmpeg_bin
+    args = [ffmpeg_bin(), "-v", "error", "-y", "-i", str(src["file"])]
+    if src["map"]:
+        args += ["-map", src["map"]]
+    mf = _mute_filter(src["mutes"], src["offset"], src["scale"])
+    if mf:
+        args += ["-af", mf]
+    # no timeout: decoding takes time proportional to the recording
+    subprocess.run(args + ["-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(wav)], check=True,
+                   capture_output=True)
+
+
+def speech_video_spans(project_dir: Path) -> list[tuple[float, float]] | None:
+    """Where something is said, in video seconds (the microphone, else the recording's own
+    sound): what "Cut pauses" must never cut. None when the recording has no sound."""
+    from .ff import ffmpeg_bin, probe
+    try:
+        src = speech_source(project_dir)
+    except CaptionsUnavailable:
+        return None
+    with tempfile.TemporaryDirectory() as tmp:
+        wav = Path(tmp) / "a.wav"
+        _extract_wav(src, wav)
+        total = float(probe(wav).get("format", {}).get("duration") or 0)
+        det = subprocess.run([ffmpeg_bin(), "-hide_banner", "-nostats", "-i", str(wav), "-af",
+                              "silencedetect=noise=%ddB:d=%.2f" % (SILENCE_DB, SILENCE_S), "-f", "null", "-"],
+                             capture_output=True, text=True)
+    out = []
+    for a, b in speech_spans(det.stderr, total):
+        out.append((src["offset"] + src["scale"] * a, src["offset"] + src["scale"] * b))
+    return out
+
+
 def _to_video(cues: list[dict], src: dict) -> list[dict]:
     """File-time cues -> video-time cues, inside the recording and outside muted spans."""
     out = []
@@ -264,7 +299,6 @@ def _to_video(cues: list[dict], src: dict) -> list[dict]:
 def transcribe(project_dir: Path, language: str | None = None, progress=None) -> list[dict]:
     """Transcribe the recording on this machine into its caption lane (replacing what was
     there). `progress(done, total)` while it works. Returns the lane."""
-    from .ff import ffmpeg_bin
     project_dir = Path(project_dir)
     src = speech_source(project_dir)
     be = backend()
@@ -273,15 +307,7 @@ def transcribe(project_dir: Path, language: str | None = None, progress=None) ->
                                   "faster-whisper (docs/captions.md)")
     with tempfile.TemporaryDirectory() as tmp:
         wav = Path(tmp) / "a.wav"
-        args = [ffmpeg_bin(), "-v", "error", "-y", "-i", str(src["file"])]
-        if src["map"]:
-            args += ["-map", src["map"]]
-        mf = _mute_filter(src["mutes"], src["offset"], src["scale"])
-        if mf:
-            args += ["-af", mf]
-        # no timeouts here: decoding and transcribing take time proportional to the recording
-        subprocess.run(args + ["-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(wav)], check=True,
-                       capture_output=True)
+        _extract_wav(src, wav)
         if be == "whisper.cpp":
             args = ["whisper-cli", "-m", _model_path(), "-f", str(wav), "-osrt", "-of", str(Path(tmp) / "out")]
             if language:

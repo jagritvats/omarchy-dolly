@@ -709,7 +709,7 @@ def main(argv=None) -> int:
     for c in st["conflicts"]:
         print(f"  CONFLICT {c['combo']}: also {', '.join(c['others'])}")
     if not st["set_up"]:
-        print("not set up: open the Dolly panel and click Set up (or run bin/dolly-setup)")
+        print("not set up: open the Dolly panel and click Set up (or run `dolly setup`)")
     return 0
 
 

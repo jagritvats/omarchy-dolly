@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# dolly-setup: optional, idempotent integration steps. Omarchy plugins have no
+# bin/dolly-integrate (run it as `dolly setup`): optional, idempotent integration steps. Omarchy plugins have no
 # setup hooks, so run this once after `omarchy plugin add ... --enable`.
 #
-#   bin/dolly-setup            menu entries + keybinds + a check of what is missing
-#   bin/dolly-setup --undo     remove what this script added
+#   dolly setup            menu entries + keybinds + a check of what is missing
+#   dolly setup --undo     remove what this script added
 #
 # What it does (each step prints what it touched):
 #   1. Adds one "Dolly Recorder" entry (everything else inside it) to

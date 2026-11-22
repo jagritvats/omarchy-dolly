@@ -24,7 +24,7 @@ def test_running_dolly_writes_nothing_into_the_plugin_folder(tmp_path):
     for args in (["doctor", "--json"], ["deps", "--json"], ["config", "get"], ["library", "--json", "--recent", "5"],
                  ["status"], ["--help"]):
         subprocess.run([str(plugin / "bin" / "dolly"), *args], env=env, capture_output=True, timeout=120)
-    subprocess.run(["bash", str(plugin / "bin" / "dolly-setup")], env=env, capture_output=True, timeout=120,
+    subprocess.run(["bash", str(plugin / "bin" / "dolly-integrate")], env=env, capture_output=True, timeout=120,
                    stdin=subprocess.DEVNULL)
     after = _snapshot(plugin)
     assert after == before, sorted(set(after) - set(before))[:10]

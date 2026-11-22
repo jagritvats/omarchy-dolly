@@ -89,6 +89,10 @@ fresh processes (`dolly/render_chunk.py`). See CHANGELOG.md and "Round 4" below.
    - background, padding, rounded corners, shadow
    - re-drawn cursor (optional motion blur), camera motion blur (0.8.0), click ripples, shortcut keycaps
    - speed ramps with a "⏩ 4×" badge (`dolly/timemap.py`)
+   - cuts (0.9.0, project.json `cuts`, `timemap.clean_cuts`): `TimeMap(t0, t1, speed, cuts)` gives a cut speed `CUT` (infinite):
+     no output time, left out of `pieces()` (so of the sound), captions in it dropped by `captions.remap`; speed-ups
+     overlapping a cut are split around it. "Cut pauses" = `timemap.detect_pauses` (no input, no screen change, no
+     speech from `captions.speech_video_spans`) via `apply_pause_cuts`; caption line cuts from the editor (X)
    - vertical 9:16 / square 1:1 auto-reframe (`dolly/reframe.py`): frames the whole AOI, widening to a letterboxed view when needed (edge springs, jump cuts for big subject switches)
    - cursor: theme size, hidden while typing and off-monitor, I-beam over terminals, grab while dragging
    - parallel chunked export (fresh worker processes, `dolly/render_chunk.py`; concat without re-encode), reuse of unchanged frames, `--quality draft`
@@ -114,7 +118,7 @@ fresh processes (`dolly/render_chunk.py`). See CHANGELOG.md and "Round 4" below.
    - the `syncFlash` overlay (Overlay layer surface `dolly-sync`, click-through)
    - setting "Solid windows while recording" (auto/on/off)
    - "Record demo" popover with an instant-replay section
-   - `bin/dolly-setup` adds menu rows (Trigger > Capture, Trigger > Share) and hotkeys
+   - `dolly setup` (`bin/dolly-integrate`) adds menu rows (Trigger > Capture, Trigger > Share) and hotkeys
    - menu `when:` guards are pure shell file tests (no Python): `$XDG_RUNTIME_DIR/dolly/{recording,replay}.pid`, `~/.local/state/dolly/{last,share-ready}`
 
 Recordings: `~/Videos/Dolly/<timestamp>/`, containing:
@@ -181,7 +185,7 @@ manifest.json  BarWidget.qml  RecordPanel.qml   Omarchy plugin (id io.github.jag
 DollyTranslations.qml  DollyKeyboardPanel.qml   stand-ins for shells older than 4.5 (no translation catalog, no lazy panel);
                                                 on 4.5+ they pass through to the shell's own. IPC: a plain IpcHandler,
                                                 registered with Commons.IpcRegistry where that exists
-bin/dolly  bin/dolly-setup                      CLI launcher (picks a Python that can import cairo; --print-python),
+bin/dolly  bin/dolly-integrate                  CLI launcher (picks a Python that can import cairo; --print-python),
                                                 integration (menu rows + hotkeys + launcher entry, --undo)
 hypr/dolly-input.lua                            Lua click/key bridge, loaded only while recording
 dolly/  cli capture logger replay events zoom timemap reframe render privacy captions project doctor demo keymap
@@ -315,7 +319,8 @@ Rules (each one has a test):
 - Dolly runs no installer: never a package manager, pip, sudo, pkexec, `omarchy-pkg-add`,
   systemctl or systemd-run, and no scanned file contains such a command
   (`tests/test_installs_nothing.py` re-runs the plugin marketplace's published scan rules;
-  the only capability allowed is "installer", for the file name `bin/dolly-setup`).
+  no capability is left: the setup script is `bin/dolly-integrate`, run as `dolly setup`; a file named
+  like `dolly-setup` is an "installer" to the scan, which kept the listing in manual review and manual setup).
   Where something is missing, Dolly names the package and says that Omarchy's package
   installer adds it (`deps.how()`, "Omarchy menu > Install > Package"). Longer how-to text
   goes to `docs/` (not scanned), for example `docs/captions.md`.
@@ -391,11 +396,11 @@ webcam and transcriber are present. `--json` gives the same as JSON.
 cd /path/to/dolly && git status          # must be committed: the plugin is a clone of HEAD
 make clean && omarchy plugin validate .  # scenarios-out/ holds symlinks the validator rejects
 omarchy plugin add "file://$PWD" --enable --yes
-~/.config/omarchy/plugins/io.github.jagritvats.dolly/bin/dolly-setup   # menu rows, hotkeys, report of what is missing
+~/.config/omarchy/plugins/io.github.jagritvats.dolly/bin/dolly setup   # menu rows, hotkeys, report of what is missing
 ~/.config/omarchy/plugins/io.github.jagritvats.dolly/bin/dolly doctor
 ```
 
-Hotkeys added by `dolly-setup`. Each is skipped if already bound; Omarchy itself
+Hotkeys added by `dolly setup`. Each is skipped if already bound; Omarchy itself
 uses Super+Ctrl+R (reminders) and Super+Ctrl+P (power), so Dolly uses Super+Alt:
 
 | Hotkey | Action |
@@ -407,7 +412,7 @@ uses Super+Ctrl+R (reminders) and Super+Ctrl+P (power), so Dolly uses Super+Alt:
 | Super+Alt+L | recordings library |
 | Super+Alt+Shift+R | save the last 30 s of instant replay |
 
-dolly-setup also writes a window rule for the live camera bubble (`DollyCam-S|M|L`:
+`dolly setup` also writes a window rule for the live camera bubble (`DollyCam-S|M|L`:
 float, pin, no initial focus). The Omarchy menu is Super+Space: Trigger → Capture
 (Dolly Recorder: record a window, a region or the screen, recordings, settings,
 Instant replay, Open last) and Trigger → Share → Last demo recording.
@@ -541,7 +546,7 @@ best-effort in Dolly; Session Keeper falls back to uwsm/systemctl). Quickshell n
 |---|---|---|
 | F1 | `bin/dolly doctor` in a fresh VM | no traceback; ok rows for cairo and Pango, a FAIL row for "a capture backend" in a VM; "Missing packages: wf-recorder" and where to install it at the end |
 | F2 | record from the bar or Super+Alt+R in a VM without wf-recorder | no picker/countdown/DND; one notification naming wf-recorder and Omarchy's package installer (Omarchy menu > Install > Package); no button that installs |
-| F3 | `bin/dolly-setup \| tail` (piped) | reports what is missing, asks nothing, installs nothing; record button on the bar afterwards |
+| F3 | `bin/dolly setup \| tail` (piped) | reports what is missing, asks nothing, installs nothing; record button on the bar afterwards |
 | F4 | record button missing after `omarchy plugin add --enable` | `omarchy bar put io.github.jagritvats.dolly --section right` (or `omarchy plugin enable io.github.jagritvats.dolly --section right`) shows it; note which works on 4.0.4 |
 | F5 | `journalctl --user -b \| grep "Local plugin changed"` after a few `dolly` commands | nothing; `~/.cache/dolly/pycache` exists; no `__pycache__` under `~/.config/omarchy/plugins/io.github.jagritvats.dolly` |
 | F6 | record 10 s, then `jq .sync <project>/events.json` | `method` is `markers2` (both markers found) under `QT_QUICK_BACKEND=software`; events log has `flash_ms: 160` |
@@ -600,7 +605,7 @@ Keep the evidence bundle for each.
 ## Rollback
 
 ```bash
-bin/dolly cancel; bin/dolly replay stop; bin/dolly-setup --undo     # menu rows + hotkeys (backups *.dolly-bak)
+bin/dolly cancel; bin/dolly replay stop; bin/dolly setup --undo     # menu rows + hotkeys (backups *.dolly-bak)
 python3 -c "import sys;sys.path.insert(0,'.');from dolly import solid;print(solid.restore())"   # windows forced solid (Glassy), if any
 omarchy-shell notifications isDnd        # Dolly restores DND itself; check it is what you expect
 hyprctl eval 'if dolly_input_stop then dolly_input_stop() end'
@@ -765,5 +770,5 @@ Round 3:
 - Third-party QML imports `qs.Commons as Commons`, colors from `Commons.Color`.
 - Write only under `~/Videos/Dolly`, `$XDG_RUNTIME_DIR/dolly`,
   `~/.local/share/dolly`, `~/.local/state/dolly`, `~/.config/dolly`, and (only
-  via dolly-setup, between markers) the menu extension and `hypr/bindings.lua`.
+  via `dolly setup`, between markers) the menu extension and `hypr/bindings.lua`.
 - Never hard-code credentials; never upload without a configured target.

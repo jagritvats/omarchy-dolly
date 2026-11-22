@@ -248,7 +248,7 @@ Panel {
       try { root.setLibraryItems(JSON.parse(text()).items || []) } catch (e) {}
     }
   }
-  // hotkeys + menu entry (bin/dolly-setup): a marketplace install runs no setup
+  // hotkeys + menu entry (`dolly setup`, bin/dolly-integrate): a marketplace install runs no setup
   property bool integrationKnown: false
   property bool setUp: true
   property var hotkeyConflicts: []

@@ -300,6 +300,7 @@ class Editor:
             "keys": [{"t": k["t"], "key": k["key"], "mods": k["mods"]} for k in tl.keys],
             "segments": segs, "style": data["style"], "trim": data["trim"] or [0, tl.duration],
             "speed": data.get("speed") or [], "privacy": data.get("privacy") or [],
+            "cuts": __import__("dolly.timemap", fromlist=["clean_cuts"]).clean_cuts(data.get("cuts")),
             "has_audio": self.has_audio(), "has_webcam": any((self.proj.dir / n).exists() for n in ("webcam.mkv", "webcam.mp4")),
             "has_captions": bool(cues),
             "audio_tracks": tl.capture.get("audio_tracks") or [], "mic_mutes": tl.capture.get("mic_mutes") or [],
@@ -387,6 +388,9 @@ class Editor:
         if "captions" in body:
             from ..captions import clean_cues
             data["captions"] = clean_cues(body["captions"])
+        if "cuts" in body:
+            from ..timemap import clean_cuts
+            data["cuts"] = clean_cuts(body["cuts"])
         bg = (data.get("style") or {}).get("background")
         if isinstance(bg, dict) and bg.get("type") == "wallpaper":
             # export opens this path: only a checked image (never an arbitrary file the page names)
@@ -498,6 +502,12 @@ class Editor:
         data["speed"] = segs
         self.proj.save(data)
         return segs
+
+    def cut_pauses(self) -> list:
+        """"Cut pauses": the stretches where nothing is typed, clicked, changed or said become
+        cuts. Earlier automatic pause cuts are replaced; cuts made by hand stay."""
+        from ..timemap import apply_pause_cuts
+        return apply_pause_cuts(self.proj.dir, self.timeline())
 
     def start_export(self, body: dict):
         if self.job.snapshot()["running"]:
@@ -847,6 +857,8 @@ def make_handler(ed: Editor):
                     return self._json(share.delete_remote(ed.proj.dir, body["id"]))
                 if u.path == "/api/speed/detect":
                     return self._json({"speed": ed.speed_detect()})
+                if u.path == "/api/cuts/pauses":
+                    return self._json({"cuts": ed.cut_pauses()})
                 if u.path == "/api/scrub":
                     ed.scrub()
                     return self._json({"ok": True})

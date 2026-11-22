@@ -9,7 +9,7 @@ sys.path.insert(0, str(ROOT))
 
 from tests._pathutil import path_without  # noqa: E402
 
-SETUP = str(ROOT / "bin" / "dolly-setup")
+SETUP = str(ROOT / "bin" / "dolly-integrate")
 MINE = "#!/bin/sh" + chr(10) + "echo mine" + chr(10)
 
 

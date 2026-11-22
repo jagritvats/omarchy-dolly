@@ -151,6 +151,8 @@ canvas#view.drawing{cursor:crosshair}
 .it.privacy.secret{background:repeating-linear-gradient(45deg,rgba(247,118,142,.22) 0 6px,rgba(247,118,142,.1) 6px 12px)}
 .it.cap{border-color:var(--cyan);background:rgba(125,207,255,.13);font-size:10.5px;padding:2px 6px}
 .it.cap.manual{border-style:dashed}
+.it.cut{border-color:var(--red);color:var(--red);background:repeating-linear-gradient(45deg,rgba(247,118,142,.30) 0 5px,rgba(14,14,20,.55) 5px 10px);font-size:10.5px;padding:2px 6px;z-index:2}
+.it.cut.auto{border-style:dashed}
 .it.off{opacity:.4}
 .it.sel{box-shadow:0 0 0 2px rgba(192,202,245,.5);filter:brightness(1.25)}
 .it .hd{position:absolute;top:0;bottom:0;width:8px;cursor:ew-resize}.it .hd.l{left:-1px}.it .hd.r{right:-1px}
@@ -286,6 +288,7 @@ canvas#view.drawing{cursor:crosshair}
     <div class="grp"><div class="h">Speed <button id="speedDetect" style="height:22px;font-size:11px">Auto-detect idle</button></div>
       <div class="tg" data-k="speed.enabled"><span>Apply speed-ups</span><i></i></div>
       <div class="small" id="speedInfo"></div>
+      <div class="row"><button id="cutPauses" style="height:24px;font-size:11px" title="Cut the stretches where nothing is typed, clicked, changed on screen or said">Cut pauses</button><span class="small" id="cutInfo"></span></div>
     </div>
     <div class="grp"><div class="h">Privacy <span><button id="addBlur" style="height:22px;font-size:11px">+ Box</button> <button id="scrub" style="height:22px;font-size:11px">Scrub secrets</button></span></div>
       <div class="list" id="privList"></div>
@@ -405,12 +408,12 @@ const vid=$('#vid'), cv=$('#view'), ctx=cv.getContext('2d');
 let bgCanvas=null, bgPlain=null, wallImgs=[], drawingBox=null, pickingFocus=false;
 
 function toast(msg){ const t=$('#toast'); t.textContent=msg; t.style.display='block'; clearTimeout(toast.h); toast.h=setTimeout(()=>t.style.display='none',2600) }
-function snapshot(){ return JSON.stringify({segments:S.segments, style:S.style, trim:S.trim, speed:S.speed, privacy:S.privacy, captions:S.captions}) }
+function snapshot(){ return JSON.stringify({segments:S.segments, style:S.style, trim:S.trim, speed:S.speed, privacy:S.privacy, captions:S.captions, cuts:S.cuts}) }
 function commit(){ hist.push(lastSnap); if(hist.length>100) hist.shift(); fut=[]; lastSnap=snapshot(); scheduleSave(); scheduleRepath() }
 function undo(){ if(!hist.length) return; fut.push(snapshot()); restore(hist.pop()) }
 function redo(){ if(!fut.length) return; hist.push(snapshot()); restore(fut.pop()) }
 function restore(s){ Object.assign(S, JSON.parse(s)); lastSnap=s; syncControls(); drawTimeline(); scheduleSave(); scheduleRepath() }
-let saveT=null; function scheduleSave(){ clearTimeout(saveT); saveT=setTimeout(async()=>{ const r=await api('/api/save', {segments:S.segments, style:S.style, trim:S.trim, speed:S.speed, privacy:S.privacy, captions:S.captions}); if(r&&r.error) toast('Not saved: '+r.error) }, 400) }
+let saveT=null; function scheduleSave(){ clearTimeout(saveT); saveT=setTimeout(async()=>{ const r=await api('/api/save', {segments:S.segments, style:S.style, trim:S.trim, speed:S.speed, privacy:S.privacy, captions:S.captions, cuts:S.cuts}); if(r&&r.error) toast('Not saved: '+r.error) }, 400) }
 let pathT=null; function scheduleRepath(){ clearTimeout(pathT); pathT=setTimeout(repath, 250) }
 async function repath(){ PATH = await api('/api/path', {fps:30, segments:S.segments, style:S.style, aspect}); buildBg(); render() }
 
@@ -478,7 +481,7 @@ function render(){
   if(S.style.captions.enabled) drawCaption(t);
   const sp=speedAt(t); if(sp>1) drawBadge(sp);
   if(drawingBox&&drawingBox.x1!==undefined){ ctx.strokeStyle='#f7768e'; ctx.lineWidth=2; ctx.setLineDash([6,4]); ctx.strokeRect(drawingBox.x0,drawingBox.y0,drawingBox.x1-drawingBox.x0,drawingBox.y1-drawingBox.y0); ctx.setLineDash([]) }
-  if(t<S.trim[0]-1e-3||t>S.trim[1]+1e-3){ ctx.fillStyle='rgba(14,14,20,.55)'; ctx.fillRect(0,0,G.OW,G.OH) }
+  if(t<S.trim[0]-1e-3||t>S.trim[1]+1e-3||cutAt(t)){ ctx.fillStyle='rgba(14,14,20,.55)'; ctx.fillRect(0,0,G.OW,G.OH) }
 }
 const ARROW=[[2,1.5],[2,21],[7,16.5],[10.4,24.6],[13.6,23.2],[10.2,15.4],[17,15.2]], INS=[[3.3,4.6],[3.3,18.1],[7.4,14.4],[10.9,22.7],[12.3,22.1],[8.7,14.1],[14.2,14.1]];
 function poly(p,s){ ctx.beginPath(); p.forEach(([a,b],i)=>i?ctx.lineTo(a*s,b*s):ctx.moveTo(a*s,b*s)); ctx.closePath() }
@@ -503,7 +506,8 @@ const X=t=>t/P.video.duration*wrap.clientWidth, T=x=>Math.max(0,Math.min(P.video
 const LANES={zoom:{el:'#zlane',arr:()=>S.segments,cls:s=>'it'+(s.source==='manual'?' manual':''),label:s=>`${(+s.zoom).toFixed(1)}×<span class="r">${esc(s.source==='manual'?'manual':(s.reason||'auto'))}</span>`},
   speed:{el:'#slane',arr:()=>S.speed,cls:s=>'it speed'+(S.style.speed.enabled?'':' off'),label:s=>`⏩ ${esc(s.speed)}× <span class="r" style="color:var(--orange)">${esc(s.reason||'')}</span>`},
   privacy:{el:'#plane',arr:()=>S.privacy,cls:s=>'it privacy'+(s.source==='secret'?' secret':'')+(s.source==='auto'?' auto':'')+(s.enabled===false?' off':''),label:s=>(s.source==='secret'?'⚠ ':s.source==='auto'?'auto · ':'▦ ')+esc(s.label||s.mode)},
-  captions:{el:'#caplane',arr:()=>S.captions,cls:s=>'it cap'+(s.source==='manual'?' manual':'')+(S.style.captions.enabled?'':' off'),label:s=>'<span class="ct">'+esc(s.text)+'</span>'}};
+  captions:{el:'#caplane',arr:()=>S.captions,cls:s=>'it cap'+(s.source==='manual'?' manual':'')+(S.style.captions.enabled?'':' off'),label:s=>'<span class="ct">'+esc(s.text)+'</span>'},
+  cuts:{el:'#clane',arr:()=>S.cuts,cls:s=>'it cut'+(s.source==='auto'?' auto':''),label:s=>'✂ '+(s.reason==='pause'?'pause':s.reason==='caption'?'line':'cut')}};
 function laneOf(id){ for(const [n,L] of Object.entries(LANES)){ const it=L.arr().find(s=>s.id===id); if(it) return [n,it] } return [null,null] }
 function drawRuler(){ const r=$('#ruler'); r.innerHTML=''; const d=P.video.duration, step=d>120?15:d>60?10:d>20?5:d>8?2:1; for(let t=0;t<=d+1e-6;t+=step){ const s=document.createElement('span'); s.style.left=X(t)+'px'; s.textContent=fmtT(t).replace(/\.\d+$/,''); r.appendChild(s) } }
 function drawTimeline(){
@@ -522,11 +526,12 @@ function drawTimeline(){
   const sh2=document.createElement('div'); sh2.className='shade'; sh2.style.left=X(S.trim[1])+'px'; sh2.style.width=(wrap.clientWidth-X(S.trim[1]))+'px'; cl.appendChild(sh2);
   for(const [i,side] of [[0,'in'],[1,'out']]){ const e=document.createElement('div'); e.className='trim'; e.dataset.side=side; e.style.left=(X(S.trim[i])-(i?0:9))+'px'; cl.appendChild(e) }
   $('#autochip').textContent=`${S.segments.length} zooms · ${S.speed.length} speed-ups · ${S.privacy.length} blurs`;
-  const saved=S.speed.reduce((a,s)=>a+(s.end-s.start)*(1-1/s.speed),0); $('#speedInfo').textContent=S.speed.length?`${S.speed.length} stretches, saves ${saved.toFixed(1)} s of ${P.video.duration.toFixed(1)} s`:'No speed-ups yet.';
+  const saved=S.speed.reduce((a,s)=>a+(s.end-s.start)*(1-1/s.speed),0); const cutS=S.cuts.reduce((a,c)=>a+(c.end-c.start),0); $('#cutInfo').textContent=S.cuts.length?`${S.cuts.length} cut${S.cuts.length>1?'s':''}, ${cutS.toFixed(1)} s out`:'';
+  $('#speedInfo').textContent=S.speed.length?`${S.speed.length} stretches, saves ${saved.toFixed(1)} s of ${P.video.duration.toFixed(1)} s`:'No speed-ups yet.';
   $('#privList').innerHTML=S.privacy.map(b=>`<div><span>${b.source==='secret'?'⚠':b.source==='auto'?'auto ·':'▦'} ${fmtT(b.start)}–${fmtT(b.end)} · ${esc(b.label||b.mode)}</span><span><span class="x" data-tog="${esc(b.id)}">${b.enabled===false?'enable':'disable'}</span> · <span class="x" data-del="${esc(b.id)}">delete</span></span></div>`).join('')||'<div class="small">None.</div>';
   drawSelPanel(); updatePH() }
 function updatePH(){ $('#ph').style.left=X(vid.currentTime)+'px'; $('#tc').textContent=fmtT(vid.currentTime) }
-function newId(p){ let i=1; const all=[...S.segments,...S.speed,...S.privacy,...S.captions]; while(all.find(s=>s.id===p+i)) i++; return p+i }
+function newId(p){ let i=1; const all=[...S.segments,...S.speed,...S.privacy,...S.captions,...S.cuts]; while(all.find(s=>s.id===p+i)) i++; return p+i }
 function drawSelPanel(){
   const [lane,s]=laneOf(sel), body=$('#segbody');
   if(!s){ $('#segtitle').textContent='Selection'; body.className='empty'; body.innerHTML='Click an item on the timeline to edit it. <span class="kbd">Z</span> adds a zoom at the playhead, <span class="kbd">Del</span> deletes.'; return }
@@ -539,10 +544,12 @@ function drawSelPanel(){
     const uf=$('#sunfocus'); if(uf) uf.onclick=()=>{ s.focus=null; commit(); drawTimeline() } }
   else if(lane==='speed'){ body.innerHTML=`<div class="seg3" id="spdopts">${[1.5,2,4,8].map(v=>`<div class="opt ${s.speed==v?'on':''}" data-v="${v}">${v}×</div>`).join('')}</div><div style="margin-top:8px"><button class="danger" id="sdel">Delete</button></div>`;
     $('#spdopts').style.gridTemplateColumns='repeat(4,1fr)'; $('#spdopts').querySelectorAll('.opt').forEach(o=>o.onclick=()=>{ s.speed=+o.dataset.v; s.source='manual'; commit(); drawTimeline() }) }
-  else if(lane==='captions'){ body.innerHTML=`<textarea id="ctext" rows="2" maxlength="300" style="width:100%;resize:vertical"></textarea><div class="small" style="margin:4px 0 8px">Enter keeps the text; drag the edges on the timeline to time it.</div><div style="display:flex;gap:6px"><button id="cplay">Play it</button><button class="danger" id="sdel">Delete</button></div>`;
+  else if(lane==='captions'){ body.innerHTML=`<textarea id="ctext" rows="2" maxlength="300" style="width:100%;resize:vertical"></textarea><div class="small" style="margin:4px 0 8px">Enter keeps the text; drag the edges on the timeline to time it.</div><div style="display:flex;gap:6px;flex-wrap:wrap"><button id="cplay">Play it</button><button id="ccut" title="Remove this stretch from the video (X)">Cut this line <span class="kbd">X</span></button><button class="danger" id="sdel">Delete</button></div>`;
     const ta=$('#ctext'); ta.value=s.text; ta.oninput=()=>{ s.text=ta.value.replace(/\s+/g,' '); s.source='manual'; for(const d of document.querySelectorAll('.it')) if(d.dataset.id===s.id){ const ct=d.querySelector('.ct'); if(ct) ct.textContent=s.text } render() };
     ta.onchange=()=>{ s.text=s.text.trim(); if(!s.text){ delSel(); return } commit(); drawTimeline() }; ta.onkeydown=e=>{ if(e.key==='Enter'){ e.preventDefault(); ta.blur() } };
-    $('#cplay').onclick=()=>{ seek(s.start); if(vid.paused) $('#play').click() } }
+    $('#cplay').onclick=()=>{ seek(s.start); if(vid.paused) $('#play').click() }; $('#ccut').onclick=()=>cutCaption(s) }
+  else if(lane==='cuts'){ body.innerHTML=`<div class="small" style="margin-bottom:8px">${s.reason==='pause'?'A pause: nothing typed, clicked, changed or said.':s.reason==='caption'?'A caption line cut out.':'Cut by you.'} This stretch is left out of the export, sound and captions included. Drag its edges to change it.</div><div style="display:flex;gap:6px"><button id="xplay">Play across it</button><button class="danger" id="sdel">Delete (keep it)</button></div>`;
+    $('#xplay').onclick=()=>{ seek(Math.max(0,s.start-1.5)); if(vid.paused) $('#play').click() } }
   else { body.innerHTML=`<div class="seg2" id="pmode"><div class="opt ${s.mode!=='pixelate'?'on':''}" data-v="blur">Blur</div><div class="opt ${s.mode==='pixelate'?'on':''}" data-v="pixelate">Pixelate</div></div>
     <div class="small" style="margin:6px 0">${s.source==='secret'?'Flagged by OCR: '+esc(s.label||''):'Drawn by you.'} Drag on the preview to redraw.</div><div style="display:flex;gap:6px"><button id="predraw">Redraw box</button><button class="danger" id="sdel">Delete</button></div>`;
     $('#pmode').querySelectorAll('.opt').forEach(o=>o.onclick=()=>{ s.mode=o.dataset.v; commit(); drawTimeline() }); $('#predraw').onclick=()=>startDraw(s) }
@@ -552,11 +559,14 @@ function addZoom(){ const t=vid.currentTime, d=P.video.duration; let st=Math.max
   for(const s of S.segments){ if(s.start<=st&&st<s.end) st=s.end; if(st<s.start&&en>s.start) en=s.start } if(en-st<0.4){ toast('No room for a zoom here'); return }
   const s={id:newId('m'),start:st,end:en,zoom:1.8,focus:null,follow:true,source:'manual',reason:''}; S.segments.push(s); sel=s.id; commit(); drawTimeline() }
 function addSpeed(){ const t=vid.currentTime; const s={id:newId('s'),start:t,end:Math.min(P.video.duration,t+2),speed:2,source:'manual',reason:''}; S.speed.push(s); sel=s.id; commit(); drawTimeline() }
+function cutCaption(c){ if(!c) return; const x={id:newId('x'),start:c.start,end:c.end,source:'manual',reason:'caption'};
+  S.cuts=S.cuts.filter(o=>!(o.start<x.end&&x.start<o.end)||(x.start=Math.min(x.start,o.start),x.end=Math.max(x.end,o.end),false)); S.cuts.push(x); sel=x.id; commit(); drawTimeline(); render(); toast('Line cut from the video. Ctrl+Z puts it back') }
+function cutAt(t){ for(const c of S.cuts) if(c.start<=t&&t<c.end) return c; return null }
 function addCaption(){ const t=vid.currentTime, d=P.video.duration; let st=t, en=Math.min(d,t+2.5);
   for(const c of S.captions){ if(c.start<=st&&st<c.end) st=c.end; if(st<c.start&&en>c.start) en=c.start } if(en-st<0.4){ toast('No room for a caption here'); return }
   const c={id:newId('c'),start:st,end:en,text:'Caption',source:'manual'}; S.captions.push(c); S.style.captions.enabled=true; sel=c.id; commit(); syncControls(); drawTimeline(); capInfo(); setTimeout(()=>{ const ta=$('#ctext'); if(ta){ ta.focus(); ta.select() } },0) }
 function splitSel(){ const [lane,s]=laneOf(sel), t=vid.currentTime; if(!s||t<=s.start+0.3||t>=s.end-0.3){ toast('Select an item and put the playhead inside it'); return }
-  const b={...s,id:newId(lane==='zoom'?'m':lane==='speed'?'s':lane==='captions'?'c':'b'),start:t,source:s.source==='secret'?'secret':'manual'};
+  const b={...s,id:newId(lane==='zoom'?'m':lane==='speed'?'s':lane==='captions'?'c':lane==='cuts'?'x':'b'),start:t,source:s.source==='secret'?'secret':'manual'};
   if(lane==='captions'){ const w=s.text.split(' '), k=Math.max(1,Math.min(w.length-1,Math.round(w.length*(t-s.start)/(s.end-s.start)))); if(w.length>1){ s.text=w.slice(0,k).join(' '); b.text=w.slice(k).join(' ') } s.source=b.source='manual' }
   s.end=t; LANES[lane].arr().push(b); commit(); drawTimeline() }
 
@@ -594,7 +604,7 @@ cv.addEventListener('click',e=>{ if(!pickingFocus) return; pickingFocus=false; c
 
 // ------------------------------------------------------------ playback (speed segments play faster in preview)
 function seek(t){ vid.currentTime=Math.max(0,Math.min(P.video.duration-0.01,t)); updatePH(); render() }
-function loop(){ if(!vid.paused){ if(vid.currentTime>=S.trim[1]){ vid.pause(); $('#play').textContent='▶' } const sp=speedAt(vid.currentTime); if(vid.playbackRate!==sp) vid.playbackRate=sp; updatePH(); render() } requestAnimationFrame(loop) }
+function loop(){ if(!vid.paused){ const cx=cutAt(vid.currentTime); if(cx) vid.currentTime=Math.min(cx.end,S.trim[1]); if(vid.currentTime>=S.trim[1]){ vid.pause(); $('#play').textContent='▶' } const sp=speedAt(vid.currentTime); if(vid.playbackRate!==sp) vid.playbackRate=sp; updatePH(); render() } requestAnimationFrame(loop) }
 vid.addEventListener('seeked',render); vid.addEventListener('loadeddata',render);
 $('#play').onclick=()=>{ if(vid.paused){ if(vid.currentTime>=S.trim[1]-0.05||vid.currentTime<S.trim[0]) vid.currentTime=S.trim[0]; vid.play(); $('#play').textContent='❚❚' } else { vid.pause(); $('#play').textContent='▶' } };
 
@@ -642,7 +652,7 @@ async function doExport(){ $('#exportBtn').disabled=true; const fmt=pick('fmt');
 
 // ------------------------------------------------------------ share sheet
 let presets=[], chosen='github', lastFile=null;
-async function openShare(){ $('#share').classList.add('open'); await api('/api/save',{segments:S.segments,style:S.style,trim:S.trim,speed:S.speed,privacy:S.privacy,captions:S.captions});
+async function openShare(){ $('#share').classList.add('open'); await api('/api/save',{segments:S.segments,style:S.style,trim:S.trim,speed:S.speed,privacy:S.privacy,captions:S.captions,cuts:S.cuts});
   const [pr,tg]=await Promise.all([api('/api/share/presets'),api('/api/share/targets')]); presets=pr.presets; drawPresets();
   $('#shMeta').textContent=`${P.name} · output ${fmtT(presets[0].duration)}`;
   const sel=$('#shTarget'); sel.innerHTML=tg.targets.map(t=>`<option value="${esc(t.name)}" ${t.name===tg.default?'selected':''}>${esc(t.name)} · ${esc(t.type)}${t.public?' · public':''}</option>`).join('');
@@ -670,7 +680,7 @@ document.addEventListener('keydown',e=>{
   if(e.key===' '){ e.preventDefault(); $('#play').click() }
   else if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='z'){ e.preventDefault(); e.shiftKey?redo():undo() }
   else if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='e'){ e.preventDefault(); openShare() }
-  else if(e.key==='z'||e.key==='Z') addZoom(); else if((e.key==='c'||e.key==='C')&&!e.ctrlKey&&!e.metaKey) addCaption(); else if(e.key==='s'&&!e.ctrlKey) splitSel();
+  else if(e.key==='z'||e.key==='Z') addZoom(); else if((e.key==='c'||e.key==='C')&&!e.ctrlKey&&!e.metaKey) addCaption(); else if((e.key==='x'||e.key==='X')&&!e.ctrlKey&&!e.metaKey){ const [ln,it]=laneOf(sel); if(ln==='captions') cutCaption(it); else toast('Select a caption line to cut it') } else if(e.key==='s'&&!e.ctrlKey) splitSel();
   else if(e.key==='Delete'||e.key==='Backspace') delSel();
   else if(e.key==='ArrowLeft') seek(vid.currentTime-(e.shiftKey?1:1/30)); else if(e.key==='ArrowRight') seek(vid.currentTime+(e.shiftKey?1:1/30));
   else if(e.key==='['){ S.trim[0]=Math.min(vid.currentTime,S.trim[1]-0.5); commit(); drawTimeline() } else if(e.key===']'){ S.trim[1]=Math.max(vid.currentTime,S.trim[0]+0.5); commit(); drawTimeline() } });
@@ -713,7 +723,7 @@ function capInfo(){ const n=(S.captions||[]).length, tr=P.transcriber;
   $('#capHint').textContent=tr||!P.has_audio?'':'To transcribe, turn on Dictation in Omarchy (Omarchy menu › Setup › Defaults › Dictation › Voxtype). You can also type captions: C adds one at the playhead.' }
 async function init(){
   if(P) return;
-  P=await api('/api/project'); if(P.error){ P=null; show('library'); return } S={segments:P.segments,style:P.style,trim:P.trim,speed:P.speed||[],privacy:P.privacy||[],captions:P.captions||[]}; lastSnap=snapshot();
+  P=await api('/api/project'); if(P.error){ P=null; show('library'); return } S={segments:P.segments,style:P.style,trim:P.trim,speed:P.speed||[],privacy:P.privacy||[],captions:P.captions||[],cuts:P.cuts||[]}; lastSnap=snapshot();
   if(P.analysis==='pending'||P.preview==='pending') waitForPlan();
   $('#pname').textContent=P.name; $('#pmeta').textContent=`${fmtT(P.video.duration)} · ${P.video.w}×${P.video.h} · ${P.capture.fps&&Math.abs(P.capture.fps-P.video.fps)>1?`${P.capture.fps} fps (file ${Math.round(P.video.fps)})`:`${Math.round(P.video.fps)} fps`} · ${P.capture.backend||''}${P.capture.click_source?' · clicks: '+P.capture.click_source:''}`;
   $('#dur').textContent='/ '+fmtT(P.video.duration); $('#themeName').textContent='Theme: '+P.theme.name;
@@ -753,6 +763,8 @@ async function init(){
   $('#trimIn').onclick=()=>{ S.trim[0]=Math.min(vid.currentTime,S.trim[1]-0.5); commit(); drawTimeline() }; $('#trimOut').onclick=()=>{ S.trim[1]=Math.max(vid.currentTime,S.trim[0]+0.5); commit(); drawTimeline() };
   $('#reauto').onclick=async()=>{ const snap=snapshot(); const r=await api('/api/auto',{}); hist.push(snap); S.segments=r.segments; sel=null; lastSnap=snapshot(); drawTimeline(); scheduleRepath(); toast(`${r.segments.length} auto zooms`) };
   initAutoZoom();
+  $('#cutPauses').onclick=async()=>{ const b=$('#cutPauses'); b.disabled=true; b.textContent='Looking…'; const snap=snapshot(); const r=await api('/api/cuts/pauses',{}); b.disabled=false; b.textContent='Cut pauses';
+    if(!r||r.error){ toast((r&&r.error)||'failed'); return } hist.push(snap); fut=[]; S.cuts=r.cuts; lastSnap=snapshot(); drawTimeline(); render(); const n=r.cuts.filter(c=>c.reason==='pause').length; toast(n?`${n} pause${n>1?'s':''} cut. Click one on the CLIP lane to keep it`:'No pauses to cut') };
   $('#speedDetect').onclick=async()=>{ const snap=snapshot(); const r=await api('/api/speed/detect',{}); hist.push(snap); S.speed=r.speed; S.style.speed.enabled=true; lastSnap=snapshot(); syncControls(); drawTimeline(); toast(`${r.speed.length} speed-ups found`) };
   $('#scrub').onclick=async()=>{ $('#scrub').disabled=true; await api('/api/scrub',{}); const bar={style:{}}; pollJob(bar,{set textContent(v){ $('#scrub').textContent=v.startsWith('Done')?'Scrub secrets':'Scanning…' }},s=>{ $('#scrub').disabled=false;
     if(s.result){ const snap=snapshot(); hist.push(snap); S.privacy=s.result.privacy; lastSnap=snapshot(); drawTimeline(); render(); toast(`${s.result.found} possible secrets blurred, review them`) } else if(s.error) toast(s.error) }) };

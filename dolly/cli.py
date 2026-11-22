@@ -418,6 +418,28 @@ def cmd_speed(a):
     print(f"{len(data['speed'])} speed-up segments")
 
 
+def cmd_cuts(a):
+    """dolly cuts [DIR] [--pauses | --clear] [--json]: the stretches left out of the export."""
+    from .events import Timeline
+    from .timemap import apply_pause_cuts, clean_cuts
+    proj = projmod.Project(_dir_or_last(a.dir))
+    tl = Timeline.load(proj.events)
+    if a.pauses:
+        cuts = apply_pause_cuts(proj.dir, tl)
+    else:
+        data = proj.load()
+        if a.clear:
+            data["cuts"] = []
+            proj.save(data)
+        cuts = clean_cuts(data.get("cuts"), tl.duration)
+    if a.json:
+        print(json.dumps({"dir": str(proj.dir), "cuts": cuts, "seconds_cut": round(sum(c["end"] - c["start"] for c in cuts), 2)}))
+        return
+    for c in cuts:
+        print(f"  {c['id']}: {c['start']:6.2f}-{c['end']:6.2f}s  {c['reason']}{' (auto)' if c['source'] == 'auto' else ''}")
+    print(f"{len(cuts)} cuts, {sum(c['end'] - c['start'] for c in cuts):.1f} s left out")
+
+
 def cmd_scrub(a):
     from .events import Timeline
     from .privacy import scan_secrets
@@ -717,6 +739,12 @@ def _main(argv=None):
     x = ss.add_parser("delete"); x.add_argument("id"); x.add_argument("dir", nargs="?")
     sp = sub.add_parser("speed", help="detect idle / long typing and speed it up")
     sp.add_argument("dir", nargs="?"); sp.add_argument("--clear", action="store_true")
+    cu = sub.add_parser("cuts", help="stretches left out of the export: list, --pauses cuts pauses, --clear removes all")
+    cu.add_argument("dir", nargs="?")
+    g = cu.add_mutually_exclusive_group()
+    g.add_argument("--pauses", action="store_true", help="cut where nothing is typed, clicked, changed or said")
+    g.add_argument("--clear", action="store_true")
+    cu.add_argument("--json", action="store_true")
     sc = sub.add_parser("scrub", help="OCR the recording and blur things that look like secrets")
     sc.add_argument("dir", nargs="?"); sc.add_argument("--every", type=float, default=1.0)
     cp = sub.add_parser("captions", help="transcribe the recording on this computer into its caption lane (Omarchy Dictation / whisper)")
@@ -780,7 +808,9 @@ def _main(argv=None):
                     help="apply: write the menu entry, hotkeys, command and application launcher (no password); "
                          "undo: remove them; auto: apply only after an update")
     it.add_argument("--json", action="store_true")
-    sub.add_parser("setup", help="add Dolly's menu entry and hotkeys, install missing packages (opens a terminal)")
+    su = sub.add_parser("setup", help="add Dolly's menu entry, hotkeys and launcher entry; says what is still missing "
+                                      "(installs nothing). --undo removes them")
+    su.add_argument("--undo", action="store_true", help="remove the menu entry, hotkeys, camera rule and the dolly command")
     up = sub.add_parser("update", help="update Dolly with `omarchy plugin update`, then refresh hotkeys and the menu entry")
     up.add_argument("--no-restart", action="store_true",
                     help="do not restart the Omarchy shell (the new bar button then loads at the next shell start)")
@@ -832,6 +862,8 @@ def _main(argv=None):
         cmd_share(a)
     elif a.cmd == "speed":
         cmd_speed(a)
+    elif a.cmd == "cuts":
+        cmd_cuts(a)
     elif a.cmd == "scrub":
         cmd_scrub(a)
     elif a.cmd == "captions":
@@ -862,14 +894,15 @@ def _main(argv=None):
         cmd_update(a)
     elif a.cmd == "setup":
         import shutil, shlex, subprocess as sp
-        setup = Path(__file__).resolve().parent.parent / "bin" / "dolly-setup"
+        setup = [str(Path(__file__).resolve().parent.parent / "bin" / "dolly-integrate")] + (["--undo"] if a.undo else [])
         term = shutil.which("omarchy-launch-floating-terminal-with-presentation")
-        # a terminal shows what setup did (menu entry, hotkeys, what is still missing); it asks nothing
-        if term:
-            sp.Popen([term, shlex.quote(str(setup))], stdin=sp.DEVNULL, stdout=sp.DEVNULL,
+        # from the panel: a terminal shows what setup did (menu entry, hotkeys, what is still
+        # missing); it asks nothing. Typed in a terminal: it runs right there
+        if term and not sys.stdout.isatty():
+            sp.Popen([term, " ".join(shlex.quote(x) for x in setup)], stdin=sp.DEVNULL, stdout=sp.DEVNULL,
                      stderr=sp.DEVNULL, start_new_session=True)
         else:
-            raise SystemExit(sp.call([str(setup)]))
+            raise SystemExit(sp.call(setup))
     elif a.cmd == "deps":
         from . import deps
         m = deps.missing()

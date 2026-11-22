@@ -11,6 +11,14 @@ Drag a line to move it, drag its edges to time it, **S** splits it at the playhe
 (the words are shared out), Delete removes it, Ctrl+Z undoes. This needs nothing
 installed.
 
+## Cutting by transcript (0.9.0)
+
+Select a caption line and press **X** (or **Cut this line**): that stretch is cut out of the
+video, its sound and its caption with it. **Cut pauses** in the Speed group cuts every
+stretch where nothing is typed, clicked, changed on screen or said. Cuts show on the CLIP
+lane; Delete on one keeps that stretch, Ctrl+Z undoes. From a terminal:
+`dolly cuts [DIR] [--pauses | --clear]`.
+
 ## Transcribing them
 
 **Transcribe** (Audio group, or `dolly captions [DIR]`) writes down what you said on this

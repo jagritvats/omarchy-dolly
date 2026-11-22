@@ -14,7 +14,7 @@ marketplace's scan rules. On a desktop, check by hand:
 
 - [ ] Fresh `omarchy plugin add ... --enable`, nothing else: record, stop, the editor opens, a styled export (`dolly export --json` says `"engine": "compositor"`)
 - [ ] `dolly doctor`: ok rows for cairo and Pango; no line names a command that installs
-- [ ] `bin/dolly-setup`: menu rows and hotkeys, then a report of what is missing; it asks nothing and needs no password
+- [ ] `dolly setup`: menu rows and hotkeys, then a report of what is missing; it asks nothing and needs no password
 - [ ] In a VM without wf-recorder: the card names wf-recorder and Omarchy menu > Install > Package, and has no Install button
 
 ## Desktop fixes of 0.7.4 (`tests/test_desktop_fixes.py` covers the logic; these need a desktop)
@@ -28,7 +28,7 @@ marketplace's scan rules. On a desktop, check by hand:
 - [ ] The editor's browser runs with `--user-data-dir=~/.local/share/dolly/editor-browser-software-video` and `--disable-accelerated-video-decode`; with `DOLLY_EDITOR_ACCELERATED_VIDEO=1` it does not
 - [ ] A `python3` without cairo first on PATH (mise, pyenv): `dolly --print-python` says `/usr/bin/python3` and `dolly doctor` says ready
 - [ ] `dolly run docs/hardware-smoke.toml --json`: ok, 6 of 6 steps, no warnings (close any open Omarchy menu first: scripted typing lands in its search box)
-- [ ] `bin/dolly-setup --undo` removes the menu entry, the hotkeys, the command and the launcher entry
+- [ ] `dolly setup --undo` removes the menu entry, the hotkeys, the command and the launcher entry
 
 ## Verified in the cloud box (no Hyprland/GPU/webcam/network), re-check locally
 

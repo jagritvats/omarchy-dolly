@@ -1164,7 +1164,10 @@ def plan_timing(project_dir, style_over=None, t_range=None) -> dict:
         raise projmod.EmptyTrim(f"no video remains in the selected trim ({t0:g}–{t1:g} s); "
                                 "adjust the trim in the editor or record another take")
     speed = (data.get("speed") or []) if style.get("speed", {}).get("enabled", True) else []
-    tm = TimeMap(t0, t1, speed)
+    from .timemap import clean_cuts
+    tm = TimeMap(t0, t1, speed, clean_cuts(data.get("cuts")))      # cuts apply whether speed-ups are on or not
+    if tm.duration < 0.05:
+        raise projmod.EmptyTrim("everything in the selected range is cut; delete a cut in the editor")
     title = style.get("title", {})
     intro = float(title.get("intro", 2.2)) if title.get("enabled") and title.get("text") else 0.0
     outro = float(title.get("outro", 0) or 0) if title.get("enabled") and title.get("outro_text") else 0.0

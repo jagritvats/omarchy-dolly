@@ -195,17 +195,17 @@ def check(as_json=False) -> dict:
         from . import integration
         ist = integration.status()
         if not ist["set_up"]:
-            add("shortcuts & menu (dolly-setup)", False,
+            add("shortcuts & menu (dolly setup)", False,
                 "not set up: run `dolly setup` (or the panel's Set up button) for hotkeys and menu rows", "warn")
         elif ist["conflicts"]:
-            add("shortcuts & menu (dolly-setup)", False, "; ".join(
+            add("shortcuts & menu (dolly setup)", False, "; ".join(
                 f"{c['combo']} ({c['dolly']}) is also bound to: {', '.join(c['others'])}" for c in ist["conflicts"])
                 + " - rerun `dolly setup` to drop the clash", "warn")
         else:
-            add("shortcuts & menu (dolly-setup)", True,
+            add("shortcuts & menu (dolly setup)", True,
                 f"{len(ist['binds'])} hotkeys, menu rows {'on' if ist['menu'] else 'off'}", "ok")
     except Exception as e:  # never break doctor over a status read
-        add("shortcuts & menu (dolly-setup)", False, f"could not check: {e}", "warn")
+        add("shortcuts & menu (dolly setup)", False, f"could not check: {e}", "warn")
     from .capture import TERMINALS
     have_terms = [t for t in ("alacritty", "ghostty", "kitty", "foot", "wezterm") if shutil.which(t)]
     add("terminals (I-beam cursor, typing framing)", True,

@@ -20,7 +20,7 @@ def setup_menu(tmp_path):
     env = dict(os.environ, HOME=str(tmp_path), XDG_CONFIG_HOME=str(tmp_path / ".config"))
     from tests._pathutil import path_without
     env["PATH"] = path_without("hyprctl", tmp_path)
-    r = subprocess.run([str(ROOT / "bin" / "dolly-setup")], env=env, capture_output=True, text=True,
+    r = subprocess.run([str(ROOT / "bin" / "dolly-integrate")], env=env, capture_output=True, text=True,
                        stdin=subprocess.DEVNULL, timeout=120)
     assert r.returncode == 0, r.stderr
     menu = (tmp_path / ".config/omarchy/extensions/omarchy-menu.jsonc").read_text()

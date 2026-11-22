@@ -135,7 +135,7 @@ def test_help_has_no_internal_or_suppressed_entries(env):
 def test_dolly_setup_reports_what_is_missing_and_installs_nothing(env, tmp_path):
     (tmp_path / ".config" / "hypr").mkdir(parents=True)
     (tmp_path / ".config" / "hypr" / "bindings.lua").write_text("-- user binds\n")
-    r = subprocess.run(["bash", str(ROOT / "bin" / "dolly-setup")], env=env, capture_output=True, text=True,
+    r = subprocess.run(["bash", str(ROOT / "bin" / "dolly-integrate")], env=env, capture_output=True, text=True,
                        timeout=120, stdin=subprocess.DEVNULL)
     assert "packages: wf-recorder " in r.stdout and "unknown gpu vendor" in r.stdout
     assert "packages: Dolly installs nothing itself" in r.stdout and "Omarchy menu > Install > Package" in r.stdout

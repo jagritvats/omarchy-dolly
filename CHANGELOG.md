@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.9.0 (2026-11-22)
+
+Cut by transcript, cut pauses, and a plain single-command install. Checked with the test
+suite on an Omarchy 4.5.0 virtual machine.
+
+Cuts
+- A stretch can now be cut out of the video: it takes no time in the export, and its
+  sound and captions go with it. Cuts show on the CLIP lane; drag their edges to change
+  them, Delete keeps the stretch after all, Ctrl+Z undoes. The preview skips them.
+- **Cut this line** (or **X**) on a caption cuts that line out of the video: edit the
+  recording by its transcript.
+- **Cut pauses** (Speed group, or `dolly cuts --pauses`) cuts the stretches where nothing
+  is typed, clicked, changed on screen or said, leaving a moment at each end so the cut
+  is not abrupt. Running it again replaces only its own cuts; yours stay.
+- Cuts apply whether speed-ups are on or not. A speed-up that overlaps a cut applies to
+  what is left of it. `dolly cuts [DIR] [--pauses | --clear] [--json]` lists and edits
+  them from a terminal. The plain export (without python-cairo) leaves speed-ups and
+  cuts out, as before for speed-ups.
+
+Install
+- The setup script is now `bin/dolly-integrate`, run as `dolly setup` (the panel's Set up
+  button runs it as before; `dolly setup --undo` removes what it added). Named
+  `dolly-setup`, the plugin marketplace's scan counted it as an installer, which kept the
+  listing under manual review and "manual setup". With nothing left for the scan to flag,
+  the marketplace can offer the plain `omarchy plugin add ... --enable` install.
+- `dolly setup` typed in a terminal now runs there instead of opening a second terminal,
+  and its help no longer says it installs packages (it has not since 0.7.4).
+
 ## 0.8.1 (2026-11-22)
 
 Camera polish across windows, and no more silent ends. Checked with the test suite and the

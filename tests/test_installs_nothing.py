@@ -5,10 +5,11 @@ Where something is missing it names the package and leaves the installing to the
 (Omarchy menu > Install > Package; see dolly/deps.py).
 
 - The Omarchy plugin marketplace scans a plugin's text for such commands. The scan's
-  published rules are written out again here and run over the same files: the only
-  capability left must be "installer", which every file named like a setup script gets
-  (bin/dolly-setup). This checks lines the marketplace may skip (comments), so it is the
-  stricter of the two.
+  published rules are written out again here and run over the same files: no capability
+  is left (0.9.0: the setup script is bin/dolly-integrate, run as `dolly setup`; named
+  dolly-setup it was an "installer", which held the listing to manual review and manual
+  setup). This checks lines the marketplace may skip (comments), so it is the stricter
+  of the two.
 - Nothing in dolly/ or bin/ builds a command line with one of those programs.
 """
 import ast
@@ -122,14 +123,14 @@ def capabilities() -> dict[str, list[str]]:
     return found
 
 
-def test_the_scan_finds_only_the_setup_script():
+def test_the_scan_finds_nothing():
     found = capabilities()
-    assert set(found) == {"installer"}, {k: v[:5] for k, v in found.items() if k != "installer"}
-    assert found["installer"] == ["bin/dolly-setup"]
+    assert found == {}, {k: v[:5] for k, v in found.items()}
+    assert INSTALLER.search("dolly-setup") and not INSTALLER.search("dolly-integrate")
 
 
 def test_the_scope_is_the_marketplace_scope():
-    assert in_scope("README.md") and in_scope("bin/dolly") and in_scope("bin/dolly-setup")
+    assert in_scope("README.md") and in_scope("bin/dolly") and in_scope("bin/dolly-integrate")
     assert in_scope("dolly/deps.py") and in_scope("RecordPanel.qml") and in_scope("hypr/dolly-input.lua")
     assert not in_scope("tests/test_deps.py") and not in_scope("docs/captions.md") and not in_scope("AGENTS.md")
     assert not in_scope(".github/workflows/tests.yml") and not in_scope("dolly/editor/static/index.html")
